@@ -1,0 +1,17 @@
+MANUALSYNC 1.0 — FINAL CANDIDATE
+
+Questo pacchetto è il candidato finale da validare prima della consegna commerciale.
+
+Per installare/aggiornare:
+1. Chiudi ManualSync se è aperto.
+2. Estrai completamente ManualSync_Setup_FINAL_CANDIDATE.zip.
+3. Avvia INSTALLA_MANUALSYNC.cmd.
+4. L'installer verifica checksum del payload, resource check, smoke test e commercial acceptance prima di confermare l'aggiornamento.
+5. I progetti restano in %USERPROFILE%\ManualSyncData e non vengono cancellati durante aggiornamenti/disinstallazione.
+
+Se l'installazione fallisce, la versione precedente viene ripristinata e i dati progetto restano preservati.
+Log: %USERPROFILE%\ManualSyncData\Logs\ManualSync_Installer.log
+
+VERIFICA POST-INSTALLAZIONE
+Avvia VERIFICA_INSTALLAZIONE_PILOTA.cmd. Deve terminare senza FAIL.
+Il report JSON viene salvato in %USERPROFILE%\ManualSyncData\Logs\ManualSync_Pilot_Installation_Validation.json.

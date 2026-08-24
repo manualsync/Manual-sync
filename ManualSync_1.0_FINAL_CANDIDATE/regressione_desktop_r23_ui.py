@@ -1,0 +1,31 @@
+from pathlib import Path
+import importlib.util
+
+ROOT=Path(__file__).resolve().parent
+src=(ROOT/'app.py').read_text(encoding='utf-8')
+checks=[]
+def ck(name, cond, detail=''):
+    checks.append((name,bool(cond),detail))
+
+ck('Footer Gradio disabilitato', 'footer_links=[]' in src)
+ck('Home inizialmente attiva', 'nav_home=gr.Button("⌂   Home",variant="primary")' in src)
+ck('Navigazione usa stato active dinamico', "gr.update(variant='primary' if item==tab_id else 'secondary')" in src)
+ck('Tutte le sezioni sidebar partecipano allo stato', "_NAV_IDS=['home','revision','authoring','translations','jobs','release','settings']" in src)
+ck('Quick actions sincronizzano sidebar', "home_release.click(lambda:_navigate('release')" in src and "home_translation.click(lambda:_navigate('translations')" in src)
+ck('Stile sidebar active presente', '#ms-sidebar button.primary' in src and 'inset 3px 0 0 var(--ui-primary)' in src)
+ck('Tab strip tecnica resta nascosta', '[role="tablist"]' in src and 'display:none!important' in src)
+ck('Menu overflow ellipsis Gradio nascosto', '#workspace-tabs .overflow-menu' in src and 'visibility:hidden!important' in src)
+ck('Core release invariato collegato', 'create_release_bundle' in src)
+ck('Canonicalizzazione lingua invariata collegata', 'canonical_langs' in src)
+
+spec=importlib.util.spec_from_file_location('app',ROOT/'app.py')
+mod=importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+ck('App importa', hasattr(mod,'demo'))
+ck('Brand ancora centralizzato', hasattr(mod,'BRAND_NAME'))
+
+for name,status,detail in checks:
+    print(('PASS' if status else 'FAIL'), '|', name, ('| '+detail if detail else ''))
+print(f'R23.2 UI gate: {sum(x[1] for x in checks)}/{len(checks)} PASS')
+if not all(x[1] for x in checks):
+    raise SystemExit(1)

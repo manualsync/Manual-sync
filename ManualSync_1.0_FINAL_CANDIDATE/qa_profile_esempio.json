@@ -1,0 +1,10 @@
+{
+  "name": "ManualSync Default",
+  "terminology": true,
+  "double_spaces": true,
+  "brackets": true,
+  "terminal_punctuation": false,
+  "capitalization": false,
+  "block_on_warnings": false,
+  "technical_integrity": true
+}

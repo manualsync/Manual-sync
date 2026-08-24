@@ -1,0 +1,35 @@
+MANUALSYNC 1.0 — FINAL CANDIDATE
+
+OBIETTIVO
+Questo BuildKit consolida le correzioni emerse nel pilot senza richiedere patch successive al cliente.
+Il builder dichiara PASS solo dopo regressioni, runtime smoke, commercial acceptance e verifica dello ZIP cliente esatto dopo estrazione.
+
+BUILD
+1. Estrai completamente il BuildKit.
+2. Avvia COSTRUISCI_MANUALSYNC_EXE.cmd.
+3. Non distribuire la cartella BuildKit.
+4. Un successo è valido solo con BUILD_STATUS.json = PASS.
+
+PACCHETTO CLIENTE DA VALIDARE
+release\ManualSync_Setup_FINAL_CANDIDATE.zip
+
+VALIDAZIONE WINDOWS
+Dopo installazione esegui VERIFICA_INSTALLAZIONE_PILOTA.cmd. Il controllo verifica:
+- integrità/hash del payload installato;
+- resource check;
+- startup smoke;
+- commercial acceptance E2E isolata;
+- shortcut Desktop/Start Menu;
+- build installata e ManualSyncData scrivibile.
+
+GATE COMMERCIALI
+- QA linguistico fail-closed su target copiati/quasi copiati tra lingue diverse;
+- produzione cliente ricontrollata indipendentemente;
+- numeri/codici/placeholder tecnici protetti;
+- non traducibili e ripetizioni esatte esclusi dal lavoro del traduttore;
+- backup/restore, readiness e release verificati nell'acceptance suite.
+
+AUTO-ALLINEAMENTO: COSA È GIÀ MISURATO
+Il benchmark industriale incluso sul pre-allineamento vecchio originale ↔ vecchia traduzione raggiunge 98,3% di coverage aggregata sui corpus comparabili e 93,3% dei blocchi sorgente con confidence >=80.
+Questo dimostra che l'automazione può superare il 95% su questi corpus, ma NON costituisce una promessa universale sui documenti cliente.
+Prima di pubblicizzare una percentuale fissa va ancora misurato il comportamento end-to-end su coppie cliente rappresentative: vecchio originale + vecchia traduzione + nuova revisione.

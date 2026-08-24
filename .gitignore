@@ -1,0 +1,35 @@
+# --- Python ---
+.venv/
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# --- Environment / secrets ---
+.env
+.env.*
+
+# --- Editor / OS ---
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Recovery staging area (raw extracted artifacts, not source of truth) ---
+# The verified content has been copied into the repository (ManualSync_1.0_FINAL_CANDIDATE/,
+# docs/reports/MANUALSYNC_PREVIOUS_WORK_HANDOFF.md). This folder itself is a temporary
+# local staging area and must not be versioned.
+_RECOVERY/
+
+# NOTE: do NOT add blanket ignores for docs, sources, tests, fixtures,
+# databases, or config files. Anything intended as a versioned fixture
+# or reference artifact must be explicitly reviewed before being ignored.

@@ -1,0 +1,32 @@
+# Auto-detect text files and normalize line endings to LF in the repo,
+# checked out using the platform's native line endings.
+* text=auto eol=lf
+
+# --- Explicit text types (safe to normalize) ---
+*.py text
+*.md text
+*.txt text
+*.toml text
+*.cfg text
+*.ini text
+*.json text
+*.yml text
+*.yaml text
+
+# --- Binary types: never normalize, diff, or convert ---
+*.pdf binary
+*.docx binary
+*.doc binary
+*.zip binary
+*.7z binary
+*.rar binary
+*.idml binary
+*.indd binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.sqlite binary
+*.sqlite3 binary
+*.db binary

@@ -1,0 +1,41 @@
+{
+  "product": "ManualSync 1.0",
+  "build": "1.0.0-final-candidate-20260822",
+  "status": "SOURCE_PREVALIDATED_REQUIRES_ONE_WINDOWS_FINAL_VALIDATION",
+  "generated_at": "2026-08-22T17:25:00+02:00",
+  "source_prevalidation": {
+    "rc22_regression_baseline": "357/357 PASS",
+    "final_candidate_static_gate": "29/29 PASS",
+    "commercial_acceptance": "15/15 PASS",
+    "alignment_confidence_policy": "5/5 PASS",
+    "real_industrial_alignment_gate": "8/8 PASS",
+    "py_compile": "PASS"
+  },
+  "runtime_container": {
+    "result": "36/37",
+    "only_failure": "Python 3.13.5 in container; product runtime requires Python 3.12 x64",
+    "meaning": "Windows builder must reach full runtime conformance before it can create a PASS customer package."
+  },
+  "commercial_safety": {
+    "copied_or_near_copied_cross_language_targets": "FAIL-CLOSED",
+    "independent_production_linguistic_gate": "ENABLED",
+    "numeric_code_placeholder_protection": "ENABLED",
+    "nontranslatable_filter": "ENABLED",
+    "exact_repeat_reuse": "ENABLED",
+    "installer_exact_payload_hash_validation": "ENABLED",
+    "exact_customer_zip_reextract_resource_smoke_acceptance": "ENABLED"
+  },
+  "alignment_benchmark": {
+    "aggregate_comparable_legacy_bilingual_prealignment_coverage_percent": 98.3,
+    "aggregate_high_confidence_ge80_percent_of_source": 93.3,
+    "scope": "Included comparable industrial benchmark fixtures only; not a universal customer-document guarantee."
+  },
+  "final_windows_gate": [
+    "Build with COSTRUISCI_MANUALSYNC_EXE.cmd on Windows/Python 3.12 x64",
+    "Require BUILD_STATUS.json status=PASS",
+    "Install release/ManualSync_Setup_FINAL_CANDIDATE.zip",
+    "Require VERIFICA_INSTALLAZIONE_PILOTA.cmd PASS",
+    "Confirm Desktop launch, project create, close/reopen persistence",
+    "Confirm copied IT->en-US target is QA_BLOCKED and cannot produce PRODUZIONE CLIENTE"
+  ]
+}

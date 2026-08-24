@@ -1,0 +1,19 @@
+MANUALSYNC 1.0 — FINAL CANDIDATE PREVALIDATION
+
+Stato: SOURCE PREVALIDATED — richiede una sola validazione Windows finale.
+
+Gate sorgente:
+- RC2.2 regression baseline: 357/357 PASS
+- Final Candidate static gate: 29/29 PASS
+- Commercial Acceptance: 15/15 PASS
+- Alignment confidence policy: 5/5 PASS
+- Real industrial alignment gate: 8/8 PASS
+- py_compile: PASS
+
+Runtime container: 36/37; unico FAIL = Python 3.13.5 invece del Python 3.12 x64 richiesto.
+Il builder Windows deve risultare completamente conforme prima di produrre BUILD_STATUS=PASS.
+
+Benchmark pre-allineamento bilingue industriale comparabile: 98.3% coverage aggregata; 93.3% >=80 confidence.
+Non è una promessa universale del 95% sui documenti cliente.
+
+Prossimo e unico gate operativo: build Windows -> installer Final Candidate -> verifica pilota -> test safety linguistica.
