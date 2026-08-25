@@ -1,8 +1,15 @@
 from pathlib import Path
 import json
 import shutil
+import sys
 import zipfile
 import pandas as pd
+
+# Windows consoles default to a legacy codepage (e.g. cp1252) that cannot encode
+# characters used in some check details; force UTF-8 stdio so the final report
+# print never crashes after all checks have already run and passed.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from cat_tm import TranslationMemory
 from ccms_industrial import IndustrialRepository, create_industrial_demo

@@ -54,11 +54,18 @@ def main() -> int:
         )
         tm_path = _auto_project_legacy_tm(project)
         check("Project legacy TM created", tm_path is not None and Path(tm_path).exists(), tm_path)
-        with sqlite3.connect(tm_path) as conn:
+        # NOTE: `with sqlite3.connect(...) as conn` only manages the transaction
+        # (commit/rollback) — it does NOT close the connection. On Windows that left
+        # this file (WAL mode) locked when the enclosing TemporaryDirectory tried to
+        # delete it. Close explicitly so the handle is released before cleanup.
+        conn = sqlite3.connect(tm_path)
+        try:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT source,target,alignment_confidence,approved,penalty FROM tm_entries ORDER BY source"
             ).fetchall()
+        finally:
+            conn.close()
         by_source = {r["source"]: dict(r) for r in rows}
         check("Technically unsafe bilingual pair excluded", "Mantenere una distanza di 20 mm." not in by_source, list(by_source))
         hi = by_source.get("Avviare il motore prima della calibrazione.")

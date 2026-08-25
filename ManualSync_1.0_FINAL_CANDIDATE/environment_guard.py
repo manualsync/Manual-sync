@@ -46,6 +46,11 @@ def add_result(results, name, ok, detail):
 
 
 def main() -> int:
+    # Windows consoles default to a legacy codepage (e.g. cp1252) that cannot encode
+    # characters used in some check details (e.g. "≠"); force UTF-8 stdio so the
+    # final report print never crashes after all checks have already run and passed.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     results = []
     py_ok = sys.version_info[:2] == (3, 12)
     add_result(results, "Python 3.12", py_ok, platform.python_version())

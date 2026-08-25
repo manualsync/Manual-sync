@@ -5,6 +5,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows consoles default to a legacy codepage (e.g. cp1252) that cannot encode
+# characters used in some check details (e.g. "≠", "✅"); force UTF-8 stdio so the
+# final report print never crashes after all checks have already run and passed.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 BASE = Path(__file__).resolve().parent
 results=[]
 

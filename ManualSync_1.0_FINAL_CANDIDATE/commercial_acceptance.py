@@ -253,6 +253,12 @@ def run_acceptance(report_dir: str | Path | None = None) -> dict:
 
 
 def main() -> int:
+    # Windows consoles default to a legacy codepage (e.g. cp1252) that cannot encode
+    # some report characters; force UTF-8 stdio here (CLI entry point only, so
+    # run_acceptance() stays unaffected when imported by the desktop launcher).
+    import sys
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     payload = run_acceptance()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0 if payload["status"] == "PASS" else 1

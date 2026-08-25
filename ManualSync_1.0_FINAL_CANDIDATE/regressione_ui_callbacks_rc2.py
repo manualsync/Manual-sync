@@ -4,10 +4,17 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+# Windows consoles default to a legacy codepage (e.g. cp1252) that cannot encode
+# characters used in some check details; force UTF-8 stdio so the final report
+# print never crashes after all checks have already run and passed.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import pandas as pd
 
