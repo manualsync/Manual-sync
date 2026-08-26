@@ -13,6 +13,7 @@ import pandas as pd
 
 from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
 from authoring_ccms import import_pdf_as_topics, import_docx_as_topics
+from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
@@ -26,6 +27,8 @@ from support_diagnostics import system_health, create_support_bundle
 
 from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
+
+_LEGACY_DOC_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo documento Word. Il file potrebbe essere danneggiato, protetto o in un formato non supportato."
 
 BRAND_NAME = "ManualSync"  # Nome provvisorio; il rebrand cambierà questo solo punto UI.
 BRAND_TAGLINE = "Technical Content Intelligence"
@@ -471,11 +474,22 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
                     repo.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids])
                 repo.conn.commit()
 
-        if copied.suffix.lower()=='.docx':
+        suffix=copied.suffix.lower()
+        if suffix in ('.docx','.doc'):
             try:
-                imported=import_docx_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
+                if suffix=='.doc':
+                    # Milestone 3B.1: .doc is converted to a throwaway, isolated .docx
+                    # via a local offline converter, then handed to the SAME 3B docx
+                    # pipeline below. source_ref_prefix stays the original .doc name
+                    # (copied.name) so provenance never shows the temporary .docx.
+                    with convert_legacy_doc_to_docx(copied) as temp_docx:
+                        imported=import_docx_as_topics(repo,temp_docx,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
+                else:
+                    imported=import_docx_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
             except ValueError:
                 raise
+            except LegacyDocConversionError as exc:
+                raise gr.Error(_LEGACY_DOC_FRIENDLY_ERROR) from exc
             except Exception as exc:
                 raise gr.Error("Il documento Word non è valido o è danneggiato. Verifica il file e riprova.") from exc
             if imported.empty:
@@ -559,7 +573,10 @@ def _simple_review_table(topics_df, blocks_df, table_dims=None) -> pd.DataFrame:
         if not m:
             return None
         filename,num=m.group(1),m.group(2)
-        if filename.lower().endswith(".docx"):
+        # Milestone 3B.1: .doc provenance is deliberately kept as the original
+        # .doc filename (not the temporary converted .docx), so this must
+        # recognize both -- .doc has no real page concept either.
+        if filename.lower().endswith((".docx",".doc")):
             return f"Sezione {num}"
         return int(num)
     def preview(text):
@@ -631,9 +648,19 @@ def _guided_ask_language_outputs():
 
 def guided_new_project_from_pdf_ui(project_name, pdf_file):
     if not pdf_file:
-        raise gr.Error("Carica un file PDF o Word (.docx) per continuare.")
+        raise gr.Error("Carica un file PDF o Word (.docx o .doc) per continuare.")
     name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
-    if Path(pdf_file).suffix.lower() == ".docx":
+    suffix = Path(pdf_file).suffix.lower()
+    if suffix == ".doc":
+        # Same isolated conversion used by import_manual_ui; pdf_file (the
+        # original .doc) is what flows onward through the guided outputs, so
+        # provenance is unaffected by this language-detection-only conversion.
+        try:
+            with convert_legacy_doc_to_docx(pdf_file) as temp_docx:
+                detected, confidence, _basis = detect_docx_language(temp_docx)
+        except LegacyDocConversionError as exc:
+            raise gr.Error(_LEGACY_DOC_FRIENDLY_ERROR) from exc
+    elif suffix == ".docx":
         detected, confidence, _basis = detect_docx_language(pdf_file)
     else:
         detected, confidence, _basis = detect_document_language(pdf_file)
@@ -1046,7 +1073,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             with gr.Column(visible=False,elem_id="guided-legacy-onboarding-panel",elem_classes=["ms-panel"]) as legacy_onboarding_panel:
                 gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF o un documento Word: creiamo il progetto e leggiamo il documento per te.</div>")
                 lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
-                lg_pdf=gr.File(label="Il tuo manuale (PDF o Word .docx)",type='filepath',file_types=['.pdf','.docx'])
+                lg_pdf=gr.File(label="Il tuo manuale (PDF o Word .docx/.doc)",type='filepath',file_types=['.pdf','.docx','.doc'])
                 with gr.Row():
                     gr.Button("InDesign (.idml) — non ancora disponibile in questo percorso guidato",interactive=False)
                 lg_submit=gr.Button("Importa e crea progetto",variant="primary")
