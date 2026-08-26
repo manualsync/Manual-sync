@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Iterable, Any
 
 import pandas as pd
+from docx import Document as DocxDocument
 
 from layout_engine import extract_layout
 from language_codes import canonical_lang
@@ -521,6 +522,22 @@ def import_pdf_as_topics(repo: ContentRepository, pdf_path: str | Path, *, sourc
     if current and current["items"]:
         groups.append(current)
 
+    frame = _write_topic_groups_to_repo(repo, groups, source_lang=source_lang, id_prefix=id_prefix, src_name=src_name)
+    frame.attrs["dropped_running_headers"] = dropped_headers
+    return frame
+
+
+def _write_topic_groups_to_repo(repo: ContentRepository, groups: list[dict[str, Any]], *, source_lang: str,
+                                 id_prefix: str, src_name: str) -> pd.DataFrame:
+    """Format-agnostic CCMS write step shared by PDF and DOCX migration.
+
+    `groups` is a list of {"title": str, "items": [...], "page": int} where each
+    item is {"kind":"text","text":str,"page":int,"block_type":str} or
+    {"kind":"table","rows":[[str,...],...],"page":int,"table_index":int}. The
+    caller is responsible for producing this structure from the source format;
+    everything below (IDs, status, evidence, table handling) is shared, tested
+    domain logic — do not duplicate it in a new importer.
+    """
     rows_out: list[dict[str, Any]] = []
     existing_topics = {r[0] for r in repo.conn.execute("SELECT topic_id FROM topics")}
     industrial = all(hasattr(repo, name) for name in ("add_block", "create_table"))
@@ -585,9 +602,105 @@ def import_pdf_as_topics(repo: ContentRepository, pdf_path: str | Path, *, sourc
         })
 
     frame = pd.DataFrame(rows_out)
-    frame.attrs["dropped_running_headers"] = dropped_headers
     frame.attrs["structured_table_count"] = int(frame["structured_tables"].sum()) if not frame.empty else 0
     return frame
+
+
+_LEGACY_DOCX_HEADING_RE = re.compile(r"^\d{1,3}\s*[-–—]\s*[A-ZÀ-Ý][^.]{2,78}$")
+
+
+def _looks_like_legacy_docx_heading(text: str) -> bool:
+    """Conservative fallback for chapter titles with no Word Heading style.
+
+    Real Heading N styles remain the primary signal (checked first, unchanged)
+    — this only fires when the style is missing/wrong, and only for a narrow,
+    strong pattern: "<number> - <Title>" (e.g. "1 - Introduzione",
+    "8 - Gestione segnalazioni - Allarmi"), anchored on the whole line so it
+    cannot match inside a normal sentence. Deliberately rejects:
+      - numbered lists using ". " or ") " instead of " - " (e.g. "1. Press...");
+      - technical ranges/values where digits follow the dash (e.g. "20 - 25°C"),
+        because the text after the dash must start with an uppercase letter;
+      - long sentences or anything containing a period, which a genuine short
+        chapter title normally does not.
+    """
+    return bool(_LEGACY_DOCX_HEADING_RE.match(str(text or "").strip()))
+
+
+def _iter_docx_block_items(doc):
+    """Yield ("paragraph"|"table", obj) in REAL document order.
+
+    doc.paragraphs and doc.tables are separate flat lists in python-docx and do
+    NOT preserve their relative position in the file — a table between two
+    paragraphs would otherwise be lost from the sequence and misattributed.
+    This walks the underlying XML body directly (the standard python-docx
+    recipe for document-order iteration) so a table stays exactly where it
+    was, between the paragraphs that precede and follow it.
+    """
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    p_tag, tbl_tag = qn("w:p"), qn("w:tbl")
+    for child in doc.element.body.iterchildren():
+        if child.tag == p_tag:
+            yield "paragraph", Paragraph(child, doc)
+        elif child.tag == tbl_tag:
+            yield "table", Table(child, doc)
+
+
+def import_docx_as_topics(repo: ContentRepository, docx_path: str | Path, *, source_lang: str = "en-US",
+                           id_prefix: str = "TOPIC", source_ref_prefix: str | None = None) -> pd.DataFrame:
+    """Conservative Word (.docx) -> structured-topic migration.
+
+    Mirrors import_pdf_as_topics: extracts headings/paragraphs/tables in real
+    document order (python-docx has no page concept, so sections are numbered
+    sequentially — shown to the guided user as "Sezione N", not a technical
+    index), then writes them through the SAME shared repo-writing step used
+    by the PDF path (_write_topic_groups_to_repo) so topic/block/table
+    handling, status, and evidence tracking are identical for both formats.
+
+    This remains a migration draft. Human review is mandatory before source
+    approval, same as the PDF path.
+    """
+    doc = DocxDocument(str(docx_path))
+    src_name = source_ref_prefix or Path(docx_path).name
+
+    groups: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    section_no = 0
+
+    def ensure_current() -> dict[str, Any]:
+        nonlocal current, section_no
+        if current is None:
+            section_no += 1
+            current = {"title": "Introduction", "items": [], "page": section_no}
+        return current
+
+    for kind, block in _iter_docx_block_items(doc):
+        if kind == "paragraph":
+            text = re.sub(r"\s+", " ", block.text or "").strip()
+            if not text:
+                continue
+            style = block.style.name if block.style else ""
+            # Real Heading N style is checked first and always wins; the legacy
+            # pattern is only a fallback for paragraphs that aren't Heading-styled.
+            if style.startswith("Heading") or _looks_like_legacy_docx_heading(text):
+                if current and current["items"]:
+                    groups.append(current)
+                section_no += 1
+                current = {"title": text[:180], "items": [], "page": section_no}
+            else:
+                g = ensure_current()
+                g["items"].append({"kind": "text", "text": text, "page": g["page"], "block_type": _pdf_block_type(text)})
+        else:  # table, encountered exactly where it appears in the document
+            rows = [[cell.text for cell in row.cells] for row in block.rows]
+            g = ensure_current()
+            table_index = sum(1 for it in g["items"] if it["kind"] == "table")
+            g["items"].append({"kind": "table", "rows": rows, "page": g["page"], "table_index": table_index})
+
+    if current and current["items"]:
+        groups.append(current)
+
+    return _write_topic_groups_to_repo(repo, groups, source_lang=source_lang, id_prefix=id_prefix, src_name=src_name)
 
 
 def export_publication_html(repo: ContentRepository, publication_id: str, out_path: str | Path, *,

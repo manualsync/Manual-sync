@@ -12,6 +12,7 @@ from typing import Optional
 
 import fitz  # PyMuPDF
 import pandas as pd
+from docx import Document as DocxDocument
 from PIL import Image
 from rapidfuzz.fuzz import ratio
 
@@ -906,6 +907,24 @@ def _filename_language(path: str | Path) -> tuple[str, float]:
     return "unknown", 0.0
 
 
+def _score_text_language(text: str) -> tuple[str, float]:
+    words = re.findall(r"[a-zà-ÿ]+", str(text or ""))
+    counts = {lang: sum(1 for w in words if w in stop) for lang, stop in LANGUAGE_STOPWORDS.items()}
+    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    text_lang, top = ranked[0] if ranked else ("unknown", 0)
+    second = ranked[1][1] if len(ranked) > 1 else 0
+    text_conf = 0.0 if top < 3 else min(0.97, 0.55 + (top - second) / max(10, top) * 0.42)
+    return text_lang, text_conf
+
+
+def _combine_language_signals(file_lang: str, file_conf: float, text_lang: str, text_conf: float) -> tuple[str, float, str]:
+    if file_lang != "unknown" and (text_lang == "unknown" or file_lang == text_lang):
+        return file_lang, max(file_conf, text_conf), "nome file + contenuto" if text_lang == file_lang else "nome file"
+    if text_lang != "unknown":
+        return text_lang, text_conf, "contenuto"
+    return file_lang, file_conf, "nome file" if file_lang != "unknown" else "non determinata"
+
+
 def detect_document_language(path: str | Path, sample_pages: int = 3) -> tuple[str, float, str]:
     file_lang, file_conf = _filename_language(path)
     try:
@@ -917,17 +936,26 @@ def detect_document_language(path: str | Path, sample_pages: int = 3) -> tuple[s
         text = " ".join(chunks).lower()
     except Exception:
         text = ""
-    words = re.findall(r"[a-zà-ÿ]+", text)
-    counts = {lang: sum(1 for w in words if w in stop) for lang, stop in LANGUAGE_STOPWORDS.items()}
-    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    text_lang, top = ranked[0] if ranked else ("unknown", 0)
-    second = ranked[1][1] if len(ranked) > 1 else 0
-    text_conf = 0.0 if top < 3 else min(0.97, 0.55 + (top - second) / max(10, top) * 0.42)
-    if file_lang != "unknown" and (text_lang == "unknown" or file_lang == text_lang):
-        return file_lang, max(file_conf, text_conf), "nome file + contenuto" if text_lang == file_lang else "nome file"
-    if text_lang != "unknown":
-        return text_lang, text_conf, "contenuto"
-    return file_lang, file_conf, "nome file" if file_lang != "unknown" else "non determinata"
+    text_lang, text_conf = _score_text_language(text)
+    return _combine_language_signals(file_lang, file_conf, text_lang, text_conf)
+
+
+def detect_docx_language(path: str | Path, sample_paragraphs: int = 200) -> tuple[str, float, str]:
+    """Same detection principle as detect_document_language, for Word sources.
+
+    DOCX has no page-rendered text stream like a PDF, so this reads the first
+    N paragraphs via python-docx instead of PyMuPDF. The scoring/combination
+    logic is shared (not duplicated) with the PDF path.
+    """
+    file_lang, file_conf = _filename_language(path)
+    try:
+        doc = DocxDocument(str(path))
+        chunks = [p.text for p in doc.paragraphs[:sample_paragraphs] if p.text]
+        text = " ".join(chunks).lower()
+    except Exception:
+        text = ""
+    text_lang, text_conf = _score_text_language(text)
+    return _combine_language_signals(file_lang, file_conf, text_lang, text_conf)
 
 
 def validate_language_combination(old_source_pdf: str | Path, old_translation_pdf: str | Path, new_source_pdf: str | Path) -> dict:

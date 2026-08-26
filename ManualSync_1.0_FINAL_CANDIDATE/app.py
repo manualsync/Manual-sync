@@ -11,8 +11,8 @@ from pathlib import Path
 import gradio as gr
 import pandas as pd
 
-from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language
-from authoring_ccms import import_pdf_as_topics
+from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
+from authoring_ccms import import_pdf_as_topics, import_docx_as_topics
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
@@ -471,9 +471,19 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
                     repo.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids])
                 repo.conn.commit()
 
-        imported=import_pdf_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
-        if imported.empty:
-            raise ValueError("Nessun topic ricostruito dal PDF.")
+        if copied.suffix.lower()=='.docx':
+            try:
+                imported=import_docx_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
+            except ValueError:
+                raise
+            except Exception as exc:
+                raise gr.Error("Il documento Word non è valido o è danneggiato. Verifica il file e riprova.") from exc
+            if imported.empty:
+                raise ValueError("Nessun topic ricostruito dal documento Word.")
+        else:
+            imported=import_pdf_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
+            if imported.empty:
+                raise ValueError("Nessun topic ricostruito dal PDF.")
         tids=imported['topic_id'].astype(str).tolist()
         if repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(pub,)).fetchone():
             repo.replace_publication_topics(pub,tids)
@@ -501,26 +511,71 @@ _GUIDED_LANG_CONFIDENCE_MIN = 0.70  # same threshold already used by validate_la
 _GUIDED_BLOCK_TYPE_LABEL = {"paragraph": "Testo", "list_item": "Elenco", "note": "Nota", "warning": "Avviso", "table": "Tabella"}
 _GUIDED_STATUS_LABEL = {"Migrated": "Da rivedere", "Approved": "Approvato"}
 
-def _simple_review_table(topics_df, blocks_df) -> pd.DataFrame:
+def _table_dims_lookup(project_dir) -> dict[str, str]:
+    # Reads the SAME structured_tables data already used by the technical view
+    # (no second backend) so the standard table can show a real, comprehensible
+    # preview instead of a blank cell for table blocks.
+    if not project_dir:
+        return {}
+    try:
+        db=_ccms_db(project_dir)
+    except FileNotFoundError:
+        return {}
+    repo=IndustrialRepository(db)
+    try:
+        rows=repo.conn.execute("SELECT table_id, columns_json, rows_json FROM structured_tables").fetchall()
+    finally:
+        repo.close()
+    out={}
+    for table_id, columns_json, rows_json in rows:
+        try:
+            cols=json.loads(columns_json or "[]")
+            data_rows=json.loads(rows_json or "[]")
+        except Exception:
+            cols, data_rows = [], []
+        ncols=len(cols) if cols else (len(data_rows[0]) if data_rows else 0)
+        nrows=len(data_rows)
+        first_cells=[str(c).strip() for c in (data_rows[0][:3] if data_rows else []) if str(c).strip()]
+        label=f"Tabella — {nrows} righe × {ncols} colonne"
+        if first_cells:
+            label += f" (es. {', '.join(first_cells)}...)"
+        out[str(table_id)]=label
+    return out
+
+def _simple_review_table(topics_df, blocks_df, table_dims=None) -> pd.DataFrame:
     # Milestone 3A: pure transform of the SAME topics/blocks data already shown
     # in "Dettagli tecnici (modalità avanzata)" — no second backend, no new
     # query here. Fewer, friendlier columns; no technical IDs/metadata.
     cols=["Sezione","Tipo di contenuto","Anteprima del testo","Pagina di origine","Stato"]
     if blocks_df is None or blocks_df.empty:
         return pd.DataFrame(columns=cols)
+    table_dims=table_dims or {}
     title_by_topic=dict(zip(topics_df["topic_id"],topics_df["title"])) if topics_df is not None and not topics_df.empty else {}
     def page_of(refs):
-        m=re.search(r"#page=(\d+)",str(refs or ""))
-        return int(m.group(1)) if m else None
+        # Milestone 3B: DOCX has no real page numbers — the same "#page=N" ref
+        # format is reused internally (no writer changes needed), but a .docx
+        # source shows "Sezione N" here instead of a misleading bare page number.
+        m=re.search(r"([^/\\#]+)#page=(\d+)",str(refs or ""))
+        if not m:
+            return None
+        filename,num=m.group(1),m.group(2)
+        if filename.lower().endswith(".docx"):
+            return f"Sezione {num}"
+        return int(num)
     def preview(text):
         t=re.sub(r"\s+"," ",str(text or "")).strip()
         return (t[:117]+"...") if len(t)>120 else t
     rows=[]
     for _,r in blocks_df.iterrows():
+        block_type=str(r["block_type"])
+        if block_type=="table":
+            preview_text=table_dims.get(str(r.get("object_ref_id","") or ""), "Tabella importata")
+        else:
+            preview_text=preview(r["text"])
         rows.append({
             "Sezione": title_by_topic.get(r["topic_id"], r["topic_id"]),
-            "Tipo di contenuto": _GUIDED_BLOCK_TYPE_LABEL.get(str(r["block_type"]), str(r["block_type"])),
-            "Anteprima del testo": preview(r["text"]),
+            "Tipo di contenuto": _GUIDED_BLOCK_TYPE_LABEL.get(block_type, block_type),
+            "Anteprima del testo": preview_text,
             "Pagina di origine": page_of(r["source_refs"]),
             "Stato": _GUIDED_STATUS_LABEL.get(str(r["status"]), str(r["status"])),
         })
@@ -536,7 +591,14 @@ def _simple_review_table_for_project(project_dir) -> pd.DataFrame:
         topics=repo.topic_table(); blocks=repo.blocks_table()
     finally:
         repo.close()
-    return _simple_review_table(topics, blocks)
+    return _simple_review_table(topics, blocks, _table_dims_lookup(project_dir))
+
+def _simple_review_table_live_ui(project_dir, topics_df, blocks_df) -> pd.DataFrame:
+    # Wrapper for the c_blocks.change(...) wiring below, which only has
+    # Gradio component values (no project_dir) — fetches the same table
+    # dimensions lookup so live updates (guided import or manual "Importa
+    # come draft") show real table previews too, not just the initial render.
+    return _simple_review_table(topics_df, blocks_df, _table_dims_lookup(project_dir))
 
 def _guided_create_and_import(name, pdf_file, source_lang):
     # Milestone 3A: guided legacy onboarding. Pure orchestration — no new domain
@@ -569,9 +631,12 @@ def _guided_ask_language_outputs():
 
 def guided_new_project_from_pdf_ui(project_name, pdf_file):
     if not pdf_file:
-        raise gr.Error("Carica un file PDF per continuare.")
+        raise gr.Error("Carica un file PDF o Word (.docx) per continuare.")
     name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
-    detected, confidence, _basis = detect_document_language(pdf_file)
+    if Path(pdf_file).suffix.lower() == ".docx":
+        detected, confidence, _basis = detect_docx_language(pdf_file)
+    else:
+        detected, confidence, _basis = detect_document_language(pdf_file)
     source_lang = _GUIDED_LANG_DETECTED_TO_CODE.get(detected)
     if source_lang and confidence >= _GUIDED_LANG_CONFIDENCE_MIN:
         return _guided_success_outputs(name, pdf_file, source_lang)
@@ -979,11 +1044,10 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     choice_empty=gr.Button("Crea un progetto vuoto",variant="secondary")
                     choice_legacy=gr.Button("Ho già dei manuali: importali",variant="primary")
             with gr.Column(visible=False,elem_id="guided-legacy-onboarding-panel",elem_classes=["ms-panel"]) as legacy_onboarding_panel:
-                gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF: creiamo il progetto e leggiamo il documento per te.</div>")
+                gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF o un documento Word: creiamo il progetto e leggiamo il documento per te.</div>")
                 lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
-                lg_pdf=gr.File(label="Il tuo manuale (PDF)",type='filepath',file_types=['.pdf'])
+                lg_pdf=gr.File(label="Il tuo manuale (PDF o Word .docx)",type='filepath',file_types=['.pdf','.docx'])
                 with gr.Row():
-                    gr.Button("Word (.docx) — non ancora disponibile in questo percorso guidato",interactive=False)
                     gr.Button("InDesign (.idml) — non ancora disponibile in questo percorso guidato",interactive=False)
                 lg_submit=gr.Button("Importa e crea progetto",variant="primary")
                 lg_lang_prompt=gr.Markdown(visible=False)
@@ -1142,7 +1206,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # Keeps the standard review table in sync with the SAME topics/blocks data
     # shown in "modalità avanzata" — fires after either the guided import or the
     # manual "Importa come draft" click, since both set c_blocks. No second backend.
-    c_blocks.change(_simple_review_table,[c_topics,c_blocks],[c_simple_table])
+    c_blocks.change(_simple_review_table_live_ui,[project_state,c_topics,c_blocks],[c_simple_table])
     c_simple_approve.click(guided_approve_source_ui,[project_state,c_simple_reviewer,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
     _guided_outputs=[project_state,project_card,sidebar_context,p_msg,
                      onboarding_choice_panel,legacy_onboarding_panel,lg_review,
