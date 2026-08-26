@@ -99,6 +99,37 @@ Design coexistence adapters so ManualSync can augment an existing CCMS/TMS inste
 
 Acceptance: a legacy project can be onboarded without manual repository engineering.
 
+Known gaps carried forward from delivered onboarding work (not yet built; do not develop under this prompt without a separate go-ahead):
+- Structured image/figure ingestion: PDF/DOCX/.doc onboarding currently preserves text and tables but does not yet bring images, screenshots, diagrams or figures into the structured repository. For an industrial technical manual this must be resolved before onboarding is considered complete for image-heavy manuals. Relevant to Prompt 4's figures/assets/captions capability as well.
+- Legacy .doc runtime packaging debt: the LibreOffice sidecar runtime that powers .doc onboarding is not yet bundled in the installer. Outstanding before commercial GA: installer packaging, third-party notices/licensing, MPL source-availability obligations, runtime update strategy. Technical reference (remains authoritative, not duplicated here): `docs/reports/LEGACY_DOC_RUNTIME_PACKAGING_V1.md`.
+
+---
+
+## Prompt 3.5 - Compliance Intelligence Architecture (mandatory)
+Position is deliberate: this must be settled after Prompt 3 (legacy onboarding, including the still-open IDML/InDesign coexistence scope) and before Prompt 4 (Professional Authoring Studio), because its data-model decisions constrain how topics/blocks/evidence are modeled once advanced authoring is built on top of them.
+
+Design a data model and workflow for machinery-documentation regulatory compliance intelligence - not a compliance certification engine.
+
+Must cover at least:
+- Regulation (EU) 2023/1230 on machinery, and the transition from Directive 2006/42/EC;
+- applicable regulatory requirements for technical documentation and instructions;
+- harmonized standards and their status/version;
+- links between a regulatory requirement and a technical standard;
+- risks and residual risks;
+- evidence located in manual content;
+- applicability (per product/variant/market);
+- status taxonomy: Covered / To verify / Missing / Not applicable, with mandatory justification for Not applicable;
+- traceability chain: Requirement -> Standard -> Risk -> Evidence -> Topic/Block -> Release;
+- tracking of regulatory changes and their impact on already-published manuals;
+- audit trail and mandatory human review;
+- compliance readiness as a release-readiness gate input, alongside the translation/linguistic readiness already implemented.
+
+Hard constraint (see Product Doctrine, Compliance rule): ManualSync must never claim or imply that a manual is automatically legally certified/compliant. The only correct framing is verifiable, traceable compliance readiness against configured requirements, with final responsibility remaining with the manufacturer/competent organization.
+
+Standards content constraint: full texts of UNI/EN/ISO standards must not be indiscriminately embedded in the product. ManualSync may hold public metadata/references, status/version, and mapping to requirements, plus standard content uploaded/linked by the customer only when legally/licensing-available to them.
+
+Acceptance: a compliance manager can see, per release, which regulatory requirements are Covered/To verify/Missing/Not applicable (with justification), trace each to the standard, risk, evidence and manual content involved, and the release-readiness gate reflects this state - without the product ever asserting automatic legal certification.
+
 ---
 
 ## Prompt 4 - Professional Authoring Studio

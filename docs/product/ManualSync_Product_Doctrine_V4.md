@@ -24,6 +24,13 @@ Advanced = scores, alignment, technical signatures, TM provenance, IDs and logs.
 ## Claims rule
 Never say "better than Paligo/Tridion" without a benchmark. Never market alignment coverage as accuracy. Never call a capability complete because it compiles. Every claim must map to an acceptance test.
 
+## Compliance rule
+Never claim or imply that a manual is automatically legally certified/compliant. The only correct framing is verifiable, traceable compliance readiness against configured regulatory requirements, with final responsibility remaining with the manufacturer/competent organization.
+
+Never indiscriminately embed the full text of harmonized standards (UNI/EN/ISO) in the product. ManualSync may hold public metadata/references, status/version, and mapping to requirements, plus standard content uploaded/linked by the customer only when legally/licensing-available to them.
+
+(See Prompt 3.5 - Compliance Intelligence Architecture in the Prompt Pack for the architecture that must enforce this rule.)
+
 
 ## Objection rule
 Commercial objections are product requirements, not sales-script problems.
