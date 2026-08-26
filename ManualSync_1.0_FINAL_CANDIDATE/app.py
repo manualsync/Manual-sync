@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 import traceback
@@ -10,7 +11,7 @@ from pathlib import Path
 import gradio as gr
 import pandas as pd
 
-from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs
+from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language
 from authoring_ccms import import_pdf_as_topics
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from translation_work_package import generate_translation_work_packages
@@ -172,17 +173,34 @@ def _ccms_db(project_dir: str | Path) -> Path:
         if p.exists(): return p
     raise FileNotFoundError("Repository CCMS non trovato")
 
+def _unreviewed_topic_count(project_dir: str | Path) -> int:
+    # Milestone 3A fix: the Recommended Next Action must reflect real project
+    # state (imported-but-not-yet-approved content), not skip straight to
+    # Release. Read-only query, no change to topic/approval logic itself.
+    try:
+        db=_ccms_db(project_dir)
+    except FileNotFoundError:
+        return 0
+    repo=IndustrialRepository(db)
+    try:
+        return int(repo.conn.execute("SELECT COUNT(*) FROM topics WHERE status<>'Approved'").fetchone()[0])
+    finally:
+        repo.close()
+
 def _project_card(project_dir: str | None) -> str:
     if not project_dir:
         return "<div class='ms-project-card ms-empty'><b>Nessun progetto aperto</b><br><span class='ms-muted'>Crea o riapri un progetto per iniziare.</span></div>"
     h=project_health(project_dir)
     open_jobs=max(0, int(h.get("total_jobs",0))-int(h.get("approved",0)))
+    unreviewed=_unreviewed_topic_count(project_dir)
     if int(h.get("qa_blocked",0)) > 0:
         next_action="Apri <b>Job & fornitori</b> e correggi i job bloccati dal controllo qualità."
     elif open_jobs > 0:
         next_action="Apri <b>Job & fornitori</b> e completa i job di traduzione ancora aperti."
     elif int(h.get("publications",0)) <= 0:
         next_action="Apri <b>Redazione & contenuti</b> e importa/approva la sorgente strutturata."
+    elif unreviewed > 0:
+        next_action="Il contenuto importato non è ancora stato revisionato. <b>Rivedi il contenuto importato</b> prima di procedere."
     else:
         next_action="Il workflow operativo non ha blocchi aperti. Prossimo step: <b>Release → verifica readiness</b>."
     return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>PROGETTO ATTIVO</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{h.get('client','')} · {h.get('manual_code','')} · Rev. {h.get('revision','')}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>Pubblicazioni</div><b>{h['publications']}</b><small>nel progetto</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Blocchi</div><b>{h['blocks']}</b><small>contenuto strutturato</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Job aperti</div><b>{open_jobs}</b><small>workflow traduzione</small></div><div class='ms-kpi'><div class='ms-kpi-label'>QA bloccati</div><b>{h['qa_blocked']}</b><small>richiedono intervento</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>Azione consigliata</b><br>{next_action}</div></div><div class='ms-path'>Percorso progetto · {project_dir}</div></div>"""
@@ -475,6 +493,108 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
          f"Header ricorrenti esclusi: **{dropped}**. La migrazione da PDF resta conservativa: "
          "prima dell’approvazione serve revisione umana.")
     return msg, topics, blocks
+
+_GUIDED_LANG_CHOICES = ["Italiano (it-IT)", "English (en-US)", "Deutsch (de-DE)", "Français (fr-FR)", "Español (es-ES)"]
+_GUIDED_LANG_DISPLAY_TO_CODE = {"Italiano (it-IT)": "it-IT", "English (en-US)": "en-US", "Deutsch (de-DE)": "de-DE", "Français (fr-FR)": "fr-FR", "Español (es-ES)": "es-ES"}
+_GUIDED_LANG_DETECTED_TO_CODE = {"it": "it-IT", "en": "en-US", "de": "de-DE", "fr": "fr-FR", "es": "es-ES"}
+_GUIDED_LANG_CONFIDENCE_MIN = 0.70  # same threshold already used by validate_language_combination
+_GUIDED_BLOCK_TYPE_LABEL = {"paragraph": "Testo", "list_item": "Elenco", "note": "Nota", "warning": "Avviso", "table": "Tabella"}
+_GUIDED_STATUS_LABEL = {"Migrated": "Da rivedere", "Approved": "Approvato"}
+
+def _simple_review_table(topics_df, blocks_df) -> pd.DataFrame:
+    # Milestone 3A: pure transform of the SAME topics/blocks data already shown
+    # in "Dettagli tecnici (modalità avanzata)" — no second backend, no new
+    # query here. Fewer, friendlier columns; no technical IDs/metadata.
+    cols=["Sezione","Tipo di contenuto","Anteprima del testo","Pagina di origine","Stato"]
+    if blocks_df is None or blocks_df.empty:
+        return pd.DataFrame(columns=cols)
+    title_by_topic=dict(zip(topics_df["topic_id"],topics_df["title"])) if topics_df is not None and not topics_df.empty else {}
+    def page_of(refs):
+        m=re.search(r"#page=(\d+)",str(refs or ""))
+        return int(m.group(1)) if m else None
+    def preview(text):
+        t=re.sub(r"\s+"," ",str(text or "")).strip()
+        return (t[:117]+"...") if len(t)>120 else t
+    rows=[]
+    for _,r in blocks_df.iterrows():
+        rows.append({
+            "Sezione": title_by_topic.get(r["topic_id"], r["topic_id"]),
+            "Tipo di contenuto": _GUIDED_BLOCK_TYPE_LABEL.get(str(r["block_type"]), str(r["block_type"])),
+            "Anteprima del testo": preview(r["text"]),
+            "Pagina di origine": page_of(r["source_refs"]),
+            "Stato": _GUIDED_STATUS_LABEL.get(str(r["status"]), str(r["status"])),
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+def _simple_review_table_for_project(project_dir) -> pd.DataFrame:
+    try:
+        db=_ccms_db(project_dir)
+    except FileNotFoundError:
+        return _simple_review_table(None, None)
+    repo=IndustrialRepository(db)
+    try:
+        topics=repo.topic_table(); blocks=repo.blocks_table()
+    finally:
+        repo.close()
+    return _simple_review_table(topics, blocks)
+
+def _guided_create_and_import(name, pdf_file, source_lang):
+    # Milestone 3A: guided legacy onboarding. Pure orchestration — no new domain
+    # logic. Reuses create_project_ui/import_manual_ui exactly as already tested.
+    active, _stale_card, sidebar, _create_msg, _panel = create_project_ui(name, "", "", "", "", source_lang, "", "")
+    import_msg, topics, blocks = import_manual_ui(active, pdf_file, source_lang, "PUB-MAIN", name)
+    # The card returned by create_project_ui is pre-import (0 publications/blocks);
+    # recompute it now so the Home reflects what was actually just imported.
+    card = _project_card(active)
+    result = f"{import_msg}\n\nProssimo passo: rivedi il contenuto importato prima di procedere."
+    return active, card, sidebar, result, topics, blocks
+
+def _guided_success_outputs(name, pdf_file, source_lang):
+    active, card, sidebar, result, topics, blocks = _guided_create_and_import(name, pdf_file, source_lang)
+    return (
+        active, card, sidebar, result,
+        gr.update(visible=False), gr.update(visible=False), gr.update(visible=True),
+        gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+        topics, blocks, pdf_file, source_lang, "PUB-MAIN", name,
+    )
+
+def _guided_ask_language_outputs():
+    return (
+        gr.update(), gr.update(), gr.update(),
+        "Non riconosco con sicurezza la lingua del documento. Scegli quella corretta qui sotto per continuare.",
+        gr.update(), gr.update(visible=True), gr.update(visible=False),
+        gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+    )
+
+def guided_new_project_from_pdf_ui(project_name, pdf_file):
+    if not pdf_file:
+        raise gr.Error("Carica un file PDF per continuare.")
+    name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
+    detected, confidence, _basis = detect_document_language(pdf_file)
+    source_lang = _GUIDED_LANG_DETECTED_TO_CODE.get(detected)
+    if source_lang and confidence >= _GUIDED_LANG_CONFIDENCE_MIN:
+        return _guided_success_outputs(name, pdf_file, source_lang)
+    return _guided_ask_language_outputs()
+
+def guided_confirm_language_ui(project_name, pdf_file, lang_choice):
+    if not pdf_file:
+        raise gr.Error("Carica un file PDF per continuare.")
+    source_lang = _GUIDED_LANG_DISPLAY_TO_CODE.get(lang_choice or "")
+    if not source_lang:
+        raise gr.Error("Scegli la lingua del documento per continuare.")
+    name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
+    return _guided_success_outputs(name, pdf_file, source_lang)
+
+def guided_approve_source_ui(project_dir, reviewer, confirmed):
+    # Milestone 3A: simplified approval entry point for the standard Contenuti view.
+    # Reuses approve_source_ui exactly as already tested. `confirmed` is the
+    # user's own explicit checkbox value — never hardcoded — so approve_source_ui's
+    # existing fail-closed check ("Serve la conferma esplicita...") still applies.
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    msg = approve_source_ui(project_dir, "PUB-MAIN", reviewer, confirmed)
+    return msg, _project_card(project_dir), _sidebar_context(project_dir), _simple_review_table_for_project(project_dir)
 
 def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
     if not confirmed: raise gr.Error("Serve la conferma esplicita della revisione umana.")
@@ -850,6 +970,26 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             with gr.Row(elem_classes=["ms-pagebar"]):
                 gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workspace</div><h1>Home</h1><p>Panoramica del progetto e prossime attività.</p></div></div>")
                 home_new_project=gr.Button("+ Nuovo progetto",variant="primary",elem_classes=["ms-new-project-btn"])
+            # Milestone 3A: guided first-run entry point. Purely additive — shown only
+            # when no project is active yet (state-driven, see project_state.change below).
+            # Does not replace or hide the existing "+ Nuovo progetto" advanced path.
+            with gr.Column(visible=not bool(INITIAL_PROJECT),elem_id="onboarding-choice-panel",elem_classes=["ms-panel"]) as onboarding_choice_panel:
+                gr.HTML("<div class='ms-section-title'>Benvenuto</div><div class='ms-section-sub'>Non hai ancora un progetto. Non serve sapere cosa sono XML, DITA o XLIFF per iniziare.</div>")
+                with gr.Row():
+                    choice_empty=gr.Button("Crea un progetto vuoto",variant="secondary")
+                    choice_legacy=gr.Button("Ho già dei manuali: importali",variant="primary")
+            with gr.Column(visible=False,elem_id="guided-legacy-onboarding-panel",elem_classes=["ms-panel"]) as legacy_onboarding_panel:
+                gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF: creiamo il progetto e leggiamo il documento per te.</div>")
+                lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
+                lg_pdf=gr.File(label="Il tuo manuale (PDF)",type='filepath',file_types=['.pdf'])
+                with gr.Row():
+                    gr.Button("Word (.docx) — non ancora disponibile in questo percorso guidato",interactive=False)
+                    gr.Button("InDesign (.idml) — non ancora disponibile in questo percorso guidato",interactive=False)
+                lg_submit=gr.Button("Importa e crea progetto",variant="primary")
+                lg_lang_prompt=gr.Markdown(visible=False)
+                lg_lang_pick=gr.Radio(_GUIDED_LANG_CHOICES,label="Lingua del documento",visible=False)
+                lg_lang_confirm=gr.Button("Conferma e importa",variant="primary",visible=False)
+                lg_review=gr.Button("Rivedi il contenuto importato",variant="primary",visible=False)
             # RC2: il form di creazione e immediatamente sotto il comando che lo apre.
             # In RC1 il pannello era dopo le Quick Actions: il click funzionava, ma su una
             # finestra desktop standard il form appariva fuori viewport e sembrava non reagire.
@@ -879,6 +1019,14 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             home_new_project.click(lambda:(gr.update(visible=True),""),None,[new_project_panel,p_msg],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             p_cancel.click(lambda:(gr.update(visible=False),""),None,[new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             p_create.click(create_project_ui,[p_name,p_client,p_product,p_code,p_rev,p_source,p_targets,p_owner],[project_state,project_card,sidebar_context,p_msg,new_project_panel],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # Milestone 3A: guided onboarding wiring (additive; components defined above).
+            choice_empty.click(lambda:(gr.update(visible=False),gr.update(visible=True),""),None,[onboarding_choice_panel,new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            choice_legacy.click(lambda:(gr.update(visible=False),gr.update(visible=True)),None,[onboarding_choice_panel,legacy_onboarding_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # lg_submit/lg_lang_confirm are wired at the bottom of the file: they populate
+            # the "Redazione & contenuti" tab fields (c_topics/c_blocks/...), which are
+            # defined later in this Blocks graph.
+            # Keeps the welcome panel hidden once any path (guided, empty-form, or restore) sets an active project.
+            project_state.change(lambda pd:gr.update(visible=not bool(pd)),[project_state],[onboarding_choice_panel])
 
         with gr.Tab("Analizza revisione",id="revision"):
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Analizza revisione</h1><p>Confronta revisioni e separa riuso sicuro, modifiche tecniche e nuovo lavoro.</p></div></div>")
@@ -889,19 +1037,28 @@ with gr.Blocks(title=BRAND_NAME) as demo:
 
         with gr.Tab("Redazione & contenuti",id="authoring"):
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Redazione & contenuti</h1><p>Repository strutturato e redazione AI grounded con revisione umana.</p></div></div>")
-            with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
-            c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
-            with gr.Row(): c_reviewer=gr.Textbox(label="Revisore umano"); c_confirm=gr.Checkbox(label="Confermo di aver revisionato la sorgente")
-            c_approve=gr.Button("Approva sorgente"); c_approve_msg=gr.Markdown(); c_refresh=gr.Button("Mostra oggetti approvati"); c_approved=gr.Dataframe(interactive=False,max_height=450)
-            c_import.click(import_manual_ui,[project_state,c_pdf,c_lang,c_pub,c_title],[c_msg,c_topics,c_blocks]); c_approve.click(approve_source_ui,[project_state,c_pub,c_reviewer,c_confirm],[c_approve_msg]); c_refresh.click(approved_objects_ui,[project_state],[c_approved])
-            with gr.Accordion("AI Grounded Authoring",open=False):
-                gr.Markdown("Le proposte possono usare soltanto fonti indicizzate; i conflitti o le affermazioni non supportate vengono bloccati.")
-                with gr.Row(): g_pdf=gr.File(label='Fonte tecnica PDF',type='filepath'); g_text=gr.Textbox(label='Oppure fonte testuale',lines=4); g_doc=gr.Textbox(label='Document ID'); g_title=gr.Textbox(label='Titolo fonte')
-                g_ingest=gr.Button('Indicizza fonte'); g_ingest_msg=gr.Markdown(); g_chunks=gr.Dataframe(interactive=False,max_height=350)
-                with gr.Row(): g_instruction=gr.Textbox(label='Richiesta'); g_mode=gr.Dropdown(['paragraph','procedure','warning','summary','rewrite'],value='paragraph',label='Tipo')
-                g_generate=gr.Button('Genera proposta grounded',variant='primary'); g_msg=gr.Markdown(); g_draft=gr.Textbox(label='Proposta',lines=8); g_evidence=gr.Dataframe(interactive=False,max_height=350); g_claims=gr.Dataframe(interactive=False); g_pid=gr.Textbox(label='Proposal ID')
-                with gr.Row(): g_topic=gr.Textbox(label='Topic ID'); g_block=gr.Textbox(label='Nuovo Block ID'); g_btype=gr.Dropdown(['paragraph','warning','note','list_item'],value='paragraph',label='Tipo blocco'); g_pos=gr.Number(label='Posizione',value=1,precision=0); g_reviewer=gr.Textbox(label='Revisore')
-                g_queue=gr.Button('Invia in review umana'); g_queue_msg=gr.Markdown(); g_ingest.click(grounding_ingest_ui,[project_state,g_pdf,g_text,g_doc,g_title],[g_ingest_msg,g_chunks]); g_generate.click(grounded_generate_ui,[project_state,g_instruction,g_mode],[g_msg,g_draft,g_evidence,g_claims,g_pid]); g_queue.click(grounded_queue_ui,[project_state,g_pid,g_topic,g_block,g_btype,g_pos,g_reviewer],[g_queue_msg])
+            # Milestone 3A: standard view, shown by default. Same topics/blocks data as
+            # the technical dataframes below (no second backend) — just friendlier
+            # columns. No ID/metadata/re-import button in this default view.
+            gr.HTML("<div class='ms-section-title'>Contenuto importato</div><div class='ms-section-sub'>Queste sono le sezioni trovate nel documento. Per i dettagli tecnici, apri “Dettagli tecnici (modalità avanzata)” qui sotto.</div>")
+            c_simple_table=gr.Dataframe(interactive=False,wrap=True,max_height=500)
+            c_simple_confirm=gr.Checkbox(label="Confermo di aver revisionato il contenuto")
+            with gr.Row(): c_simple_reviewer=gr.Textbox(label="Il tuo nome — opzionale"); c_simple_approve=gr.Button("Approva sorgente",variant="primary")
+            c_simple_msg=gr.Markdown()
+            with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
+                with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
+                c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
+                with gr.Row(): c_reviewer=gr.Textbox(label="Revisore umano"); c_confirm=gr.Checkbox(label="Confermo di aver revisionato la sorgente")
+                c_approve=gr.Button("Approva sorgente"); c_approve_msg=gr.Markdown(); c_refresh=gr.Button("Mostra oggetti approvati"); c_approved=gr.Dataframe(interactive=False,max_height=450)
+                c_import.click(import_manual_ui,[project_state,c_pdf,c_lang,c_pub,c_title],[c_msg,c_topics,c_blocks]); c_approve.click(approve_source_ui,[project_state,c_pub,c_reviewer,c_confirm],[c_approve_msg]); c_refresh.click(approved_objects_ui,[project_state],[c_approved])
+                with gr.Accordion("AI Grounded Authoring",open=False):
+                    gr.Markdown("Le proposte possono usare soltanto fonti indicizzate; i conflitti o le affermazioni non supportate vengono bloccati.")
+                    with gr.Row(): g_pdf=gr.File(label='Fonte tecnica PDF',type='filepath'); g_text=gr.Textbox(label='Oppure fonte testuale',lines=4); g_doc=gr.Textbox(label='Document ID'); g_title=gr.Textbox(label='Titolo fonte')
+                    g_ingest=gr.Button('Indicizza fonte'); g_ingest_msg=gr.Markdown(); g_chunks=gr.Dataframe(interactive=False,max_height=350)
+                    with gr.Row(): g_instruction=gr.Textbox(label='Richiesta'); g_mode=gr.Dropdown(['paragraph','procedure','warning','summary','rewrite'],value='paragraph',label='Tipo')
+                    g_generate=gr.Button('Genera proposta grounded',variant='primary'); g_msg=gr.Markdown(); g_draft=gr.Textbox(label='Proposta',lines=8); g_evidence=gr.Dataframe(interactive=False,max_height=350); g_claims=gr.Dataframe(interactive=False); g_pid=gr.Textbox(label='Proposal ID')
+                    with gr.Row(): g_topic=gr.Textbox(label='Topic ID'); g_block=gr.Textbox(label='Nuovo Block ID'); g_btype=gr.Dropdown(['paragraph','warning','note','list_item'],value='paragraph',label='Tipo blocco'); g_pos=gr.Number(label='Posizione',value=1,precision=0); g_reviewer=gr.Textbox(label='Revisore')
+                    g_queue=gr.Button('Invia in review umana'); g_queue_msg=gr.Markdown(); g_ingest.click(grounding_ingest_ui,[project_state,g_pdf,g_text,g_doc,g_title],[g_ingest_msg,g_chunks]); g_generate.click(grounded_generate_ui,[project_state,g_instruction,g_mode],[g_msg,g_draft,g_evidence,g_claims,g_pid]); g_queue.click(grounded_queue_ui,[project_state,g_pid,g_topic,g_block,g_btype,g_pos,g_reviewer],[g_queue_msg])
 
         with gr.Tab("Traduzioni",id="translations"):
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Traduzioni</h1><p>Pacchetti lingua, traduzioni, QA e passaggio ai fornitori.</p></div></div><div class='ms-stepper'><div class='ms-step active'><span class='ms-step-num'>1</span>Pacchetti</div><div class='ms-step'><span class='ms-step-num'>2</span>Traduzioni</div><div class='ms-step'><span class='ms-step-num'>3</span>QA</div><div class='ms-step'><span class='ms-step-num'>4</span>Pronto per release</div></div>")
@@ -977,6 +1134,22 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     home_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
     home_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
     home_release.click(lambda:_navigate('release'),None,_nav_outputs)
+    # Milestone 3A: "Rivedi il contenuto importato" opens the Contenuti tab, whose
+    # DEFAULT view (c_simple_table) is now the friendly standard view — the
+    # technical dataframes live only inside the collapsed "modalità avanzata"
+    # accordion, so they're never the primary call-to-action.
+    lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel])
+    # Keeps the standard review table in sync with the SAME topics/blocks data
+    # shown in "modalità avanzata" — fires after either the guided import or the
+    # manual "Importa come draft" click, since both set c_blocks. No second backend.
+    c_blocks.change(_simple_review_table,[c_topics,c_blocks],[c_simple_table])
+    c_simple_approve.click(guided_approve_source_ui,[project_state,c_simple_reviewer,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
+    _guided_outputs=[project_state,project_card,sidebar_context,p_msg,
+                     onboarding_choice_panel,legacy_onboarding_panel,lg_review,
+                     lg_lang_prompt,lg_lang_pick,lg_lang_confirm,
+                     c_topics,c_blocks,c_pdf,c_lang,c_pub,c_title]
+    lg_submit.click(guided_new_project_from_pdf_ui,[lg_name,lg_pdf],_guided_outputs,scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
+    lg_lang_confirm.click(guided_confirm_language_ui,[lg_name,lg_pdf,lg_lang_pick],_guided_outputs,scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
 
 if __name__=='__main__':
     demo.launch(server_name='127.0.0.1',server_port=7860,inbrowser=True,show_error=False,theme=gr.themes.Base(),css=CSS,favicon_path=str(Path(__file__).with_name('manualsync.png')) if Path(__file__).with_name('manualsync.png').exists() else None,allowed_paths=[str(DATA_ROOT.resolve())],footer_links=[])
