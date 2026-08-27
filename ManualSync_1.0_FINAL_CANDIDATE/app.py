@@ -14,6 +14,7 @@ import pandas as pd
 from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
 from authoring_ccms import import_pdf_as_topics, import_docx_as_topics
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
+import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
@@ -167,6 +168,10 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 /* Gli accordion di gestione restano secondari e non rubano spazio alla dashboard. */
 .ms-secondary-note{font-size:11px;color:#98a2b3;margin-top:12px}
 @media(max-width:1100px){#ms-sidebar{width:204px!important;min-width:204px!important}.ms-kpis{grid-template-columns:repeat(2,1fr)}#workspace-tabs{padding-left:20px!important;padding-right:20px!important}}
+/* Required-field inline validation (e.g. "Il tuo nome" on legacy family confirm) --
+   a plain form error, never a global gr.Error popup. */
+.ms-field-invalid textarea,.ms-field-invalid input{border-color:var(--ui-red)!important;box-shadow:0 0 0 1px var(--ui-red) inset!important}
+.ms-inline-error{color:var(--ui-red);font-size:11.5px;font-weight:650;margin:2px 2px 8px}
 """
 
 def _ccms_db(project_dir: str | Path) -> Path:
@@ -516,7 +521,24 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
     msg=(f"✅ Manuale importato come draft in **{len(imported)} topic semantici** e **{table_count} tabelle strutturate**. "
          f"Header ricorrenti esclusi: **{dropped}**. La migrazione da PDF resta conservativa: "
          "prima dell’approvazione serve revisione umana.")
+    _stamp_legacy_family_if_known(project_dir, copied)
     return msg, topics, blocks
+
+def _stamp_legacy_family_if_known(project_dir, source_path) -> None:
+    # Milestone 3C: if this exact file (by content hash) already participates in a
+    # human-confirmed legacy family/revision/language relationship, stamp only the
+    # two lightweight pointer fields onto the project manifest -- never a copy of
+    # the lineage itself (see docs/product/ManualSync_Prompt_Pack... 3C design:
+    # target_langs/TM/Revision Analysis stay consumers, LegacyFamilies/*.json stays
+    # the single source of truth). Best-effort and silent: must never affect the
+    # outcome of an import unrelated to 3C.
+    try:
+        file_hash = legacy_family.sha256_file(source_path)
+        family_id = legacy_family.find_family_for_asset(DATA_HOME, file_hash)
+        if family_id:
+            update_project(project_dir, legacy_family_id=family_id, legacy_asset_id=legacy_family.derive_asset_id(file_hash))
+    except Exception as exc:
+        _app_log("Legacy family stamping skipped (non-fatal)", exc)
 
 _GUIDED_LANG_CHOICES = ["Italiano (it-IT)", "English (en-US)", "Deutsch (de-DE)", "Français (fr-FR)", "Español (es-ES)"]
 _GUIDED_LANG_DISPLAY_TO_CODE = {"Italiano (it-IT)": "it-IT", "English (en-US)": "en-US", "Deutsch (de-DE)": "de-DE", "Français (fr-FR)": "fr-FR", "Español (es-ES)": "es-ES"}
@@ -677,6 +699,279 @@ def guided_confirm_language_ui(project_name, pdf_file, lang_choice):
         raise gr.Error("Scegli la lingua del documento per continuare.")
     name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
     return _guided_success_outputs(name, pdf_file, source_lang)
+
+_LEGACY_FAMILY_EVIDENCE_LABELS = {
+    "manual_code_match": "stesso codice manuale/prodotto",
+    "title_match": "titolo del documento molto simile",
+    "revision_match": "revisione riconosciuta",
+    "language_match": "stessa lingua",
+    "language_conflict": "lingue e revisioni in conflitto",
+    "structure_match": "struttura delle sezioni molto simile",
+    "metadata_match": "metadati del documento coincidenti",
+    "duplicate_content": "contenuto identico",
+    "human_override": "decisione umana esplicita",
+}
+_LEGACY_MAX_REVIEW_ITEMS = 24  # fixed-size Gradio row pool; see legacy_multi_analyze_ui
+_LEGACY_NOT_RELATED = "Non sono correlati"
+_LEGACY_CONFIRM = "Conferma"
+_LEGACY_PENDING_LINK = "Collega alla stessa famiglia (nessuna revisione/lingua specifica)"
+_LEGACY_NAME_REQUIRED_MSG = "Inserisci il tuo nome per continuare."
+
+def _legacy_name_field_clear() -> tuple:
+    # Required-field validation must read as an ordinary form error, not a
+    # global gr.Error popup: clears the red border + inline message once a
+    # name is present, without touching anything else (selection, summary).
+    return gr.update(elem_classes=[]), gr.update(value="", visible=False)
+
+def _legacy_name_field_invalid() -> tuple:
+    return gr.update(elem_classes=["ms-field-invalid"]), gr.update(value=_LEGACY_NAME_REQUIRED_MSG, visible=True)
+
+def _legacy_name_field_live_validate(name):
+    # Fires on every keystroke so the error disappears the moment a valid
+    # name is typed, with no need to click Conferma selezione again first.
+    if str(name or "").strip():
+        return _legacy_name_field_clear()
+    return gr.update(), gr.update()
+
+def _legacy_order_choice(older, newer) -> str:
+    # UX fix: a concise, visually-distinguishable "A -> B" beats two long,
+    # near-identical "X e' precedente a Y" / "Y e' precedente a X" strings
+    # that differ only in which filename comes first -- easy to misread.
+    # Used identically when building choices AND when matching the selection
+    # back at confirm time, so the two can never drift apart.
+    return f"{older.filename_original} → {newer.filename_original}"
+
+def _legacy_evidence_phrases(evidence_list) -> str:
+    # Milestone 3C: evidence stays structured (type/role/value) in the engine;
+    # only this UI layer turns it into plain language. Never a raw score.
+    seen: list[str] = []
+    for e in evidence_list or []:
+        label = _LEGACY_FAMILY_EVIDENCE_LABELS.get(e.get("type"), e.get("type"))
+        if label not in seen:
+            seen.append(label)
+    return ", ".join(seen) if seen else "nessuna evidenza specifica"
+
+def _legacy_build_review_items(result) -> list[dict]:
+    """One actionable item per relation/pending-pair/ambiguous-pair. Each item
+    carries its own explicit choice set -- there is no "confirm as-is" option
+    for a revision_of whose order isn't already unambiguous (acceptance gap
+    #2), pending same-family pairs are only linked if explicitly chosen
+    (gap #3: the UI must not promise a membership it won't persist), and every
+    ambiguous pair gets a real correction path, not just a warning (gap #1).
+    """
+    items: list[dict] = []
+    for fi, fam_proposal in enumerate(result.families):
+        members_by_hash = {m.file_sha256: m for m in fam_proposal.members}
+        for ri, rel in enumerate(fam_proposal.relations):
+            a = members_by_hash.get(rel["asset_a"]); b = members_by_hash.get(rel["asset_b"])
+            if not a or not b:
+                continue
+            evidence_txt = _legacy_evidence_phrases(rel["evidence"])
+            if rel["relation_type"] == "revision_of":
+                newer_hash = rel.get("newer_asset_hint")
+                if rel.get("order_confirmed") and newer_hash in members_by_hash:
+                    newer = members_by_hash[newer_hash]; older = b if newer is a else a
+                    label = f"Revisione: {older.filename_original} → {newer.filename_original} ({evidence_txt})"
+                    choices = [_LEGACY_CONFIRM, _LEGACY_NOT_RELATED]
+                    default = _LEGACY_CONFIRM
+                else:
+                    order_a = _legacy_order_choice(a, b)
+                    order_b = _legacy_order_choice(b, a)
+                    label = f"Se sono revisioni, scegli l'ordine corretto — {a.filename_original} / {b.filename_original} ({evidence_txt})"
+                    choices = [_LEGACY_NOT_RELATED, order_a, order_b]
+                    default = _LEGACY_NOT_RELATED  # no order may ever be assumed
+            else:
+                label = f"Variante linguistica: {a.filename_original} ↔ {b.filename_original} ({evidence_txt})"
+                choices = [_LEGACY_CONFIRM, _LEGACY_NOT_RELATED]
+                default = _LEGACY_CONFIRM
+            items.append({"kind": "relation", "family_index": fi, "relation": rel,
+                          "a": a, "b": b, "label": label, "choices": choices, "default": default})
+        for pend in fam_proposal.pending_pairs:
+            a = members_by_hash.get(pend["asset_a"]); b = members_by_hash.get(pend["asset_b"])
+            if not a or not b:
+                continue
+            label = f"Stessa famiglia, relazione non chiara: {a.filename_original} ↔ {b.filename_original} ({_legacy_evidence_phrases(pend['evidence'])})"
+            items.append({"kind": "pending", "family_index": fi, "pending": pend,
+                          "a": a, "b": b, "label": label,
+                          "choices": [_LEGACY_PENDING_LINK, _LEGACY_NOT_RELATED], "default": _LEGACY_NOT_RELATED})
+    all_by_hash = {c.file_sha256: c for c in result.all_candidates}
+    for ap in result.ambiguous_pairs:
+        a = all_by_hash.get(ap["asset_a"]); b = all_by_hash.get(ap["asset_b"])
+        if not a or not b:
+            continue
+        evidence_txt = _legacy_evidence_phrases(ap["evidence"])
+        label = f"Da verificare: {a.filename_original} e {b.filename_original} — segnali in conflitto ({evidence_txt})"
+        correct_rev_ab = _legacy_order_choice(a, b)
+        correct_rev_ba = _legacy_order_choice(b, a)
+        choices = [f"{_LEGACY_NOT_RELATED} (consigliato)", correct_rev_ab, correct_rev_ba]
+        # "sono la stessa revisione in lingue diverse" makes a language claim --
+        # it must never be offered unless that claim is actually plausible.
+        # Both languages confirmed and equal -> the claim is false on its face.
+        # Either language unconfirmed -> 3C has no explicit language-correction
+        # step to pair with this choice, so it stays unoffered rather than let
+        # a human override create a linguistically impossible relation.
+        lang_a = legacy_family.confirmed_language(a.language_detected, a.language_confidence)
+        lang_b = legacy_family.confirmed_language(b.language_detected, b.language_confidence)
+        if lang_a and lang_b and lang_a != lang_b:
+            choices.append("Correggi: sono la stessa revisione in lingue diverse")
+        items.append({"kind": "ambiguous", "a": a, "b": b, "label": label, "evidence": ap["evidence"],
+                      "choices": choices, "default": f"{_LEGACY_NOT_RELATED} (consigliato)"})
+    return items
+
+def _render_legacy_family_overview(result, review_items) -> str:
+    lines: list[str] = []
+    if review_items:
+        noun = "elemento" if len(review_items) == 1 else "elementi"
+        lines.append(f"### {len(review_items)} {noun} da rivedere qui sotto")
+        if len(review_items) > _LEGACY_MAX_REVIEW_ITEMS:
+            lines.append(f"⚠️ Troppi elementi per una sola analisi (mostrati i primi {_LEGACY_MAX_REVIEW_ITEMS}). Analizza un sottoinsieme alla volta per i rimanenti.")
+    if result.duplicate_groups:
+        lines.append("### Copie identiche rilevate")
+        for dg in result.duplicate_groups:
+            kept = Path(dg["kept_path"]).name
+            dups = ", ".join(Path(p).name for p in dg["duplicate_paths"])
+            lines.append(f"- **{dups}** risulta identico a **{kept}** (stesso contenuto): trattato come un solo documento, non come una revisione.")
+    if result.unrelated:
+        names = ", ".join(sorted(c.filename_original for c in result.unrelated))
+        lines.append(f"### Documenti indipendenti\n{names} — non risultano collegati a nessun altro documento caricato.")
+    if result.ignored:
+        lines.append("### File non considerati")
+        for ig in result.ignored:
+            lines.append(f"- **{Path(ig['path']).name}**: {ig['reason']}")
+    if not lines:
+        return "Nessun documento analizzato."
+    return "\n".join(lines)
+
+def legacy_multi_analyze_ui(files_multi, files_dir):
+    paths: list[str] = []
+    for group in (files_multi, files_dir):
+        if not group:
+            continue
+        paths.extend(group if isinstance(group, list) else [group])
+    if not paths:
+        raise gr.Error("Seleziona almeno un file oppure una cartella con i tuoi manuali.")
+    result = legacy_family.analyze_paths(paths)
+    review_items = _legacy_build_review_items(result)[:_LEGACY_MAX_REVIEW_ITEMS]
+    summary_md = _render_legacy_family_overview(result, review_items)
+    radio_updates = [
+        gr.update(label=item["label"], choices=item["choices"], value=item["default"], visible=True)
+        if i < len(review_items) else gr.update(visible=False)
+        for i, item in enumerate(review_items + [None] * (_LEGACY_MAX_REVIEW_ITEMS - len(review_items)))
+    ]
+    return [(result, review_items), summary_md, gr.update(visible=bool(review_items))] + radio_updates
+
+def legacy_multi_confirm_ui(state, confirmed_by, *radio_values):
+    # Nothing was written to disk before this click (analysis above is fully
+    # ephemeral) -- this is the single point where a human decision produces
+    # the persistent LegacyFamilies/<family_id>.json lineage record.
+    if not state:
+        raise gr.Error("Esegui prima l'analisi dei documenti.")
+    result, review_items = state
+    if not str(confirmed_by or "").strip():
+        # Ordinary required-field validation, not an exceptional condition:
+        # no gr.Error, nothing persisted, selections/summary/row untouched --
+        # only the name field itself is flagged inline.
+        return (gr.update(), gr.update()) + _legacy_name_field_invalid() \
+            + tuple(gr.update() for _ in range(_LEGACY_MAX_REVIEW_ITEMS))
+    confirmed_by = str(confirmed_by).strip()
+
+    groups: dict[object, dict] = {}  # group key -> {"candidates": {hash: Candidate}, "relations": [...]}
+    any_decision = False
+    for item, choice in zip(review_items, radio_values):
+        if choice is None or choice.startswith(_LEGACY_NOT_RELATED):
+            continue
+        any_decision = True
+        group_key = item.get("family_index", ("pair", item["a"].file_sha256, item["b"].file_sha256))
+        bucket = groups.setdefault(group_key, {"candidates": {}, "relations": []})
+        bucket["candidates"][item["a"].file_sha256] = item["a"]
+        bucket["candidates"][item["b"].file_sha256] = item["b"]
+
+        if item["kind"] == "relation":
+            # Original automatic evidence is copied, never replaced -- a human
+            # order decision is recorded as an ADDITIONAL human_override
+            # evidence entry, never disguised as manual_code_match/language_match
+            # (those types must only ever represent signals the engine actually
+            # observed).
+            rel = dict(item["relation"])
+            rel["evidence"] = list(rel.get("evidence") or [])
+            if rel["relation_type"] == "revision_of" and not rel.get("order_confirmed"):
+                # The human, not the algorithm, is resolving the order here --
+                # exactly the case acceptance gap #2 requires to be explicit.
+                order_desc = None
+                if choice == _legacy_order_choice(item["a"], item["b"]):
+                    rel["order_confirmed"] = True; rel["newer_asset_hint"] = item["b"].file_sha256
+                    order_desc = f"{item['a'].filename_original} -> {item['b'].filename_original}"
+                elif choice == _legacy_order_choice(item["b"], item["a"]):
+                    rel["order_confirmed"] = True; rel["newer_asset_hint"] = item["a"].file_sha256
+                    order_desc = f"{item['b'].filename_original} -> {item['a'].filename_original}"
+                if order_desc:
+                    rel["evidence"].append({
+                        "type": "human_override", "role": "strong",
+                        "value": "relation_type=revision_of; decision=order_chosen_by_human",
+                        "detail": f"confirmed_by={confirmed_by}; order_chosen={order_desc}",
+                    })
+            bucket["relations"].append(rel)
+        elif item["kind"] == "pending":
+            # Membership-only: candidates already added above, no relation
+            # persisted -- matches exactly what the UI now promises (gap #3).
+            pass
+        elif item["kind"] == "ambiguous":
+            # The original CONFLICTING automatic evidence is preserved as-is
+            # (never rewritten to look consistent) and a human_override entry
+            # is appended documenting the human decision that overrides it.
+            original_evidence = list(item.get("evidence") or [])
+            if choice == _legacy_order_choice(item["a"], item["b"]) or choice == _legacy_order_choice(item["b"], item["a"]):
+                older, newer = (item["a"], item["b"]) if choice == _legacy_order_choice(item["a"], item["b"]) else (item["b"], item["a"])
+                override = {
+                    "type": "human_override", "role": "strong",
+                    "value": "relation_type=revision_of; decision=" + choice,
+                    "detail": f"confirmed_by={confirmed_by}; order_chosen={older.filename_original} -> {newer.filename_original}",
+                }
+                bucket["relations"].append({
+                    "relation_type": "revision_of", "asset_a": older.file_sha256, "asset_b": newer.file_sha256,
+                    "order_confirmed": True, "newer_asset_hint": newer.file_sha256,
+                    "evidence": original_evidence + [override],
+                })
+            elif choice.startswith("Correggi: sono la stessa revisione"):
+                override = {
+                    "type": "human_override", "role": "strong",
+                    "value": "relation_type=language_variant_of; decision=" + choice,
+                    "detail": f"confirmed_by={confirmed_by}",
+                }
+                bucket["relations"].append({
+                    "relation_type": "language_variant_of", "asset_a": item["a"].file_sha256, "asset_b": item["b"].file_sha256,
+                    "order_confirmed": False, "newer_asset_hint": None,
+                    "evidence": original_evidence + [override],
+                })
+
+    if not any_decision:
+        return ("Nessuna relazione confermata: i documenti verranno trattati come indipendenti tra loro.",
+                gr.update(visible=False)) + _legacy_name_field_clear() \
+            + tuple(gr.update(visible=False) for _ in range(_LEGACY_MAX_REVIEW_ITEMS))
+
+    summaries = []
+    for bucket in groups.values():
+        data = legacy_family.persist_confirmation(
+            DATA_HOME, candidates=list(bucket["candidates"].values()), relations=bucket["relations"], confirmed_by=confirmed_by,
+        )
+        summaries.append(f"✅ Famiglia **{data['family_id']}** salvata: **{len(data['relations'])}** relazioni, **{len(data['members'])}** documenti collegati.")
+    summaries.append(
+        "Per creare i progetti, usa **“Ho già dei manuali: importali”** per ciascun documento: "
+        "se un file era coinvolto in una relazione confermata, il progetto lo riconoscerà automaticamente."
+    )
+    return ("\n\n".join(summaries), gr.update(visible=False)) + _legacy_name_field_clear() \
+        + tuple(gr.update(visible=False) for _ in range(_LEGACY_MAX_REVIEW_ITEMS))
+
+def onboarding_back_ui(project_dir):
+    # UX acceptance fix: every onboarding sub-panel opened from the initial
+    # three-way choice (empty project / single legacy import / multi-doc
+    # family import) must offer a visible way back to that choice, without a
+    # browser refresh and without creating/persisting anything. Re-showing
+    # onboarding_choice_panel unconditionally would be wrong when this panel
+    # was instead opened via the "+ Nuovo progetto" quick action while a
+    # project is already active (that panel must stay hidden per its own
+    # project_state.change wiring) -- so this mirrors that same condition.
+    return gr.update(visible=False), gr.update(visible=not bool(project_dir))
 
 def guided_approve_source_ui(project_dir, reviewer, confirmed):
     # Milestone 3A: simplified approval entry point for the standard Contenuti view.
@@ -1070,8 +1365,48 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 with gr.Row():
                     choice_empty=gr.Button("Crea un progetto vuoto",variant="secondary")
                     choice_legacy=gr.Button("Ho già dei manuali: importali",variant="primary")
+                    choice_multi=gr.Button("Ho più manuali o revisioni",variant="secondary")
+            # Milestone 3C: multi-document/folder legacy intake. Fully separate from the
+            # single-document guided path above -- this only detects and, on explicit
+            # human confirmation, persists family/revision/language lineage. It does not
+            # create projects itself; project creation still goes through the existing
+            # "Ho già dei manuali" path, which auto-recognizes an already-confirmed file
+            # via _stamp_legacy_family_if_known.
+            with gr.Column(visible=False,elem_id="legacy-multi-doc-panel",elem_classes=["ms-panel"]) as legacy_multi_panel:
+                gr.HTML("<div class='ms-section-title'>Ho più manuali o revisioni</div><div class='ms-section-sub'>Carica più documenti (PDF, Word .docx/.doc) o una cartella intera: proviamo a capire quali sono revisioni successive o lingue diverse dello stesso manuale.</div>")
+                lm_back=gr.Button("← Cambia scelta",size="sm")
+                with gr.Row():
+                    lm_files=gr.File(label="Seleziona più file",type='filepath',file_count='multiple',file_types=['.pdf','.docx','.doc'])
+                    lm_dir=gr.File(label="Oppure seleziona una cartella",type='filepath',file_count='directory')
+                lm_analyze=gr.Button("Analizza",variant="primary")
+                lm_summary=gr.Markdown()
+                lm_state=gr.State()
+                # Milestone 3C acceptance fix: a fixed pool of Radio rows, one per
+                # reviewable item (relation / pending-family-link / ambiguous pair).
+                # Each row's own choice set is set at analysis time in
+                # legacy_multi_analyze_ui — there is deliberately no generic
+                # "confirm everything" checkbox: an order-ambiguous revision_of
+                # forces an explicit "A before B"/"B before A" choice (no order is
+                # ever assumed), an ambiguous pair gets a real "Correggi" option to
+                # assign the correct relation type, and a pending same-family pair
+                # is only linked if explicitly chosen here (matching exactly what
+                # gets persisted).
+                lm_item_radios=[gr.Radio(visible=False) for _ in range(_LEGACY_MAX_REVIEW_ITEMS)]
+                with gr.Row(visible=False) as lm_confirm_row:
+                    with gr.Column():
+                        lm_confirmed_by=gr.Textbox(label="Il tuo nome *",placeholder="Necessario per confermare")
+                        lm_name_error=gr.HTML(visible=False,elem_classes=["ms-inline-error"])
+                    # UX fix: a single decision flow -- selecting "Non sono
+                    # correlati" and clicking this same button already confirms
+                    # independence without persisting anything (see
+                    # legacy_multi_confirm_ui's any_decision handling below). A
+                    # separate "Nessuna relazione correlata" button duplicated
+                    # this exact outcome via a second path and had already
+                    # caused a real user mistake -- removed.
+                    lm_confirm=gr.Button("Conferma selezione",variant="primary")
             with gr.Column(visible=False,elem_id="guided-legacy-onboarding-panel",elem_classes=["ms-panel"]) as legacy_onboarding_panel:
                 gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF o un documento Word: creiamo il progetto e leggiamo il documento per te.</div>")
+                lg_back=gr.Button("← Cambia scelta",size="sm")
                 lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
                 lg_pdf=gr.File(label="Il tuo manuale (PDF o Word .docx/.doc)",type='filepath',file_types=['.pdf','.docx','.doc'])
                 with gr.Row():
@@ -1086,6 +1421,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # finestra desktop standard il form appariva fuori viewport e sembrava non reagire.
             with gr.Column(visible=False,elem_id="new-project-panel",elem_classes=["ms-create-project-panel"]) as new_project_panel:
                 gr.HTML("<div class='ms-section-title'>Nuovo progetto</div><div class='ms-section-sub'>Crea un nuovo workspace senza lasciare la Home.</div>")
+                np_back=gr.Button("← Cambia scelta",size="sm")
                 p_name=gr.Textbox(label="Nome progetto")
                 with gr.Row(): p_client=gr.Textbox(label="Cliente / Business unit"); p_product=gr.Textbox(label="Prodotto / macchina")
                 with gr.Row(): p_code=gr.Textbox(label="Codice manuale"); p_rev=gr.Textbox(label="Revisione")
@@ -1113,6 +1449,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # Milestone 3A: guided onboarding wiring (additive; components defined above).
             choice_empty.click(lambda:(gr.update(visible=False),gr.update(visible=True),""),None,[onboarding_choice_panel,new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             choice_legacy.click(lambda:(gr.update(visible=False),gr.update(visible=True)),None,[onboarding_choice_panel,legacy_onboarding_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # Milestone 3C wiring (additive; components defined above).
+            choice_multi.click(lambda:(gr.update(visible=False),gr.update(visible=True)),None,[onboarding_choice_panel,legacy_multi_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # NOTE: no scroll_to_output here (unlike other guided-flow buttons) --
+            # auto-scrolling the page right as the review radios render risks
+            # shifting them out from under a user who starts clicking as soon as
+            # results appear, silently leaving the radio on its default choice
+            # ("Non sono correlati") even though the user believes they selected
+            # something else. Reproduced live: an identically-timed click landed
+            # on the wrong element purely because of this auto-scroll.
+            lm_analyze.click(legacy_multi_analyze_ui,[lm_files,lm_dir],[lm_state,lm_summary,lm_confirm_row]+lm_item_radios,trigger_mode="once",concurrency_limit=1)
+            lm_confirm.click(legacy_multi_confirm_ui,[lm_state,lm_confirmed_by]+lm_item_radios,[lm_summary,lm_confirm_row,lm_confirmed_by,lm_name_error]+lm_item_radios,trigger_mode="once",concurrency_limit=1)
+            # Clears the inline required-field error the moment a valid name is
+            # typed, without waiting for another Conferma selezione click.
+            lm_confirmed_by.input(_legacy_name_field_live_validate,[lm_confirmed_by],[lm_confirmed_by,lm_name_error],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # UX acceptance fix: visible way back to the initial three-way choice
+            # from every onboarding sub-panel, with no refresh and no persistence.
+            np_back.click(onboarding_back_ui,[project_state],[new_project_panel,onboarding_choice_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            lg_back.click(onboarding_back_ui,[project_state],[legacy_onboarding_panel,onboarding_choice_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            lm_back.click(onboarding_back_ui,[project_state],[legacy_multi_panel,onboarding_choice_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             # lg_submit/lg_lang_confirm are wired at the bottom of the file: they populate
             # the "Redazione & contenuti" tab fields (c_topics/c_blocks/...), which are
             # defined later in this Blocks graph.
