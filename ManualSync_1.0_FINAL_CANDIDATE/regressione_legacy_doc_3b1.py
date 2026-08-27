@@ -140,16 +140,28 @@ try:
 
     ldc.tempfile.mkdtemp = _tracking_mkdtemp
     try:
+        # NOTE: this used to assert find_soffice_binary() is None as a "real
+        # fact" about the dev machine. That stopped being true once LibreOffice
+        # was installed (with explicit authorization) for the 3B.1 manual
+        # acceptance test -- a legitimate, expected environment change, not a
+        # product regression. The "converter absent" behavior below is now
+        # verified by forcing that condition via monkeypatch instead of
+        # depending on incidental machine state, so this suite passes
+        # identically whether or not LibreOffice happens to be installed.
         detected = ldc.find_soffice_binary()
-        check("dev machine has no LibreOffice / dev-fallback configured (real fact, not simulated)",
-              detected is None, str(detected))
+        check("find_soffice_binary() resolves without raising (informational; real state noted, not asserted)",
+              True, f"currently resolves to: {detected}")
 
+        _orig_find_soffice = ldc.find_soffice_binary
+        ldc.find_soffice_binary = lambda: None
         try:
             with ldc.convert_legacy_doc_to_docx(fake_doc):
                 pass
             check("converter absent raises LegacyDocConverterUnavailable", False, "no exception")
         except ldc.LegacyDocConverterUnavailable:
             check("converter absent raises LegacyDocConverterUnavailable", True)
+        finally:
+            ldc.find_soffice_binary = _orig_find_soffice
 
         try:
             with ldc.convert_legacy_doc_to_docx(TMP / "not_a_doc.txt", soffice_command=run_sim("success")):
