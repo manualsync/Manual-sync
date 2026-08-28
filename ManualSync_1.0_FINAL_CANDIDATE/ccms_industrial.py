@@ -814,6 +814,18 @@ class IndustrialRepository(ContentRepository):
             (object_type, object_id, action, actor, _json(detail or {}), _now()),
         )
 
+    def audit_event(self, object_type: str, object_id: str, action: str, actor: str, detail: dict[str, Any] | None = None) -> None:
+        """Public, supported entry point for appending an audit_events row.
+
+        Same primitive as the internal _audit() (no parallel audit log) --
+        exposed for callers outside this class, such as ComplianceService,
+        that need to record actor/timestamp history on this repository's own
+        audit trail without depending on a name-mangled-by-convention
+        method. Does not commit, exactly like every other write here --
+        callers commit as part of their own transaction.
+        """
+        self._audit(object_type, object_id, action, actor, detail)
+
     def validate_publication_for_release(self, publication_id: str, *, profile_id: str | None = None,
                                          dimensions: dict[str, Any] | None = None, target_lang: str | None = None,
                                          strict_approval: bool = True) -> dict[str, Any]:
