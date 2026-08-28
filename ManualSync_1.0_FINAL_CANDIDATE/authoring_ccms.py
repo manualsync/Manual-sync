@@ -3,16 +3,19 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Any
+from uuid import uuid4
 
 import pandas as pd
 from docx import Document as DocxDocument
 
 from layout_engine import extract_layout
 from language_codes import canonical_lang
+from idml_import import parse_idml, materialize_figure_assets
 
 AUTHORING_BUILD = "0.17.0-structured-authoring-ccms-foundation-20260810"
 
@@ -529,18 +532,33 @@ def import_pdf_as_topics(repo: ContentRepository, pdf_path: str | Path, *, sourc
 
 def _write_topic_groups_to_repo(repo: ContentRepository, groups: list[dict[str, Any]], *, source_lang: str,
                                  id_prefix: str, src_name: str) -> pd.DataFrame:
-    """Format-agnostic CCMS write step shared by PDF and DOCX migration.
+    """Format-agnostic CCMS write step shared by PDF, DOCX and IDML migration.
 
     `groups` is a list of {"title": str, "items": [...], "page": int} where each
-    item is {"kind":"text","text":str,"page":int,"block_type":str} or
-    {"kind":"table","rows":[[str,...],...],"page":int,"table_index":int}. The
-    caller is responsible for producing this structure from the source format;
-    everything below (IDs, status, evidence, table handling) is shared, tested
-    domain logic — do not duplicate it in a new importer.
+    item is one of:
+      {"kind":"text","text":str,"page":int,"block_type":str}
+      {"kind":"table","rows":[[str,...],...],"page":int,"table_index":int}
+      {"kind":"figure","page":int,"caption":str,"alt_text":str,"file_path":str}
+    Every item MAY additionally carry an optional "source_refs_extra": [str,...]
+    -- appended verbatim to that block/object's source_refs alongside the
+    page/story reference. This is how the IDML importer attaches its missing-
+    asset marker (never inside caption/alt_text) and a composite cross-revision
+    fingerprint for a future change/revision intelligence consumer to read,
+    without any schema change and with zero effect on PDF/DOCX, which never
+    set this key.
+    The caller is responsible for producing this structure from the source
+    format; everything below (IDs, status, evidence, table/figure handling) is
+    shared, tested domain logic — do not duplicate it in a new importer.
     """
     rows_out: list[dict[str, Any]] = []
     existing_topics = {r[0] for r in repo.conn.execute("SELECT topic_id FROM topics")}
+    # Milestone 3D fix: create_figure is a SEPARATE capability, required only
+    # for kind="figure" items. A repo that supports block/table but not
+    # figures (or a plain non-industrial ContentRepository) must keep writing
+    # text/table content exactly as before -- it must never be gated behind a
+    # capability only IDML actually needs.
     industrial = all(hasattr(repo, name) for name in ("add_block", "create_table"))
+    supports_figures = industrial and hasattr(repo, "create_figure")
 
     for i, group in enumerate(groups, start=1):
         base_id = f"{id_prefix}-{i:04d}"
@@ -560,17 +578,19 @@ def _write_topic_groups_to_repo(repo: ContentRepository, groups: list[dict[str, 
         )
 
         structured_tables = 0
+        figures_created = 0
         if industrial:
             pos = 1
             for item in group["items"]:
                 ref = f"{src_name}#page={item['page']}"
+                extra_refs = list(item.get("source_refs_extra") or [])
                 if item["kind"] == "text":
                     bid = f"{topic_id}-B{pos:03d}"
                     repo.add_block(
                         bid, topic_id, item["block_type"], position=pos, text=item["text"],
-                        status="Migrated", source_refs=[ref], evidence_status="SOURCE_GROUNDED",
+                        status="Migrated", source_refs=[ref] + extra_refs, evidence_status="SOURCE_GROUNDED",
                     )
-                else:
+                elif item["kind"] == "table":
                     raw_rows = [[str(cell or "").strip() for cell in row] for row in (item["rows"] or [])]
                     width = max((len(r) for r in raw_rows), default=0)
                     if width:
@@ -585,7 +605,7 @@ def _write_topic_groups_to_repo(repo: ContentRepository, groups: list[dict[str, 
                         repo.create_table(
                             table_id, [f"C{c+1}" for c in range(width)], normalized,
                             title=f"Imported table — page {item['page']}", header_rows=0,
-                            status="Migrated", source_refs=[ref],
+                            status="Migrated", source_refs=[ref] + extra_refs,
                         )
                         bid = f"{topic_id}-B{pos:03d}"
                         repo.add_block(
@@ -593,16 +613,48 @@ def _write_topic_groups_to_repo(repo: ContentRepository, groups: list[dict[str, 
                             status="Migrated", source_refs=[ref], evidence_status="SOURCE_GROUNDED",
                         )
                         structured_tables += 1
+                elif item["kind"] == "figure" and not supports_figures:
+                    # This repo can store blocks/tables but has no figures
+                    # capability (e.g. a plain non-industrial ContentRepository,
+                    # or a test double) -- skip only this item, never raise and
+                    # never block the rest of the group's text/table content.
+                    pass
+                elif item["kind"] == "figure":
+                    # Milestone 3D (IDML): first producer of the `figures` table,
+                    # already fully consumed by publishing_bridges.py. A missing
+                    # asset is represented via file_path="" + a technical
+                    # source_refs marker (idml_asset_status=missing) — NEVER a
+                    # diagnostic sentence inside caption/alt_text, which must
+                    # only ever contain content that genuinely came from the
+                    # source document.
+                    figure_id = f"{topic_id}-F{pos:03d}"
+                    base_fid = figure_id
+                    suffix = 1
+                    while repo.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (figure_id,)).fetchone():
+                        suffix += 1
+                        figure_id = f"{base_fid}-{suffix}"
+                    repo.create_figure(
+                        figure_id, title=item.get("title", "") or "", caption=item.get("caption", "") or "",
+                        file_path=item.get("file_path", "") or "", alt_text=item.get("alt_text", "") or "",
+                        status="Migrated", source_refs=[ref] + extra_refs,
+                    )
+                    bid = f"{topic_id}-B{pos:03d}"
+                    repo.add_block(
+                        bid, topic_id, "figure", position=pos, object_ref_id=figure_id,
+                        status="Migrated", source_refs=[ref], evidence_status="SOURCE_GROUNDED",
+                    )
+                    figures_created += 1
                 pos += 1
 
         rows_out.append({
             "topic_id": topic_id, "title": group["title"], "page": group["page"],
             "source_ref": topic_ref, "characters": len(body),
-            "structured_tables": structured_tables,
+            "structured_tables": structured_tables, "figures_created": figures_created,
         })
 
     frame = pd.DataFrame(rows_out)
     frame.attrs["structured_table_count"] = int(frame["structured_tables"].sum()) if not frame.empty else 0
+    frame.attrs["figure_count"] = int(frame["figures_created"].sum()) if not frame.empty else 0
     return frame
 
 
@@ -701,6 +753,100 @@ def import_docx_as_topics(repo: ContentRepository, docx_path: str | Path, *, sou
         groups.append(current)
 
     return _write_topic_groups_to_repo(repo, groups, source_lang=source_lang, id_prefix=id_prefix, src_name=src_name)
+
+
+def import_idml_as_topics(repo: ContentRepository, idml_path: str | Path, *, source_lang: str = "en-US",
+                          id_prefix: str = "IDML", source_ref_prefix: str | None = None,
+                          assets_dir: str | Path | None = None) -> pd.DataFrame:
+    """Milestone 3D: Adobe InDesign (.idml) -> structured-topic migration.
+
+    idml_import.parse_idml() does the ENTIRE fail-closed parse (security
+    validation, designmap/spread/story structural parsing, spread/frame-
+    position reading order across stories, table/figure extraction, master-
+    spread/orphan-story review flagging) before this function ever touches
+    the CCMS. It then feeds the
+    SAME shared _write_topic_groups_to_repo() used by PDF/DOCX/DOC -- no
+    parallel CCMS-writing path, and this is the first importer to also
+    populate the `figures` table (already fully consumed by
+    publishing_bridges.py, never written to by any importer before this one).
+
+    Mirrors import_pdf_as_topics/import_docx_as_topics: conservative migration
+    draft, human review mandatory before source approval. No layout
+    reconstruction and no InDesign round-trip are attempted or implied.
+
+    Fail-closed hardening: the ENTIRE operation is atomic from the caller's
+    point of view. Asset bytes are materialized into a hidden STAGING
+    directory (never the final assets_dir) while parsed.groups records the
+    eventual final path; the CCMS write is snapshotted before starting so any
+    exception rolls back every topic/block/table/figure row created during
+    THIS attempt. Only once the write has fully succeeded is the staging
+    directory atomically renamed into place. On ANY failure -- parse,
+    materialization, or CCMS write -- this function guarantees zero new rows
+    and no assets_dir is ever created or left half-populated.
+    """
+    src_name = source_ref_prefix or Path(idml_path).name
+    parsed = parse_idml(idml_path)  # fail-closed; nothing touched yet
+
+    assets_dir = Path(assets_dir) if assets_dir is not None else None
+    staging_dir = None
+    if assets_dir is not None:
+        staging_dir = assets_dir.parent / f".{assets_dir.name}.staging-{uuid4().hex[:8]}"
+        materialize_figure_assets(idml_path, parsed.groups, staging_dir, record_dir=assets_dir)
+
+    existing_topics_before = {r[0] for r in repo.conn.execute("SELECT topic_id FROM topics")}
+    try:
+        frame = _write_topic_groups_to_repo(repo, parsed.groups, source_lang=source_lang, id_prefix=id_prefix, src_name=src_name)
+    except Exception:
+        _rollback_new_ccms_rows(repo, existing_topics_before)
+        if staging_dir is not None and staging_dir.exists():
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
+    if staging_dir is not None and staging_dir.exists():
+        # materialize_figure_assets only creates staging_dir when there was at
+        # least one present_in_package asset to copy -- nothing to finalize
+        # otherwise (no figures, or none resolvable).
+        if assets_dir.exists():
+            shutil.rmtree(assets_dir, ignore_errors=True)  # re-import: fully replace, never merge
+        staging_dir.rename(assets_dir)
+
+    # Master-spread content and unthreaded/orphan stories are never silently
+    # discarded (Milestone 3D constraint): they are exposed here for the
+    # caller (app.import_manual_ui) to persist as reviewable, blocking items
+    # in the standard UI, never inserted into the primary reading flow.
+    frame.attrs["review_items"] = parsed.review_items
+    frame.attrs["missing_asset_count"] = parsed.missing_asset_total
+    frame.attrs["ambiguous_asset_count"] = parsed.ambiguous_asset_total
+    frame.attrs["figure_total"] = parsed.figure_total
+    return frame
+
+
+def _rollback_new_ccms_rows(repo: ContentRepository, existing_topics_before: set[str]) -> None:
+    """Best-effort compensating rollback for a partially-written CCMS import.
+
+    Each repo write method (create_topic/add_block/create_table/create_figure)
+    commits immediately on its own -- there is no single outer DB transaction
+    to roll back. This instead explicitly deletes every row created by the
+    failed attempt: the new topics (FK ON DELETE CASCADE removes their blocks/
+    versions) plus the structured_tables/figures rows those blocks pointed at,
+    which are not reachable via the topics FK and must be cleaned up
+    separately.
+    """
+    current = {r[0] for r in repo.conn.execute("SELECT topic_id FROM topics")}
+    new_ids = current - existing_topics_before
+    if not new_ids:
+        return
+    marks = ",".join("?" for _ in new_ids)
+    orphaned = list(repo.conn.execute(
+        f"SELECT block_type, object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) "
+        f"AND block_type IN ('table','figure') AND object_ref_id<>''", list(new_ids),
+    ))
+    repo.conn.executemany("DELETE FROM topics WHERE topic_id=?", [(t,) for t in new_ids])
+    for block_type, object_ref_id in orphaned:
+        table_name = "structured_tables" if block_type == "table" else "figures"
+        id_col = "table_id" if block_type == "table" else "figure_id"
+        repo.conn.execute(f"DELETE FROM {table_name} WHERE {id_col}=?", (object_ref_id,))
+    repo.conn.commit()
 
 
 def export_publication_html(repo: ContentRepository, publication_id: str, out_path: str | Path, *,

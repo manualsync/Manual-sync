@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import json
 import re
 import shutil
@@ -12,8 +13,9 @@ import gradio as gr
 import pandas as pd
 
 from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
-from authoring_ccms import import_pdf_as_topics, import_docx_as_topics
+from authoring_ccms import import_pdf_as_topics, import_docx_as_topics, import_idml_as_topics
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
+from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from translation_work_package import generate_translation_work_packages
@@ -30,6 +32,7 @@ from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
 
 _LEGACY_DOC_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo documento Word. Il file potrebbe essere danneggiato, protetto o in un formato non supportato."
+_LEGACY_IDML_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo pacchetto InDesign (.idml). Il file potrebbe essere danneggiato, incompleto o non essere un IDML valido."
 
 BRAND_NAME = "ManualSync"  # Nome provvisorio; il rebrand cambierà questo solo punto UI.
 BRAND_TAGLINE = "Technical Content Intelligence"
@@ -447,17 +450,218 @@ def revision_analysis_ui(project_dir, old_source, old_translation, new_source, f
         msg=f"<div class='ms-card'><h3 class='ms-block'>Analisi non completata</h3><p><b>{type(e).__name__}</b>: {str(e)}</p><p class='ms-muted'>Dettagli salvati in {APP_LOG}</p></div>"
         return msg, pd.DataFrame(), None, None
 
+def _it_count(n: int, singular: str, plural: str) -> str:
+    return f"**{n} {singular if n == 1 else plural}**"
+
+_IDML_REVIEW_REASON_LABELS = {
+    "master_spread_content": "Contenuto di pagina master (intestazione/piè di pagina ricorrente)",
+    "orphan_story": "Testo non collegato a nessuna pagina del documento",
+    "unsupported_construct": "Struttura del documento non supportata in questa versione",
+    "duplicate_self_id": "Riferimento tecnico duplicato nel pacchetto",
+    "ambiguous_asset": "Immagine collegata non identificata in modo univoco",
+    "caption_candidate": "Possibile didascalia da confermare per una figura",
+}
+_IDML_REVIEW_MAX_ITEMS = 12
+_IDML_ACCEPT_EXCLUSION = "Accetta esclusione dal contenuto principale"
+_IDML_KEEP_SEPARATE = "Mantieni il testo separato (non è la didascalia della figura)"
+_IDML_CONFIRM_CAPTION = "Conferma: è la didascalia della figura"
+_IDML_LEAVE_UNRESOLVED = "Lascia l'immagine non risolta (resta segnalata come mancante)"
+
+class IdmlReviewCorruptError(Exception):
+    """Raised when a review state file exists but cannot be read/parsed as
+    the expected shape. Milestone 3D constraint: this must NEVER be treated
+    the same as "no review needed" -- a persistence error is not an empty
+    review list."""
+
+def _idml_review_path(project_dir, publication_id) -> Path:
+    return Path(project_dir)/f"ManualSync_IDML_Review_{publication_id}.json"
+
+def _write_idml_review_data(project_dir, publication_id, review_items) -> None:
+    # Milestone 3D constraint: master-spread/orphan/unsupported/ambiguous/
+    # caption-candidate items must be reviewable in the standard UI, not only
+    # inside a JSON file a non-technical user would have to open. This file
+    # stays the technical provenance (reason/detail keep Story/Spread ids for
+    # advanced mode) AND the single source of truth for the blocking gate in
+    # approve_source_ui below -- one file, not two, kept in sync by
+    # construction. `decision` starts unset (None) -- "seen" is never the same
+    # as "resolved"; see idml_review_confirm_ui.
+    payload = [
+        {"reason": r.get("reason", ""), "detail": r.get("detail", ""),
+         "preview": r.get("text_preview", ""), "item_key": r.get("item_key", ""),
+         "decision": None, "decided_by": "", "decided_at": ""}
+        for r in review_items
+    ]
+    _idml_review_path(project_dir, publication_id).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _idml_review_state(project_dir, publication_id) -> list[dict]:
+    """Returns [] ONLY when there genuinely is no review file. If the file
+    exists but cannot be read as a valid list of item dicts, raises
+    IdmlReviewCorruptError -- a persistence error must never be silently
+    reinterpreted as "nothing to review"."""
+    path = _idml_review_path(project_dir, publication_id)
+    if not path.exists():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8")
+        items = json.loads(raw)
+    except Exception as exc:
+        raise IdmlReviewCorruptError(f"{path.name} non è leggibile o non è JSON valido: {exc}") from exc
+    if not isinstance(items, list) or not all(isinstance(it, dict) and "reason" in it for it in items):
+        raise IdmlReviewCorruptError(f"{path.name} non ha il formato atteso (elenco di elementi di revisione).")
+    return items
+
+def _idml_pending_review_items(project_dir, publication_id) -> list[dict]:
+    # May raise IdmlReviewCorruptError -- callers (approve_source_ui,
+    # idml_review_confirm_ui, _idml_review_panel_ui) must fail closed on it,
+    # never catch-and-return [].
+    items = _idml_review_state(project_dir, publication_id)
+    return [it for it in items if it.get("decision") is None]
+
+def _idml_review_choices_for(reason: str) -> list[str]:
+    # No default/pre-selected choice is returned on purpose: a review decision
+    # must always come from an explicit user click, even when only one choice
+    # exists (e.g. "leave unresolved") -- see idml_review_confirm_ui, which
+    # treats an untouched Radio (value None) as still pending, never decided.
+    if reason == "caption_candidate":
+        return [_IDML_KEEP_SEPARATE, _IDML_CONFIRM_CAPTION]
+    if reason == "ambiguous_asset":
+        return [_IDML_LEAVE_UNRESOLVED]
+    return [_IDML_ACCEPT_EXCLUSION]
+
+def _idml_review_panel_ui(project_dir, publication_id="PUB-MAIN"):
+    hidden = (gr.update(visible=False), gr.update(visible=False)) + tuple(
+        gr.update(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS))
+    if not project_dir:
+        return hidden
+    try:
+        items = _idml_review_state(project_dir, publication_id)
+    except IdmlReviewCorruptError as exc:
+        error_html = (f"<div class='ms-prod'><b>Stato di revisione IDML non leggibile.</b><br>"
+                      f"{html.escape(str(exc))}<br>L'approvazione di questa sorgente resta bloccata "
+                      f"finché il file non viene ripristinato o l'import rieseguito.</div>")
+        return (gr.update(value=error_html, visible=True), gr.update(visible=False)) + tuple(
+            gr.update(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS))
+    pending = [it for it in items if it.get("decision") is None]
+    if not pending:
+        return hidden
+    # This summary is rendered by a gr.HTML component (c_idml_review_html),
+    # which does not interpret Markdown -- build it as plain HTML (no "**")
+    # rather than reusing _it_count, whose "**n**" bold syntax is meant for
+    # the gr.Markdown components elsewhere in this file.
+    n_pending = len(pending)
+    word = "elemento" if n_pending == 1 else "elementi"
+    summary = (f"<div class='ms-prod'><b>{n_pending} {word} da verificare</b> "
+               f"prima di poter approvare questa sorgente. Scegli una decisione per ciascuno qui sotto.</div>")
+    radio_updates = []
+    for i in range(_IDML_REVIEW_MAX_ITEMS):
+        if i < len(pending):
+            it = pending[i]
+            choices = _idml_review_choices_for(it.get("reason", ""))
+            label = (f"{_IDML_REVIEW_REASON_LABELS.get(it.get('reason',''), it.get('reason',''))} — "
+                     f"{it.get('preview') or '(nessuna anteprima disponibile)'}")
+            # value=None: no choice is ever pre-selected, not even when there
+            # is only one option -- the user must click it explicitly.
+            radio_updates.append(gr.update(label=label, choices=choices, value=None, visible=True))
+        else:
+            radio_updates.append(gr.update(visible=False))
+    return (gr.update(value=summary, visible=True), gr.update(visible=True), *radio_updates)
+
+def _apply_idml_caption_confirmation(project_dir, item_key: str, caption_text: str) -> None:
+    if not item_key or not caption_text:
+        return
+    repo = IndustrialRepository(_ccms_db(project_dir))
+    try:
+        # The candidate_key marker is attached to the FIGURE's own source_refs
+        # (create_figure), not the content_blocks row that merely points at
+        # it (add_block only carries the plain page/story ref) -- query the
+        # figures table directly.
+        marker = f"idml_caption_candidate_key={item_key}"
+        row = repo.conn.execute(
+            "SELECT figure_id FROM figures WHERE source_refs_json LIKE ?",
+            (f"%{marker}%",),
+        ).fetchone()
+        if row and row[0]:
+            repo.update_figure(row[0], caption=caption_text)
+    finally:
+        repo.close()
+
+def idml_review_confirm_ui(project_dir, reviewer, *radio_values):
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    publication_id = "PUB-MAIN"
+    try:
+        items = _idml_review_state(project_dir, publication_id)
+    except IdmlReviewCorruptError as exc:
+        raise gr.Error(f"Stato di revisione IDML non leggibile: {exc}. Ripristina il file o riesegui l'importazione prima di continuare.") from exc
+    pending = [it for it in items if it.get("decision") is None]
+    if not pending:
+        return _idml_review_panel_ui(project_dir, publication_id)
+    if not str(reviewer or "").strip():
+        # Acceptance fix: a missing reviewer name is a validation issue, not
+        # a crash -- persisting per-item decisions without an identifiable
+        # reviewer would break the audit trail (it["decided_by"] below), so
+        # this must still block, but WITHOUT raising: this callback has 14
+        # bound outputs (html + row + all Radios), and an exception here
+        # left every one of them in an Error state, wiping the choices the
+        # user had just made. Echo those choices back unchanged (never
+        # rebuild via _idml_review_panel_ui, which resets every Radio to
+        # value=None) and surface the requirement inline instead.
+        warning_html = ("<div class='ms-prod'><b>Inserisci il tuo nome per registrare le decisioni di "
+                         "revisione.</b> Le scelte già selezionate qui sotto restano come le hai lasciate.</div>")
+        radio_keep = [
+            gr.update(value=(radio_values[i] if i < len(radio_values) else None)) if i < len(pending)
+            else gr.update()
+            for i in range(_IDML_REVIEW_MAX_ITEMS)
+        ]
+        return (gr.update(value=warning_html, visible=True), gr.update(visible=True), *radio_keep)
+    now = datetime.now(timezone.utc).isoformat()
+    changed = False
+    for i, it in enumerate(pending):
+        if i >= len(radio_values):
+            break
+        choice = radio_values[i]
+        if not choice:
+            continue  # no decision made for this item yet -- stays pending
+        reason = it.get("reason", "")
+        if reason == "caption_candidate" and choice == _IDML_CONFIRM_CAPTION:
+            _apply_idml_caption_confirmation(project_dir, it.get("item_key", ""), it.get("preview", ""))
+            it["decision"] = "confirm_association"
+        elif reason == "caption_candidate" and choice == _IDML_KEEP_SEPARATE:
+            it["decision"] = "keep_separate"
+        elif reason == "ambiguous_asset" and choice == _IDML_LEAVE_UNRESOLVED:
+            it["decision"] = "leave_unresolved"
+        elif choice == _IDML_ACCEPT_EXCLUSION:
+            it["decision"] = "accepted_exclusion"
+        else:
+            continue
+        it["decided_by"] = reviewer.strip()
+        it["decided_at"] = now
+        changed = True
+    if changed:
+        _idml_review_path(project_dir, publication_id).write_text(
+            json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    return _idml_review_panel_ui(project_dir, publication_id)
+
 def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
     if not project_dir or not pdf:
         raise gr.Error("Apri un progetto e carica il manuale corrente.")
     pub=(publication_id or 'PUB-MAIN').strip()
     source=(source_lang or read_project(project_dir).get('source_lang','en-US')).strip()
     srcdir=Path(project_dir)/'Sources'; srcdir.mkdir(exist_ok=True)
-    copied=srcdir/Path(pdf).name; shutil.copy2(pdf,copied)
+    suffix=Path(pdf).suffix.lower()
+    copied=srcdir/Path(pdf).name
+    if suffix!='.idml':
+        # Milestone 3D fail-closed hardening left this copy-then-process order
+        # unchanged for PDF/DOCX/DOC (out of scope for this fix). The .idml
+        # branch below defers this copy until after a full, successful parse
+        # + CCMS write -- see there for why.
+        shutil.copy2(pdf,copied)
     repo=IndustrialRepository(_ccms_db(project_dir))
     try:
         # Re-import is allowed only while the publication is still a migration draft.
         # This prevents duplicate/orphaned topic trees during iterative migration tests.
+        tids_old=[]; table_ids_old=[]; figure_ids_old=[]
         if repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(pub,)).fetchone():
             linked=list(repo.conn.execute(
                 "SELECT t.topic_id,t.status FROM topics t JOIN publication_topics pt ON pt.topic_id=t.topic_id WHERE pt.publication_id=?",
@@ -466,20 +670,34 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
             if linked and any(str(r["status"]).lower() != "migrated" for r in linked):
                 raise ValueError("La pubblicazione contiene contenuti già revisionati/approvati. Usa un nuovo Publication ID per una nuova migrazione.")
             tids_old=[str(r["topic_id"]) for r in linked]
-            table_ids=[]
             if tids_old:
                 marks=",".join("?" for _ in tids_old)
-                table_ids=[str(r[0]) for r in repo.conn.execute(
+                table_ids_old=[str(r[0]) for r in repo.conn.execute(
                     f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='table' AND object_ref_id<>''",
                     tids_old
                 )]
+                figure_ids_old=[str(r[0]) for r in repo.conn.execute(
+                    f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='figure' AND object_ref_id<>''",
+                    tids_old
+                )]
+
+        def _retire_old_draft():
+            if tids_old:
                 repo.conn.execute("DELETE FROM publication_topics WHERE publication_id=?",(pub,))
                 repo.conn.executemany("DELETE FROM topics WHERE topic_id=?",[(tid,) for tid in tids_old])
-                if table_ids:
-                    repo.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids])
+                if table_ids_old:
+                    repo.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids_old])
+                if figure_ids_old:
+                    repo.conn.executemany("DELETE FROM figures WHERE figure_id=?",[(fid,) for fid in figure_ids_old])
                 repo.conn.commit()
 
-        suffix=copied.suffix.lower()
+        if suffix!='.idml':
+            # Unchanged pre-Milestone-3D behavior: the previous draft is
+            # retired immediately, before the new import runs. PDF/DOCX/DOC
+            # are explicitly out of scope for the non-destructive-re-import
+            # fix below.
+            _retire_old_draft()
+
         if suffix in ('.docx','.doc'):
             try:
                 if suffix=='.doc':
@@ -499,6 +717,42 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
                 raise gr.Error("Il documento Word non è valido o è danneggiato. Verifica il file e riprova.") from exc
             if imported.empty:
                 raise ValueError("Nessun topic ricostruito dal documento Word.")
+        elif suffix=='.idml':
+            try:
+                # Milestone 3D fail-closed hardening: parse/validate + write to
+                # CCMS directly from the ORIGINAL uploaded file (pdf, not
+                # copied) -- authoring_ccms.import_idml_as_topics owns staging
+                # of any extracted assets and rolls back every CCMS row it
+                # created on any failure. Nothing is copied into Sources/ and
+                # no review data is written until this call has FULLY
+                # succeeded, so an invalid or failing IDML leaves zero residue
+                # in the project (no partial source copy, no assets dir, no
+                # review data, no topic/block/table/figure row).
+                imported=import_idml_as_topics(repo,pdf,source_lang=source,id_prefix='IDML',
+                                                source_ref_prefix=copied.name,assets_dir=srcdir/f"{copied.stem}_assets")
+            except ValueError:
+                raise
+            except IdmlImportError as exc:
+                raise gr.Error(_LEGACY_IDML_FRIENDLY_ERROR) from exc
+            except Exception as exc:
+                raise gr.Error(_LEGACY_IDML_FRIENDLY_ERROR) from exc
+            if imported.empty:
+                raise ValueError("Nessuna sezione ricostruita dal pacchetto InDesign.")
+            # Milestone 3D non-destructive re-import: the PREVIOUS draft (its
+            # topics/blocks/tables/figures, source file, review state) is only
+            # ever retired HERE, after the new IDML has been fully parsed AND
+            # written to CCMS successfully. If the new file is corrupt or the
+            # write fails, import_idml_as_topics already raised above -- this
+            # line is never reached, and the old draft is left byte-for-byte
+            # untouched (source copy, assets dir, review json, CCMS rows).
+            _retire_old_draft()
+            shutil.copy2(pdf,copied)
+            # Always replace the review state (even with an empty list) so a
+            # re-import that no longer produces any review item never leaves
+            # stale, unrelated entries from the previous draft blocking
+            # approval or showing up in "Elementi da verificare".
+            review_items=imported.attrs.get("review_items") or []
+            _write_idml_review_data(project_dir,pub,review_items)
         else:
             imported=import_pdf_as_topics(repo,copied,source_lang=source,id_prefix='DOC',source_ref_prefix=copied.name)
             if imported.empty:
@@ -518,9 +772,22 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
         dropped=int(imported.attrs.get("dropped_running_headers",0))
     finally:
         repo.close()
-    msg=(f"✅ Manuale importato come draft in **{len(imported)} topic semantici** e **{table_count} tabelle strutturate**. "
-         f"Header ricorrenti esclusi: **{dropped}**. La migrazione da PDF resta conservativa: "
-         "prima dell’approvazione serve revisione umana.")
+    if suffix=='.idml':
+        figure_count=int(imported.attrs.get("figure_count",0))
+        missing_assets=int(imported.attrs.get("missing_asset_count",0))
+        review_count=len(imported.attrs.get("review_items") or [])
+        msg=(f"✅ Manuale InDesign importato come draft in {_it_count(len(imported),'sezione','sezioni')}, "
+             f"{_it_count(table_count,'tabella','tabelle')} e {_it_count(figure_count,'figura','figure')}. "
+             f"{_it_count(missing_assets,'immagine collegata non trovata','immagini collegate non trovate')}. ")
+        if review_count:
+            msg+=(f"{_it_count(review_count,'elemento non inserito automaticamente nel flusso principale','elementi non inseriti automaticamente nel flusso principale')} "
+                  f"— verifica richiesta nella sezione «Elementi da verificare» qui sotto prima di poter approvare la sorgente. ")
+        msg+=("L'importazione da InDesign resta conservativa: contenuto e struttura sono stati letti, "
+              "il layout originale NON viene ricostruito. Prima dell'approvazione serve revisione umana.")
+    else:
+        msg=(f"✅ Manuale importato come draft in **{len(imported)} topic semantici** e **{table_count} tabelle strutturate**. "
+             f"Header ricorrenti esclusi: **{dropped}**. La migrazione da PDF resta conservativa: "
+             "prima dell’approvazione serve revisione umana.")
     _stamp_legacy_family_if_known(project_dir, copied)
     return msg, topics, blocks
 
@@ -980,11 +1247,30 @@ def guided_approve_source_ui(project_dir, reviewer, confirmed):
     # existing fail-closed check ("Serve la conferma esplicita...") still applies.
     if not project_dir:
         raise gr.Error("Nessun progetto attivo.")
-    msg = approve_source_ui(project_dir, "PUB-MAIN", reviewer, confirmed)
+    try:
+        msg = approve_source_ui(project_dir, "PUB-MAIN", reviewer, confirmed)
+    except gr.Error as exc:
+        # Acceptance fix: a blocked approval (pending review items, missing
+        # confirmation, corrupt review state...) is an expected fail-closed
+        # outcome, not a crash. approve_source_ui never writes anything
+        # before raising here, so project/sidebar/table are genuinely
+        # unchanged -- refresh them normally and surface the block inline,
+        # next to the approval button, instead of letting the exception
+        # propagate and leave this callback's other outputs in an error
+        # state.
+        msg = f"⛔ {exc}"
     return msg, _project_card(project_dir), _sidebar_context(project_dir), _simple_review_table_for_project(project_dir)
 
 def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
     if not confirmed: raise gr.Error("Serve la conferma esplicita della revisione umana.")
+    try:
+        pending=_idml_pending_review_items(project_dir, publication_id)
+    except IdmlReviewCorruptError as exc:
+        raise gr.Error(f"Impossibile approvare: lo stato di revisione IDML non è leggibile o è corrotto "
+                        f"({exc}). Ripristina il file o riesegui l'importazione prima di approvare.") from exc
+    if pending:
+        raise gr.Error(f"Ci sono {len(pending)} elementi da verificare prima di poter approvare questa sorgente. "
+                        "Prendi una decisione per ciascuno nella sezione «Elementi da verificare» qui sopra.")
     repo=IndustrialRepository(_ccms_db(project_dir))
     try:
         tids=[r[0] for r in repo.conn.execute("SELECT topic_id FROM publication_topics WHERE publication_id=?",(publication_id,))]
@@ -1376,7 +1662,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 gr.HTML("<div class='ms-section-title'>Ho più manuali o revisioni</div><div class='ms-section-sub'>Carica più documenti (PDF, Word .docx/.doc) o una cartella intera: proviamo a capire quali sono revisioni successive o lingue diverse dello stesso manuale.</div>")
                 lm_back=gr.Button("← Cambia scelta",size="sm")
                 with gr.Row():
-                    lm_files=gr.File(label="Seleziona più file",type='filepath',file_count='multiple',file_types=['.pdf','.docx','.doc'])
+                    lm_files=gr.File(label="Seleziona più file",type='filepath',file_count='multiple',file_types=['.pdf','.docx','.doc','.idml'])
                     lm_dir=gr.File(label="Oppure seleziona una cartella",type='filepath',file_count='directory')
                 lm_analyze=gr.Button("Analizza",variant="primary")
                 lm_summary=gr.Markdown()
@@ -1408,9 +1694,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF o un documento Word: creiamo il progetto e leggiamo il documento per te.</div>")
                 lg_back=gr.Button("← Cambia scelta",size="sm")
                 lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
-                lg_pdf=gr.File(label="Il tuo manuale (PDF o Word .docx/.doc)",type='filepath',file_types=['.pdf','.docx','.doc'])
-                with gr.Row():
-                    gr.Button("InDesign (.idml) — non ancora disponibile in questo percorso guidato",interactive=False)
+                lg_pdf=gr.File(label="Il tuo manuale (PDF, Word .docx/.doc o InDesign .idml)",type='filepath',file_types=['.pdf','.docx','.doc','.idml'])
                 lg_submit=gr.Button("Importa e crea progetto",variant="primary")
                 lg_lang_prompt=gr.Markdown(visible=False)
                 lg_lang_pick=gr.Radio(_GUIDED_LANG_CHOICES,label="Lingua del documento",visible=False)
@@ -1488,8 +1772,24 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # columns. No ID/metadata/re-import button in this default view.
             gr.HTML("<div class='ms-section-title'>Contenuto importato</div><div class='ms-section-sub'>Queste sono le sezioni trovate nel documento. Per i dettagli tecnici, apri “Dettagli tecnici (modalità avanzata)” qui sotto.</div>")
             c_simple_table=gr.Dataframe(interactive=False,wrap=True,max_height=500)
+            # Milestone 3D constraint: master-spread/orphan/unsupported/ambiguous-
+            # asset/caption-candidate items from an IDML import are shown here in
+            # plain language (no Story/Spread ids, no JSON to open) and BLOCK
+            # "Approva sorgente" below until explicitly acknowledged.
+            gr.HTML("<div class='ms-section-title'>Elementi da verificare</div>")
+            c_idml_review_html=gr.HTML(visible=False)
+            with gr.Row(visible=False) as c_idml_review_row:
+                with gr.Column():
+                    c_idml_review_radios=[gr.Radio(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS)]
+                    c_idml_review_confirm=gr.Button("Conferma decisioni")
             c_simple_confirm=gr.Checkbox(label="Confermo di aver revisionato il contenuto")
-            with gr.Row(): c_simple_reviewer=gr.Textbox(label="Il tuo nome — opzionale"); c_simple_approve=gr.Button("Approva sorgente",variant="primary")
+            # Acceptance fix: this same field is required by "Conferma decisioni"
+            # above whenever there are pending IDML review items (each decision
+            # is stamped with decided_by for audit) -- "opzionale" was only ever
+            # true for the final "Approva sorgente" step (falls back to "Human
+            # reviewer"). One field, relabeled to stop claiming it is always
+            # optional; not duplicated, no new data model.
+            with gr.Row(): c_simple_reviewer=gr.Textbox(label="Il tuo nome",info="Richiesto per confermare le decisioni di revisione"); c_simple_approve=gr.Button("Approva sorgente",variant="primary")
             c_simple_msg=gr.Markdown()
             with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
                 with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
@@ -1589,6 +1889,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # shown in "modalità avanzata" — fires after either the guided import or the
     # manual "Importa come draft" click, since both set c_blocks. No second backend.
     c_blocks.change(_simple_review_table_live_ui,[project_state,c_topics,c_blocks],[c_simple_table])
+    # Same trigger as c_simple_table above (fires after guided import or manual
+    # "Importa come draft") -- keeps "Elementi da verificare" in sync with
+    # whatever the most recent import actually produced.
+    c_blocks.change(_idml_review_panel_ui,[project_state],[c_idml_review_html,c_idml_review_row]+c_idml_review_radios)
+    c_idml_review_confirm.click(idml_review_confirm_ui,[project_state,c_simple_reviewer]+c_idml_review_radios,
+                                 [c_idml_review_html,c_idml_review_row]+c_idml_review_radios,
+                                 trigger_mode="once",concurrency_limit=1)
     c_simple_approve.click(guided_approve_source_ui,[project_state,c_simple_reviewer,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
     _guided_outputs=[project_state,project_card,sidebar_context,p_msg,
                      onboarding_choice_panel,legacy_onboarding_panel,lg_review,

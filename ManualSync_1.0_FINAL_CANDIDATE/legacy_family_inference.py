@@ -32,11 +32,12 @@ from rapidfuzz.fuzz import ratio
 from layout_engine import extract_layout, detect_document_language, detect_docx_language
 from authoring_ccms import _looks_like_legacy_docx_heading
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
+from idml_import import extract_idml_signals, detect_idml_language, IdmlImportError
 from project_lifecycle import _atomic_write_json
 
 SCHEMA_VERSION = 1
 FAMILIES_DIRNAME = "LegacyFamilies"
-SUPPORTED_SUFFIXES = {".pdf", ".docx", ".doc"}
+SUPPORTED_SUFFIXES = {".pdf", ".docx", ".doc", ".idml"}
 
 EvidenceRole = Literal["strong", "weak", "conflict"]
 RelationType = Literal["revision_of", "language_variant_of"]
@@ -332,6 +333,19 @@ def _docx_signals(path: Path) -> tuple[str, list[str], str, str]:
     return title_line, headings, metadata_title, content_hint_line
 
 
+def _idml_signals(path: Path) -> tuple[str, list[str], str, str]:
+    """Same shape/contract as _pdf_signals/_docx_signals: (title_line,
+    headings, metadata_title, content_hint_line). idml_import.py owns the
+    ENTIRE fail-closed IDML parse (security validation, threading-aware
+    reading order); this only reuses its raw ingredients through the same
+    generic _content_hint_line/_first_meaningful_line helpers already used by
+    every other format -- no new heading/title heuristic engine."""
+    headings, all_lines, metadata_title = extract_idml_signals(path)
+    content_hint_line = _content_hint_line(all_lines, headings)
+    title_line = content_hint_line or _first_meaningful_line(headings)
+    return title_line, headings, metadata_title, content_hint_line
+
+
 def build_candidate(path: str | Path) -> Candidate:
     path = Path(path)
     suffix = path.suffix.lower()
@@ -349,7 +363,7 @@ def build_candidate(path: str | Path) -> Candidate:
         title_line, headings, metadata_title, content_hint_line = _docx_signals(path)
         lang, conf, _basis = detect_docx_language(path)
         doc_kind = "docx"
-    else:  # .doc -- reuse the 3B.1 isolated converter; never a second parser
+    elif suffix == ".doc":  # reuse the 3B.1 isolated converter; never a second parser
         try:
             with convert_legacy_doc_to_docx(path) as temp_docx:
                 title_line, headings, metadata_title, content_hint_line = _docx_signals(temp_docx)
@@ -359,6 +373,15 @@ def build_candidate(path: str | Path) -> Candidate:
                 f"Impossibile leggere {path.name}: documento Word legacy non convertibile."
             ) from exc
         doc_kind = "doc"
+    else:  # .idml -- Milestone 3D, reuse idml_import's fail-closed parser; never a second engine
+        try:
+            title_line, headings, metadata_title, content_hint_line = _idml_signals(path)
+            lang, conf, _basis = detect_idml_language(path)
+        except IdmlImportError as exc:
+            raise UnsupportedDocumentError(
+                f"Impossibile leggere {path.name}: pacchetto IDML non valido o non supportato."
+            ) from exc
+        doc_kind = "idml"
 
     manual_code_filename = extract_manual_code_from_filename(path.name)
     manual_code_content = extract_manual_code_from_title(content_hint_line)
