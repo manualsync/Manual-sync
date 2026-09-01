@@ -226,8 +226,8 @@ def main() -> int:
         from release_readiness import READINESS_BUILD
         from release_manager import RELEASE_BUILD
         add_result(results, "Project lifecycle build", PROJECT_BUILD.startswith("0.28.0"), PROJECT_BUILD)
-        add_result(results, "Release Readiness build", READINESS_BUILD.startswith("0.26."), READINESS_BUILD)
-        add_result(results, "Controlled Release build", RELEASE_BUILD.startswith("0.27."), RELEASE_BUILD)
+        add_result(results, "Release Readiness build", READINESS_BUILD.startswith(("0.26.", "0.27.")), READINESS_BUILD)
+        add_result(results, "Controlled Release build", RELEASE_BUILD.startswith(("0.27.", "0.28.")), RELEASE_BUILD)
         with tempfile.TemporaryDirectory(prefix="manualsync_final_selftest_") as td:
             p = create_project(Path(td), project_name="Runtime SelfTest", source_lang="en-US", target_langs=["it-IT"])
             add_result(results, "Final project bootstrap", (p / "ManualSync_CCMS.sqlite").exists() and (p / "ManualSync_Workflow.sqlite").exists(), p)

@@ -850,16 +850,71 @@ class IndustrialRepository(ContentRepository):
 
     def release_publication(self, publication_id: str, *, release_id: str, released_by: str,
                             profile_id: str | None = None, dimensions: dict[str, Any] | None = None,
-                            target_lang: str | None = None, commit: bool = True) -> dict[str, Any]:
+                            target_lang: str | None = None, commit: bool = True,
+                            compliance_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+        """3.5C: this is the single lowest-level primitive that actually
+        writes a publication_releases row, so it is also the last line of
+        defense against a release that silently ignores an active
+        Compliance scope -- the gate here cannot be skipped by calling this
+        method directly instead of going through release_manager.create_release_bundle().
+
+        commit=True means a standalone call (release_manager.py's own
+        multi-language release always uses commit=False, see below), so
+        there is no in-flight caller transaction this could disturb: it is
+        safe to freshly construct a ComplianceService right here and
+        re-derive+gate Compliance readiness itself, ignoring whatever
+        compliance_snapshot argument was passed -- a direct caller cannot
+        forge readiness by passing a fake "ready" snapshot.
+
+        commit=False is reserved for release_manager.create_release_bundle's
+        own atomic multi-language loop -- verified to be the ONLY real call
+        site of commit=False in the codebase (grep audit, 3.5C integrity
+        pass). ComplianceService._ensure_schema() calls
+        conn.executescript(), which implicitly COMMITs any pending
+        transaction -- constructing a fresh ComplianceService here would
+        silently break that caller's atomicity (and, since create_release_bundle
+        now opens its snapshot transaction with BEGIN IMMEDIATE specifically
+        to close the Compliance TOCTOU window, would silently release that
+        lock too). So a batched caller MUST pass its own already-gated
+        compliance_snapshot -- computed once, under that same lock, by
+        create_release_bundle immediately after BEGIN IMMEDIATE, via the
+        same canonical compliance_readiness_for_publication(). This method
+        refuses to proceed without a well-formed one rather than silently
+        treating a missing/malformed snapshot as "not applicable"; that is
+        the minimal API contract guard for this internal primitive, not a
+        promise that commit=False is safe to call from anywhere else."""
         result = self.validate_publication_for_release(publication_id, profile_id=profile_id, dimensions=dimensions, target_lang=target_lang)
         if not result["PASS"]:
             raise ValueError("Release bloccata: " + "; ".join(result["issues"]))
+
+        if commit:
+            from compliance_intelligence import ComplianceService
+            compliance_snapshot = ComplianceService(self).compliance_readiness_for_publication(publication_id)
+        elif compliance_snapshot is None:
+            raise RuntimeError(
+                "release_publication(commit=False) richiede un compliance_snapshot già calcolato dal chiamante "
+                "(release_manager.create_release_bundle) -- il gate Compliance non può essere saltato."
+            )
+        elif not ({"compliance_applicable", "compliance_ready"} <= compliance_snapshot.keys()):
+            raise RuntimeError(
+                "compliance_snapshot passato a release_publication(commit=False) non ha la forma attesa "
+                "(mancano 'compliance_applicable'/'compliance_ready') -- deve provenire, non modificato, da "
+                "ComplianceService.compliance_readiness_for_publication()."
+            )
+        if compliance_snapshot.get("compliance_applicable") and not compliance_snapshot.get("compliance_ready"):
+            items = compliance_snapshot.get("blocking_items") or []
+            preview = "; ".join(f"{b['scope_id']}/{b['requirement_id']} ({b['status']})" for b in items[:10])
+            raise ValueError(
+                f"Release bloccata: Compliance non pronta per {publication_id} "
+                f"({len(items)} requisiti bloccanti su {compliance_snapshot['active_scope_count']} scope attivi). {preview}"
+            )
+
         frame = result["frame"].copy()
         serializable_rows = []
         for _, r in frame.iterrows():
             item = r.to_dict()
             serializable_rows.append(item)
-        snapshot = {"summary": result["summary"], "rows": serializable_rows}
+        snapshot = {"summary": result["summary"], "rows": serializable_rows, "compliance": compliance_snapshot}
         snapshot_json = _json(snapshot)
         sha = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
         self.conn.execute(
@@ -870,6 +925,29 @@ class IndustrialRepository(ContentRepository):
         if commit:
             self.conn.commit()
         return {"release_id": release_id, "sha256": sha, "blocks": len(frame)}
+
+    def verify_release_snapshot(self, release_id: str) -> dict[str, Any]:
+        """3.5C: the real, reusable integrity check for one historical
+        release row -- recomputes sha256 over the stored snapshot_json and
+        compares it to the stored snapshot_sha256, the exact mechanism
+        release_publication() itself uses at write time. Makes "the release
+        snapshot is verifiable" a callable product primitive, not something
+        only demonstrated ad hoc by test code. Detects any alteration or
+        corruption of the stored row; does not (and, without a PKI, cannot)
+        prove who wrote it -- that is out of scope."""
+        row = self.conn.execute(
+            "SELECT release_id, snapshot_json, snapshot_sha256 FROM publication_releases WHERE release_id=?",
+            (release_id,),
+        ).fetchone()
+        if not row:
+            raise KeyError(release_id)
+        actual = hashlib.sha256(row["snapshot_json"].encode("utf-8")).hexdigest()
+        return {
+            "release_id": release_id,
+            "verified": actual == row["snapshot_sha256"],
+            "expected_sha256": row["snapshot_sha256"],
+            "actual_sha256": actual,
+        }
 
     # ---------- Extended impact ----------
     def impact_map_industrial(self, changed_id: str, *, kind: str) -> pd.DataFrame:

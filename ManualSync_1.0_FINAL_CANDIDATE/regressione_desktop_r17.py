@@ -125,7 +125,7 @@ check("Atomic failure creates no ZIP", not any((OUT/"atomic_release").glob("*REL
 # 4) Build markers
 # ------------------------------------------------------------------
 check("R17 atomic invariant retained in current build", PRODUCT_BUILD.startswith("1.0.0-"), PRODUCT_BUILD)
-check("R17 release invariant retained in current module", (rm.RELEASE_BUILD.startswith("0.27.5-") or rm.RELEASE_BUILD.startswith("0.27.6-") or rm.RELEASE_BUILD.startswith("0.27.7-")), rm.RELEASE_BUILD)
+check("R17 release invariant retained in current module", (rm.RELEASE_BUILD.startswith("0.27.5-") or rm.RELEASE_BUILD.startswith("0.27.6-") or rm.RELEASE_BUILD.startswith("0.27.7-") or rm.RELEASE_BUILD.startswith("0.28.0-")), rm.RELEASE_BUILD)
 
 summary={"build":PRODUCT_BUILD,"tests":len(results),"pass":sum(r["status"]=="PASS" for r in results),"fail":sum(r["status"]=="FAIL" for r in results),"results":results}
 (ROOT/"RISULTATO_REGRESSIONE_DESKTOP_R17.json").write_text(json.dumps(summary,ensure_ascii=False,indent=2),encoding="utf-8")

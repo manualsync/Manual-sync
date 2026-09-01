@@ -16,7 +16,7 @@ def check(name, cond, detail=''):
     ok=bool(cond); res.append({'test':name,'status':'PASS' if ok else 'FAIL','detail':str(detail)})
     if not ok: raise AssertionError(f'{name}: {detail}')
 
-check('R11/R12 readiness lineage', READINESS_BUILD.startswith('0.26.'), READINESS_BUILD)
+check('R11/R12 readiness lineage', READINESS_BUILD.startswith(('0.26.', '0.27.')), READINESS_BUILD)
 
 # Regression 1: single-character meaningful technical units must not disappear.
 segments, meta = units_to_segments([

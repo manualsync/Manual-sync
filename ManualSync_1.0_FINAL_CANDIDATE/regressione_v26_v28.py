@@ -16,8 +16,8 @@ def check(name,cond,detail=''):
     ok=bool(cond); res.append({'test':name,'status':'PASS' if ok else 'FAIL','detail':str(detail)})
     if not ok: raise AssertionError(f'{name}: {detail}')
 
-check('Readiness build',READINESS_BUILD.startswith('0.26.'),READINESS_BUILD)
-check('Release build',RELEASE_BUILD.startswith('0.27.'),RELEASE_BUILD)
+check('Readiness build',READINESS_BUILD.startswith(('0.26.','0.27.')),READINESS_BUILD)
+check('Release build',RELEASE_BUILD.startswith(('0.27.','0.28.')),RELEASE_BUILD)
 check('Project lifecycle build',PROJECT_BUILD.startswith('0.28.0'),PROJECT_BUILD)
 
 p=create_project(OUT/'projects',project_name='Demo Release',client='ACME',product='Drive',manual_code='MAN-001',revision='R2',source_lang='en-US',target_langs=['it-IT'],owner='Docs')

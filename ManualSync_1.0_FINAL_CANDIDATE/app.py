@@ -1539,6 +1539,33 @@ def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, stri
     except Exception as e: raise gr.Error(str(e))
     finally: wf.close()
 
+def _compliance_readiness_html(compliance: dict | None) -> str:
+    """3.5C: minimal Release-tab integration for the Compliance gate --
+    read-only formatting of the SAME canonical dict release_readiness.py /
+    the release snapshot use, never a second Compliance dashboard. No
+    active scope -> a neutral note, never a false green checkmark."""
+    if not compliance or not compliance.get("compliance_applicable"):
+        return "<div class='ms-muted' style='margin-top:10px;font-size:12px'>Compliance non configurata per questa publication.</div>"
+    c = compliance["counts"]
+    status = ("<span class='ms-ok'>Compliance: pronta</span>" if compliance["compliance_ready"]
+              else "<span class='ms-block'>Compliance: richiede intervento</span>")
+    counts_line = (f"Coperti {c['Covered']} · Da verificare {c['To verify']} · Mancanti {c['Missing']} · "
+                   f"Non applicabili {c['Not applicable']} ({compliance['active_scope_count']} scope attivi)")
+    items = compliance.get("blocking_items") or []
+    blockers_html = ""
+    if items:
+        rows = "".join(
+            f"<li>{html.escape(b['scope_id'])} / {html.escape(b['requirement_id'])} — "
+            f"{html.escape(b['title'])} ({html.escape(b['status'])})</li>" for b in items[:20])
+        more = f"<li class='ms-muted'>… e altri {len(items) - 20}</li>" if len(items) > 20 else ""
+        blockers_html = f"<ul style='margin:6px 0 0 18px;padding:0'>{rows}{more}</ul>"
+    return (
+        f"<div style='margin-top:10px'><b>{status}</b><br>"
+        f"<span class='ms-muted'>{counts_line}</span>{blockers_html}"
+        "<div class='ms-muted' style='margin-top:6px;font-size:12px'>Stato rispetto agli scope Compliance "
+        "configurati: non è una dichiarazione di conformità legale o certificazione.</div></div>"
+    )
+
 def readiness_ui(project_dir, publication_id, target_langs, profile_id, release_mode_label="Collaudo interno"):
     require_linguistic = not str(release_mode_label or "").startswith("Collaudo")
     langs=canonical_langs(target_langs)
@@ -1551,8 +1578,9 @@ def readiness_ui(project_dir, publication_id, target_langs, profile_id, release_
     detail=f"Lingua sorgente: <b>{source}</b> · Lingue target pronte: <b>{sm.get('target_languages_ready',0)}/{sm.get('target_languages_total',0)}</b>."
     if not r['release_ready'] and not r['blocking_items'].empty:
         detail += f" · Elementi traduzione da risolvere: <b>{len(r['blocking_items'])}</b>."
+    compliance_html = _compliance_readiness_html(r.get('compliance'))
     return (
-        f"<div class='ms-card'><h3>{msg}</h3><p>{detail}</p></div>",
+        f"<div class='ms-card'><h3>{msg}</h3><p>{detail}</p>{compliance_html}</div>",
         gr.update(value=_friendly_readiness_matrix(r['matrix']), visible=True),
         gr.update(value=r['blocking_items'], visible=not r['blocking_items'].empty),
         str(files['json']),
@@ -1621,6 +1649,8 @@ def release_ui(project_dir, publication_id, target_langs, released_by, release_i
         return _friendly_release_failure(e, mode), None, gr.update(value=pd.DataFrame(), visible=False)
     mode_label='COLLAUDO INTERNO' if mode=='test' else 'PRODUZIONE CLIENTE'
     msg=f"✅ Release **{mode_label}** **{r['release_id']}** creata. Snapshot immutabili e checksum inclusi."
+    if r.get('readiness', {}).get('compliance', {}).get('compliance_applicable'):
+        msg += " Snapshot Compliance dello scope attivo incluso e hashato."
     return msg, str(r['release_zip']), gr.update(value=_friendly_release_artifacts(r['artifacts']), visible=True)
 
 # ============================================================================

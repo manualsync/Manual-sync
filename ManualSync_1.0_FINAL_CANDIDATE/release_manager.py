@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import pandas as pd
 
 from ccms_industrial import IndustrialRepository
+from compliance_intelligence import ComplianceService
 from publishing_bridges import export_publication_docx
 from idml_hardening import patch_idml_slots
 from release_readiness import assess_release_readiness, export_readiness_report
@@ -19,7 +20,7 @@ from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import collect_cross_language_issues, cross_language_issue
 
-RELEASE_BUILD = "0.27.7-production-linguistic-fail-closed-20260820"
+RELEASE_BUILD = "0.28.0-compliance-release-snapshot-3-5c-20260901"
 
 
 def _sha(path: Path) -> str:
@@ -200,6 +201,45 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
     CCMS. Snapshot rows are then inserted in one SQLite transaction and committed
     only after every language snapshot/provenance file and the ZIP have been built.
     A business-rule block therefore leaves no new ``publication_releases`` rows.
+
+    3.5C: Compliance readiness is read TWICE, deliberately, at two
+    different points with two different jobs:
+    1. Once here, via assess_release_readiness(), as a fast advisory
+       pre-check -- fails fast, before any expensive DOCX/IDML generation,
+       if Compliance is obviously blocked.
+    2. Once more, authoritatively, at the very start of the ATOMIC CCMS
+       SNAPSHOT TRANSACTION below, AFTER this function's own
+       `repo.conn.execute("BEGIN IMMEDIATE")` has acquired SQLite's write
+       lock (RESERVED) on this project's database. That second read is the
+       one actually used both for the final gate check and for the
+       compliance_snapshot embedded in every language's release row --
+       closing the TOCTOU window a single early read would leave open: no
+       other writer can change a Compliance decision between "the state we
+       gated on" and "the state we committed", because from BEGIN IMMEDIATE
+       to this transaction's commit/rollback, this connection holds SQLite's
+       only write lock on the file (verified empirically: a second
+       connection's write blocks with "database is locked" for the whole
+       window; see regressione_compliance_release_3_5c.py's
+       TOCTOU/fault-injection test).
+
+    The ComplianceService instance itself is constructed exactly ONCE, right
+    after `repo` opens below -- BEFORE any transaction -- because its
+    schema-ensure step (conn.executescript()) implicitly commits any
+    pending transaction; constructing a second instance (or re-running
+    _ensure_schema) inside the locked window would silently release the
+    lock this fix depends on. The second, authoritative Compliance read
+    reuses that already-constructed instance's plain read methods (SELECT
+    only, never executescript), which is what makes it safe to run inside
+    the lock.
+
+    release_publication() itself independently re-derives and gates
+    Compliance whenever it is called standalone (commit=True), so a direct
+    call bypassing this function cannot skip the gate either -- see its own
+    docstring. commit=False is reserved exclusively for this function's own
+    per-language loop; it is the only real call site in the codebase and it
+    always passes an already-gated compliance_snapshot from the locked read
+    above (see the RuntimeError release_publication() raises if that
+    contract is ever violated).
     """
     project_dir = Path(project_dir)
     release_mode = str(release_mode or "production").strip().lower()
@@ -213,7 +253,13 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
     )
     if not readiness["release_ready"]:
         blocked = readiness["matrix"][readiness["matrix"]["status"] == "BLOCKED"]
-        raise ValueError("Release bloccata: " + "; ".join(f"{r.language}: {r.issues}" for r in blocked.itertuples()))
+        reasons = [f"{r.language}: {r.issues}" for r in blocked.itertuples()]
+        compliance = readiness.get("compliance") or {}
+        if compliance.get("compliance_applicable") and not compliance.get("compliance_ready"):
+            items = compliance.get("blocking_items") or []
+            preview = "; ".join(f"{b['scope_id']}/{b['requirement_id']} ({b['status']})" for b in items[:10])
+            reasons.append(f"Compliance: {len(items)} requisiti bloccanti su {compliance['active_scope_count']} scope attivi — {preview}")
+        raise ValueError("Release bloccata: " + "; ".join(reasons))
 
     release_id = release_id or f"REL-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')[:-3]}"
     out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="manualsync_release_"))
@@ -231,6 +277,11 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
                 f"{release_id}. Gli snapshot immutabili esistenti non vengono sovrascritti. "
                 "Scegli un nuovo Release ID."
             )
+
+        # Constructed ONCE, here, before any transaction: ComplianceService's
+        # schema-ensure step would implicitly commit a pending transaction if
+        # constructed again later, inside the BEGIN IMMEDIATE window below.
+        compliance_svc = ComplianceService(repo)
 
         # Everything is staged away from the persistent Releases directory. If a
         # preflight gate fails, TemporaryDirectory removes every transient file.
@@ -310,6 +361,27 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
             # release_publication(commit=False) lets all language snapshots share
             # one transaction. Any exception rolls the complete release attempt back.
             try:
+                # BEGIN IMMEDIATE acquires SQLite's RESERVED write lock right
+                # now (verified empirically: a concurrent connection's write
+                # blocks with "database is locked" until this transaction
+                # ends) -- closing the TOCTOU window between the Compliance
+                # gate and the release commit. The re-read below is the
+                # authoritative one: it is what actually gates this release
+                # AND what gets frozen into every language's snapshot, so a
+                # concurrent Compliance edit can never land "between" the
+                # gate and the snapshot -- there is no longer a gap for it to
+                # land in.
+                repo.conn.execute("BEGIN IMMEDIATE")
+                locked_compliance = compliance_svc.compliance_readiness_for_publication(publication_id)
+                if locked_compliance.get("compliance_applicable") and not locked_compliance.get("compliance_ready"):
+                    items = locked_compliance.get("blocking_items") or []
+                    preview = "; ".join(f"{b['scope_id']}/{b['requirement_id']} ({b['status']})" for b in items[:10])
+                    raise ValueError(
+                        "Release bloccata: lo stato Compliance è cambiato (o è stato osservato per la prima volta come "
+                        f"non pronto) nella finestra sotto lock precedente il commit — {len(items)} requisiti bloccanti "
+                        f"su {locked_compliance['active_scope_count']} scope attivi. {preview}"
+                    )
+
                 for item in preflight:
                     lang = item["language"]
                     rid = item["release_id"]
@@ -320,6 +392,7 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
                         released_by=released_by or "Release Manager",
                         profile_id=profile_id, dimensions=dimensions,
                         target_lang=target, commit=False,
+                        compliance_snapshot=locked_compliance,
                     )
 
                     snapshot_row = repo.conn.execute(
@@ -361,6 +434,17 @@ def create_release_bundle(project_dir: str | Path, publication_id: str, *, targe
                     "profile_id": profile_id or "",
                     "source_lang": readiness["source_lang"],
                     "languages": readiness["matrix"].to_dict(orient="records"),
+                    # Convenience summary only. The canonical, hash-verified
+                    # Compliance record for this release is the "compliance"
+                    # section inside each language's own
+                    # publication_releases.snapshot_json/snapshot_sha256
+                    # (see AUDIT/CCMS_SNAPSHOT_*.json) -- never this manifest.
+                    "compliance_summary": {
+                        "compliance_applicable": readiness["compliance"]["compliance_applicable"],
+                        "compliance_ready": readiness["compliance"]["compliance_ready"],
+                        "active_scope_count": readiness["compliance"]["active_scope_count"],
+                        "counts": readiness["compliance"]["counts"],
+                    },
                     "ccms_releases": releases,
                     "artifacts": produced,
                     "audit_files": audit_files,

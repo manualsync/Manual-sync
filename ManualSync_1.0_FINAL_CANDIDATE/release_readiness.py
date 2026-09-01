@@ -7,12 +7,13 @@ from typing import Any, Iterable
 import pandas as pd
 
 from ccms_industrial import IndustrialRepository
+from compliance_intelligence import ComplianceService
 from workflow_management import WorkflowManager
 from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import collect_cross_language_issues, cross_language_issue
 
-READINESS_BUILD = "0.26.4-linguistic-readiness-fail-closed-20260822"
+READINESS_BUILD = "0.27.0-compliance-readiness-gate-3-5c-20260901"
 ACCEPTED_TRANSLATION_STATUS = {"Reviewed", "Approved", "Published", "Confirmed", "NOT_REQUIRED"}
 CLOSED_JOB_STATUS = {"APPROVED", "CANCELLED"}
 
@@ -196,7 +197,17 @@ def assess_release_readiness(project_dir: str | Path, publication_id: str, *, ta
             })
 
         matrix = pd.DataFrame(rows)
-        ready = bool(len(matrix) and (matrix["status"] == "READY").all())
+        language_ready = bool(len(matrix) and (matrix["status"] == "READY").all())
+        # Compliance is read once here, from the same canonical backend
+        # function the Release UI and the immutable release snapshot both
+        # use (ComplianceService.compliance_readiness_for_publication) --
+        # never re-derived or duplicated. No ACTIVE scope for this
+        # publication -> compliance_ready=True vacuously, so existing
+        # readiness behavior for publications without Compliance is
+        # unchanged. One or more ACTIVE scopes -> Compliance joins the gate
+        # automatically; there is no flag here to opt out of it.
+        compliance = ComplianceService(repo).compliance_readiness_for_publication(publication_id)
+        ready = language_ready and compliance["compliance_ready"]
         target_matrix = matrix[matrix["role"] == "TARGET"] if not matrix.empty else pd.DataFrame()
         source_rows = matrix[matrix["role"] == "SOURCE"] if not matrix.empty else pd.DataFrame()
         blockers = pd.DataFrame(blocking_items, columns=["language","topic_id","block_id","block_type","object_ref_id","translation_status","content_preview"])
@@ -210,6 +221,7 @@ def assess_release_readiness(project_dir: str | Path, publication_id: str, *, ta
             "matrix": matrix,
             "blocking_items": blockers,
             "open_reviews": open_reviews,
+            "compliance": compliance,
             "summary": {
                 "languages_total": int(len(matrix)),
                 "languages_ready": int((matrix["status"] == "READY").sum()),
@@ -218,6 +230,9 @@ def assess_release_readiness(project_dir: str | Path, publication_id: str, *, ta
                 "target_languages_ready": int((target_matrix["status"] == "READY").sum()) if not target_matrix.empty else 0,
                 "target_languages_blocked": int((target_matrix["status"] == "BLOCKED").sum()) if not target_matrix.empty else 0,
                 "source_ready": bool(not source_rows.empty and (source_rows["status"] == "READY").all()),
+                "language_ready": language_ready,
+                "compliance_applicable": compliance["compliance_applicable"],
+                "compliance_ready": compliance["compliance_ready"],
                 "release_ready": ready,
             },
         }

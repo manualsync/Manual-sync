@@ -74,7 +74,7 @@ from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
 
-COMPLIANCE_BUILD = "0.3.0-compliance-core-3-5b-ui-support-20260828"
+COMPLIANCE_BUILD = "0.4.0-compliance-core-3-5c-release-readiness-20260901"
 
 APPLICABILITY_STATES = {"APPLIES", "NOT_APPLICABLE", "TO_VERIFY"}
 COVERAGE_STATES = {"COVERED", "TO_VERIFY", "MISSING"}
@@ -1081,3 +1081,113 @@ class ComplianceService:
                       s.version AS current_version, s.status
                FROM compliance_requirement_standard_link l JOIN compliance_standard s ON s.standard_id=l.standard_id
                WHERE l.requirement_id=? ORDER BY l.confirmed_at""", (requirement_id,))]
+
+    def risks_for_requirement(self, requirement_id: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT l.risk_id, l.requirement_version, l.linked_by, l.linked_at, k.title, k.hazard_type, k.is_residual
+               FROM compliance_risk_requirement_link l JOIN compliance_risk k ON k.risk_id=l.risk_id
+               WHERE l.requirement_id=? ORDER BY l.linked_at""", (requirement_id,))]
+
+    # ---------- release readiness / immutable release snapshot (3.5C) ----------
+    # A release must never silently ignore an active Compliance scope, and a
+    # published release must freeze a verifiable record of the Compliance
+    # state it was actually created against. Both the readiness gate (via
+    # release_readiness.py) and the release snapshot embedded into
+    # publication_releases.snapshot_json (via ccms_industrial.release_publication)
+    # read the SAME dict produced by compliance_readiness_for_publication()
+    # below -- one canonical read, so a release can never freeze a Compliance
+    # state different from the one its own gate evaluated. Nothing here is a
+    # new validation rule: every field is re-read from compute_status() and
+    # the existing read-only getters above; "Covered"/"Not applicable" are
+    # the only two statuses that do not block a release -- "To verify"
+    # (including every staleness case compute_status() already collapses
+    # into it) and "Missing" always do.
+    _BLOCKING_STATUSES = {"To verify", "Missing"}
+
+    def _requirement_release_snapshot(self, scope_id: str, requirement_id: str) -> dict[str, Any]:
+        req = self._requirement_row(requirement_id)
+        status = self.compute_status(scope_id, requirement_id)
+        instrument = self.instrument_row(req["instrument_id"]) if req["instrument_id"] else None
+        return {
+            "requirement_id": requirement_id,
+            "requirement_version": int(req["version"]),
+            "title": req["title"],
+            "article_ref": req["article_ref"] or "",
+            "status": status,
+            "is_blocking": status in self._BLOCKING_STATUSES,
+            "requirement_is_current": self.requirement_is_current(requirement_id),
+            "instrument": ({
+                "instrument_id": instrument["instrument_id"], "official_identifier": instrument["official_identifier"],
+                "title": instrument["title"], "status": instrument["status"],
+                "current_version": int(instrument["version"]),
+                "version_at_authoring": int(req["instrument_version_at_authoring"]),
+            } if instrument else None),
+            "standards": self.standards_for_requirement(requirement_id),
+            "risks": self.risks_for_requirement(requirement_id),
+            "applicability": self.applicability_row(scope_id, requirement_id),
+            "assessment": self.assessment_row(scope_id, requirement_id),
+            "evidence": self.evidence_for_requirement(requirement_id),
+        }
+
+    def readiness_snapshot_for_scope(self, scope_id: str) -> dict[str, Any]:
+        """Full release-readiness detail for ONE scope: enough to gate a
+        release AND, unchanged, to freeze into an immutable release
+        snapshot. Never used by any write path."""
+        scope = self.scope_row(scope_id)
+        if not scope:
+            raise KeyError(scope_id)
+        items = [self._requirement_release_snapshot(scope_id, rid) for rid in self.requirements_in_scope(scope_id)]
+        counts = {"Covered": 0, "To verify": 0, "Missing": 0, "Not applicable": 0}
+        for it in items:
+            counts[it["status"]] += 1
+        blocking = [it for it in items if it["is_blocking"]]
+        return {
+            "scope_id": scope_id, "publication_id": scope["publication_id"], "title": scope["title"],
+            "jurisdiction": scope["jurisdiction"], "profile_id": scope["profile_id"], "scope_status": scope["status"],
+            "total_requirements": len(items), "counts": counts, "requirements": items,
+            "blocking_requirement_ids": [it["requirement_id"] for it in blocking],
+            "ready": not blocking,
+        }
+
+    def compliance_readiness_for_publication(self, publication_id: str) -> dict[str, Any]:
+        """THE canonical Compliance readiness signal for a publication.
+
+        No ACTIVE scope -> compliance_applicable=False, compliance_ready=True
+        (vacuously): existing readiness/release behavior for publications
+        with no Compliance scope configured must stay exactly as it was
+        before 3.5C -- no artificial blocker, no green checkmark either.
+
+        One or more ACTIVE scopes -> compliance_applicable=True and EVERY
+        active scope is evaluated (active_scopes_for_publication() is the
+        same deterministic, already-existing enumeration the Compliance UI
+        itself uses -- oldest first, never an arbitrary pick); the
+        publication is compliance_ready only if none of them has a
+        blocking requirement."""
+        active = self.active_scopes_for_publication(publication_id)
+        if not active:
+            return {
+                "compliance_applicable": False, "active_scope_count": 0, "compliance_ready": True,
+                "counts": {"Covered": 0, "To verify": 0, "Missing": 0, "Not applicable": 0},
+                "blocking_items": [], "stale_requirements": [], "scopes": [], "captured_at": _now(),
+            }
+        scopes = [self.readiness_snapshot_for_scope(sid) for sid in active]
+        counts = {"Covered": 0, "To verify": 0, "Missing": 0, "Not applicable": 0}
+        blocking_items: list[dict[str, Any]] = []
+        stale_requirements: list[dict[str, Any]] = []
+        for sc in scopes:
+            for k in counts:
+                counts[k] += sc["counts"][k]
+            for it in sc["requirements"]:
+                if it["is_blocking"]:
+                    blocking_items.append({
+                        "scope_id": sc["scope_id"], "requirement_id": it["requirement_id"],
+                        "title": it["title"], "article_ref": it["article_ref"], "status": it["status"],
+                    })
+                if not it["requirement_is_current"]:
+                    stale_requirements.append({"scope_id": sc["scope_id"], "requirement_id": it["requirement_id"]})
+        return {
+            "compliance_applicable": True, "active_scope_count": len(scopes),
+            "compliance_ready": not blocking_items,
+            "counts": counts, "blocking_items": blocking_items, "stale_requirements": stale_requirements,
+            "scopes": scopes, "captured_at": _now(),
+        }
