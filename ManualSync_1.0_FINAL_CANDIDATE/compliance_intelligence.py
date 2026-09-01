@@ -74,7 +74,7 @@ from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
 
-COMPLIANCE_BUILD = "0.2.0-compliance-core-3-5a-1-integrity-20260828"
+COMPLIANCE_BUILD = "0.3.0-compliance-core-3-5b-ui-support-20260828"
 
 APPLICABILITY_STATES = {"APPLIES", "NOT_APPLICABLE", "TO_VERIFY"}
 COVERAGE_STATES = {"COVERED", "TO_VERIFY", "MISSING"}
@@ -709,6 +709,26 @@ class ComplianceService:
             )
         return scopes[0] if scopes else None
 
+    def scope_row(self, scope_id: str) -> dict[str, Any] | None:
+        """Read-only. Full scope row for display -- never used by a write
+        path (writes always re-validate scope_id existence themselves)."""
+        row = self.conn.execute("SELECT * FROM compliance_scope WHERE scope_id=?", (scope_id,)).fetchone()
+        return dict(row) if row else None
+
+    def scopes_for_publication(self, publication_id: str, *, status: str | None = None) -> list[dict[str, Any]]:
+        """Read-only. Every scope for a publication (any status by
+        default), full rows, for a UI to let a human pick or review one --
+        unlike active_scope(s)_for_publication() this never raises on
+        ambiguity, it just lists."""
+        if status:
+            rows = self.conn.execute(
+                "SELECT * FROM compliance_scope WHERE publication_id=? AND status=? ORDER BY created_at",
+                (publication_id, status))
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM compliance_scope WHERE publication_id=? ORDER BY created_at", (publication_id,))
+        return [dict(r) for r in rows]
+
     # ---------- applicability ----------
     def set_applicability(self, scope_id: str, requirement_id: str, applies: str, *, actor: str,
                           justification: str = "", comment: str = "") -> int:
@@ -795,6 +815,62 @@ class ComplianceService:
                 (evidence_id, requirement_id, int(req["version"]), actor, now))
             self._audit("compliance_evidence", evidence_id, "LINK_REQUIREMENT", actor, {"requirement_id": requirement_id})
         return int(req["version"])
+
+    def unlink_evidence_requirement(self, evidence_id: str, requirement_id: str, *, actor: str) -> bool:
+        """Detach one evidence from one requirement (auditable: the evidence
+        record itself is NOT deleted -- it may still support other
+        requirements). Symmetric with the applicability-triggered
+        invalidation in set_applicability(): if this was propping up the
+        requirement's only current evidence for a live COVERED assessment,
+        that assessment is actively invalidated too (deleted, audited),
+        never left silently dangling. Returns False if the link did not
+        exist (nothing to do), never raises for that case."""
+        actor = self._require_actor(actor)
+        if not self.conn.execute(
+            "SELECT 1 FROM compliance_evidence_link WHERE evidence_id=? AND requirement_id=?",
+            (evidence_id, requirement_id)
+        ).fetchone():
+            return False
+        with self._atomic():
+            self.conn.execute(
+                "DELETE FROM compliance_evidence_link WHERE evidence_id=? AND requirement_id=?",
+                (evidence_id, requirement_id))
+            self._audit("compliance_evidence", evidence_id, "UNLINK_REQUIREMENT", actor, {"requirement_id": requirement_id})
+            if not self._has_valid_current_evidence(requirement_id):
+                dangling = self.conn.execute(
+                    "SELECT scope_id,status,decided_by,decided_at FROM compliance_assessment WHERE requirement_id=? AND status='COVERED'",
+                    (requirement_id,)).fetchall()
+                for d in dangling:
+                    self.conn.execute(
+                        "DELETE FROM compliance_assessment WHERE scope_id=? AND requirement_id=?",
+                        (d["scope_id"], requirement_id))
+                    self._audit(
+                        "compliance_assessment", f"{d['scope_id']}::{requirement_id}", "INVALIDATED_BY_EVIDENCE_UNLINK",
+                        actor, {"previous_status": d["status"], "previous_decided_by": d["decided_by"],
+                                "previous_decided_at": d["decided_at"]})
+        return True
+
+    def evidence_for_requirement(self, requirement_id: str) -> list[dict[str, Any]]:
+        """Read-only. Every evidence linked to a requirement, each row
+        annotated with is_current (recomputed live, same rule
+        _has_valid_current_evidence() uses) so a UI never has to duplicate
+        that judgment."""
+        out = []
+        for row in self.conn.execute(
+            """SELECT e.evidence_id, e.evidence_kind, e.object_id, e.object_version, e.external_ref, e.description,
+                      e.added_by, e.added_at, l.linked_by, l.linked_at
+               FROM compliance_evidence e JOIN compliance_evidence_link l ON l.evidence_id = e.evidence_id
+               WHERE l.requirement_id = ? ORDER BY l.linked_at""",
+            (requirement_id,),
+        ):
+            item = dict(row)
+            if item["evidence_kind"] in EXTERNAL_EVIDENCE_KINDS:
+                item["is_current"] = True
+            else:
+                current = self._object_current_version(item["evidence_kind"], item["object_id"])
+                item["is_current"] = current is not None and current == int(item["object_version"])
+            out.append(item)
+        return out
 
     # ---------- assessment (coverage) ----------
     def set_assessment(self, scope_id: str, requirement_id: str, status: str, *, actor: str, comment: str = "") -> int:
@@ -968,3 +1044,40 @@ class ComplianceService:
             (instrument_id, current))]
         return {"instrument_id": instrument_id, "current_version": current,
                 "stale_requirements": stale_requirements, "stale_scope_references": stale_scope_refs}
+
+    # ---------- read-only display getters (3.5B: adapter/UI support) ----------
+    # None of these are consulted by any write path above -- every write
+    # method re-reads what it needs itself. They exist so a UI adapter never
+    # has to hand-write SQL against this schema to render a screen.
+    def requirement_row(self, requirement_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM compliance_requirement WHERE requirement_id=?", (requirement_id,)).fetchone()
+        return dict(row) if row else None
+
+    def applicability_row(self, scope_id: str, requirement_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM compliance_applicability WHERE scope_id=? AND requirement_id=?",
+            (scope_id, requirement_id)).fetchone()
+        return dict(row) if row else None
+
+    def assessment_row(self, scope_id: str, requirement_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM compliance_assessment WHERE scope_id=? AND requirement_id=?",
+            (scope_id, requirement_id)).fetchone()
+        return dict(row) if row else None
+
+    def instrument_row(self, instrument_id: str) -> dict[str, Any] | None:
+        if not instrument_id:
+            return None
+        row = self.conn.execute("SELECT * FROM compliance_regulatory_instrument WHERE instrument_id=?", (instrument_id,)).fetchone()
+        return dict(row) if row else None
+
+    def standard_row(self, standard_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM compliance_standard WHERE standard_id=?", (standard_id,)).fetchone()
+        return dict(row) if row else None
+
+    def standards_for_requirement(self, requirement_id: str) -> list[dict[str, Any]]:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT l.standard_id, l.standard_version, l.note, l.confirmed_by, l.confirmed_at, s.designation,
+                      s.version AS current_version, s.status
+               FROM compliance_requirement_standard_link l JOIN compliance_standard s ON s.standard_id=l.standard_id
+               WHERE l.requirement_id=? ORDER BY l.confirmed_at""", (requirement_id,))]

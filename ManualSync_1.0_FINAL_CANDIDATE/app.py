@@ -27,6 +27,7 @@ from grounded_authoring import GroundingStore
 from generative_orchestrator import GenerationLedger, GenerationRequest, GenerativeOrchestrator, SafeSourceComposer
 from project_lifecycle import create_project, read_project, update_project, project_health
 from support_diagnostics import system_health, create_support_bundle
+import compliance_view as cv
 
 from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
@@ -1622,6 +1623,345 @@ def release_ui(project_dir, publication_id, target_langs, released_by, release_i
     msg=f"✅ Release **{mode_label}** **{r['release_id']}** creata. Snapshot immutabili e checksum inclusi."
     return msg, str(r['release_zip']), gr.update(value=_friendly_release_artifacts(r['artifacts']), visible=True)
 
+# ============================================================================
+# Milestone 3.5B: Guided Compliance UX.
+# Every status/count/validation decision is read from compliance_view.py /
+# ComplianceService -- nothing here recomputes a business rule. This layer
+# only formats: HTML cards, DataFrame columns, Dropdown labels, and which
+# Gradio component gets which message. A failed decision NEVER raises
+# gr.Error (that would corrupt sibling outputs on this multi-output tab,
+# same lesson learned in Milestone 3D's IDML review panel) -- it always
+# comes back as an inline "⛔ ..." message in the relevant Markdown, with
+# the dashboard/list/detail re-rendered from whatever is ACTUALLY
+# persisted (i.e. unchanged, since ComplianceService validates before any
+# write).
+# ============================================================================
+_COMPLIANCE_STATUS_COLOR = {"Covered": "#067647", "To verify": "#b54708", "Missing": "#b42318", "Not applicable": "#475467"}
+_COMPLIANCE_TABLE_COLS = ["Requisito", "Titolo", "Riferimento", "Stato", "Motivo", "Evidenza"]
+_COMPLIANCE_EVIDENCE_COLS = ["Tipo", "Riferimento", "Aggiornata", "Collegata da"]
+_COMPLIANCE_DISCLAIMER = (
+    "<div class='ms-muted' style='margin-top:8px;font-size:12px'>Stato della documentazione rispetto al perimetro "
+    "configurato: non è una dichiarazione di conformità legale, certificazione o marcatura CE. La responsabilità "
+    "finale resta del produttore/organizzazione competente.</div>"
+)
+
+def _compliance_status_badge(status: str) -> str:
+    color = _COMPLIANCE_STATUS_COLOR.get(status, "#475467")
+    return f"<span style='color:{color};font-weight:700'>{html.escape(status)}</span>"
+
+def _compliance_dashboard_html(d: dict) -> str:
+    if not d.get("has_scope"):
+        return ("<div class='ms-prod'><b>Nessuna valutazione di compliance attiva per questa pubblicazione.</b><br>"
+                "ManualSync non sta confrontando questa pubblicazione con nessun perimetro normativo al momento — "
+                "non significa che sia tutto a posto, significa che non è stata ancora impostata una valutazione. "
+                "Seleziona uno scope compliance esistente (o creane uno in modalità avanzata) per iniziare.</div>")
+    c = d["counts"]; scope = d.get("scope") or {}
+    title = scope.get("title") or scope.get("scope_id") or "Scope"
+    jurisdiction = f" · {scope['jurisdiction']}" if scope.get("jurisdiction") else ""
+    parts = [
+        f"<div class='ms-card'><h3 style='margin-top:0'>{html.escape(str(title))}{html.escape(jurisdiction)}</h3>",
+        "<div class='ms-kpis'>",
+        f"<div class='ms-kpi'><span>Coperti</span><b>{c['Covered']}</b></div>",
+        f"<div class='ms-kpi'><span>Da verificare</span><b>{c['To verify']}</b></div>",
+        f"<div class='ms-kpi'><span>Mancanti</span><b>{c['Missing']}</b></div>",
+        f"<div class='ms-kpi'><span>Non applicabili</span><b>{c['Not applicable']}</b></div>",
+        "</div>",
+        f"<div class='ms-muted'>Requisiti nel perimetro: {d['total']}</div>",
+    ]
+    stale_bits = []
+    if d.get("stale_requirements"):
+        n = len(d["stale_requirements"])
+        stale_bits.append(f"{n} requisito da riesaminare (riferimento normativo aggiornato)" if n == 1
+                          else f"{n} requisiti da riesaminare (riferimento normativo aggiornato)")
+    if d.get("stale_standard_mappings"):
+        n = len(d["stale_standard_mappings"])
+        stale_bits.append(f"{n} collegamento a uno standard da riconfermare (versione aggiornata)" if n == 1
+                          else f"{n} collegamenti a standard da riconfermare (versione aggiornata)")
+    if stale_bits:
+        parts.append("<div class='ms-prod' style='margin-top:10px'>" + " · ".join(stale_bits) + "</div>")
+    parts.append(_COMPLIANCE_DISCLAIMER)
+    parts.append("</div>")
+    return "".join(parts)
+
+def _compliance_requirement_table(rows: list[dict]) -> pd.DataFrame:
+    if not rows:
+        return pd.DataFrame(columns=_COMPLIANCE_TABLE_COLS)
+    return pd.DataFrame([{
+        "Requisito": r["requirement_id"], "Titolo": r["title"], "Riferimento": r["reference"],
+        "Stato": r["status"], "Motivo": r["reason"], "Evidenza": "Sì" if r["has_evidence"] else "No",
+    } for r in rows])
+
+def _requirement_dropdown_choices(rows: list[dict]) -> list[str]:
+    return [f"{r['requirement_id']} — {r['title']}" for r in rows]
+
+def _requirement_label_for(rows: list[dict], rid: str | None) -> str | None:
+    if not rid:
+        return None
+    for r in rows:
+        if r["requirement_id"] == rid:
+            return f"{r['requirement_id']} — {r['title']}"
+    return None
+
+def _parse_requirement_id_from_label(label: str | None) -> str:
+    return (label or "").split(" — ", 1)[0].strip()
+
+def _fmt_ts(ts: str | None) -> str:
+    return (ts or "")[:16].replace("T", " ") or "—"
+
+def _compliance_detail_placeholder() -> tuple:
+    return (
+        "<div class='ms-muted'>Seleziona un requisito dalla lista qui sopra per vederne il dettaglio.</div>",
+        "<div class='ms-muted'>—</div>", gr.update(value=None),
+        "", "<div class='ms-muted'>—</div>", gr.update(value=None),
+        pd.DataFrame(columns=_COMPLIANCE_EVIDENCE_COLS),
+        gr.update(choices=[], value=None), gr.update(choices=[], value=None),
+        "", "", "", "", "",
+    )
+
+def _compliance_render_open_requirement(svc, repo, scope_id: str, rid: str, *, applic_msg: str = "",
+                                        cov_msg: str = "", evidence_msg: str = "",
+                                        applic_radio_value: str | None = None,
+                                        cov_radio_value: str | None = None) -> tuple:
+    detail = cv.requirement_detail(svc, scope_id, rid)
+    req = detail["requirement"]
+    badge = _compliance_status_badge(detail["status"])
+    warn = "" if detail["requirement_is_current"] else (
+        "<div class='ms-prod'>Il riferimento normativo di questo requisito è stato aggiornato dopo l'ultima "
+        "stesura: verifica che il testo sia ancora corretto.</div>")
+    header_html = (
+        f"<div class='ms-card'><h3 style='margin-top:0'>{html.escape(req['title'])} &nbsp;{badge}</h3>"
+        f"<div class='ms-muted'>{html.escape(detail['reference'])}</div>"
+        f"<p>{html.escape(req.get('description') or '(nessuna descrizione)')}</p>"
+        f"<div class='ms-muted' style='font-size:12px'>{html.escape(detail['reason'])}</div>{warn}</div>"
+    )
+
+    ap = detail["applicability"]
+    if ap:
+        just = f" — {html.escape(ap['justification'])}" if ap.get("justification") else ""
+        applic_current = (f"<div class='ms-muted'>Decisione attuale: <b>{cv.APPLIES_LABELS.get(ap['applies'], ap['applies'])}</b>{just}"
+                          f"<br>Deciso da <b>{html.escape(ap['decided_by'])}</b> il {_fmt_ts(ap['decided_at'])}</div>")
+    else:
+        applic_current = "<div class='ms-muted'>Applicabilità non ancora valutata.</div>"
+
+    cov_banner = "" if detail["can_decide_coverage"] else (
+        "<div class='ms-prod'>La copertura può essere decisa solo dopo aver impostato applicabilità = "
+        "«Si applica» qui sopra.</div>")
+    asm = detail["assessment"]
+    if asm:
+        cm = f" — {html.escape(asm['comment'])}" if asm.get("comment") else ""
+        cov_current = (f"<div class='ms-muted'>Decisione attuale: <b>{cv.COVERAGE_LABELS.get(asm['status'], asm['status'])}</b>{cm}"
+                       f"<br>Deciso da <b>{html.escape(asm['decided_by'])}</b> il {_fmt_ts(asm['decided_at'])}</div>")
+    else:
+        cov_current = "<div class='ms-muted'>Copertura non ancora valutata.</div>"
+
+    evidence_rows = detail["evidence"]
+    evidence_df = pd.DataFrame([{
+        "Tipo": {"topic": "Sezione", "block": "Blocco", "table": "Tabella", "figure": "Figura",
+                "external_file": "File esterno", "customer_document": "Documento cliente",
+                "human_attestation": "Attestazione umana"}.get(e["evidence_kind"], e["evidence_kind"]),
+        "Riferimento": e["object_id"] or e.get("external_ref") or e.get("description") or "—",
+        "Aggiornata": "Sì" if e["is_current"] else "No",
+        "Collegata da": e["linked_by"],
+    } for e in evidence_rows]) if evidence_rows else pd.DataFrame(columns=_COMPLIANCE_EVIDENCE_COLS)
+
+    candidates = cv.evidence_candidates(repo)
+    candidate_choices = [f"{c['kind']}:{c['object_id']}:{c['version']} — {c['label']}" for c in candidates]
+    unlink_choices = [f"{e['evidence_id']} — {cv.evidence_label(e)}" for e in evidence_rows]
+
+    inst = detail["instrument"]
+    inst_line = f"{inst['official_identifier']} (v{inst['version']})" if inst else "—"
+    std_lines = "; ".join(f"{s['designation']} (v{s['standard_version']})" for s in detail["standards"]) or "—"
+    adv = (f"<div class='ms-muted' style='font-size:12px'>requirement_id: {html.escape(rid)} · version: {req['version']} · "
+          f"status: {req['status']} · instrument: {html.escape(inst_line)} · standard mapping: {html.escape(std_lines)} · "
+          f"scope_id: {html.escape(scope_id)}</div>")
+
+    return (
+        header_html, applic_current, gr.update(value=applic_radio_value), cov_banner, cov_current,
+        gr.update(value=cov_radio_value),
+        evidence_df, gr.update(choices=candidate_choices, value=None), gr.update(choices=unlink_choices, value=None),
+        adv, rid, applic_msg, cov_msg, evidence_msg,
+    )
+
+def _compliance_full_bundle_empty() -> tuple:
+    return (
+        _compliance_dashboard_html({"has_scope": False}),
+        pd.DataFrame(columns=_COMPLIANCE_TABLE_COLS),
+        gr.update(choices=[], value=None),
+        *_compliance_detail_placeholder(),
+    )
+
+def _compliance_full_bundle(svc, repo, scope_id: str | None, rid: str | None, *, applic_msg: str = "",
+                            cov_msg: str = "", evidence_msg: str = "",
+                            applic_radio_value: str | None = None, cov_radio_value: str | None = None) -> tuple:
+    dash = _compliance_dashboard_html(cv.dashboard(svc, scope_id))
+    rows = cv.requirement_list_rows(svc, scope_id) if scope_id else []
+    table = _compliance_requirement_table(rows)
+    dd = gr.update(choices=_requirement_dropdown_choices(rows), value=_requirement_label_for(rows, rid))
+    if scope_id and rid:
+        try:
+            detail = _compliance_render_open_requirement(svc, repo, scope_id, rid, applic_msg=applic_msg,
+                                                          cov_msg=cov_msg, evidence_msg=evidence_msg,
+                                                          applic_radio_value=applic_radio_value,
+                                                          cov_radio_value=cov_radio_value)
+        except KeyError:
+            detail = _compliance_detail_placeholder()
+    else:
+        detail = _compliance_detail_placeholder()
+    return (dash, table, dd, *detail)
+
+def compliance_load_ui(project_dir, publication_id):
+    if not project_dir:
+        return (gr.update(choices=[], value=None), *_compliance_full_bundle_empty())
+    repo, svc = cv.open_service(project_dir)
+    try:
+        opts = cv.scope_options(svc, (publication_id or "PUB-MAIN").strip())
+        scope_id = opts[0][1] if opts else None  # opts are (label, value) tuples -- value is the scope_id
+        bundle = _compliance_full_bundle(svc, repo, scope_id, None)
+        return (gr.update(choices=opts, value=scope_id), *bundle)
+    finally:
+        repo.close()
+
+def compliance_switch_scope_ui(project_dir, scope_id):
+    if not project_dir:
+        return _compliance_full_bundle_empty()
+    repo, svc = cv.open_service(project_dir)
+    try:
+        return _compliance_full_bundle(svc, repo, scope_id, None)
+    finally:
+        repo.close()
+
+def compliance_open_requirement_ui(project_dir, scope_id, requirement_label):
+    rid = _parse_requirement_id_from_label(requirement_label)
+    if not project_dir:
+        return _compliance_full_bundle_empty()
+    repo, svc = cv.open_service(project_dir)
+    try:
+        return _compliance_full_bundle(svc, repo, scope_id, rid or None)
+    finally:
+        repo.close()
+
+def compliance_decide_applicability_ui(project_dir, scope_id, rid, applies_label, reviewer, justification, comment,
+                                       cur_cov_radio=None):
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    repo, svc = cv.open_service(project_dir)
+    try:
+        msg = ""
+        failed = False
+        if scope_id and rid:
+            applies_code = cv.APPLIES_LABELS_REVERSE.get(applies_label or "")
+            if not applies_code:
+                msg = "⛔ Seleziona un'opzione (Si applica / Non applicabile / Da verificare) prima di confermare."
+                failed = True
+            else:
+                try:
+                    svc.set_applicability(scope_id, rid, applies_code, actor=reviewer or "",
+                                          justification=justification or "", comment=comment or "")
+                    msg = "✅ Decisione registrata."
+                except Exception as exc:
+                    msg = f"⛔ {exc}"
+                    failed = True
+        # Acceptance fix: a validation failure (e.g. missing justification,
+        # missing reviewer) must be inline and non-destructive -- the choice
+        # the user just made stays visibly selected so they can add what's
+        # missing and re-confirm without reselecting it. On SUCCESS (or when
+        # nothing was submitted) the Radio still resets to unselected: the
+        # decision just taken is shown in applic_current above it, and an
+        # unselected Radio is the correct starting point for the NEXT edit
+        # -- same "never pre-selected" invariant as a fresh open. The
+        # COVERAGE radio is untouched by an applicability action either way
+        # -- echo back whatever it currently shows (found to reset to None
+        # otherwise, wiping an unrelated pending choice during 3.5B
+        # stabilization acceptance).
+        return _compliance_full_bundle(svc, repo, scope_id, rid, applic_msg=msg,
+                                       applic_radio_value=applies_label if failed else None,
+                                       cov_radio_value=cur_cov_radio)
+    finally:
+        repo.close()
+
+def compliance_decide_coverage_ui(project_dir, scope_id, rid, coverage_label, reviewer, comment, cur_applic_radio=None):
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    repo, svc = cv.open_service(project_dir)
+    try:
+        msg = ""
+        failed = False
+        if scope_id and rid:
+            cov_code = cv.COVERAGE_LABELS_REVERSE.get(coverage_label or "")
+            if not cov_code:
+                msg = "⛔ Seleziona un'opzione (Coperto / Da verificare / Mancante) prima di confermare."
+                failed = True
+            else:
+                try:
+                    svc.set_assessment(scope_id, rid, cov_code, actor=reviewer or "", comment=comment or "")
+                    msg = "✅ Decisione registrata."
+                except Exception as exc:
+                    msg = f"⛔ {exc}"
+                    failed = True
+        # Same non-destructive-on-failure fix as applicability, see there --
+        # and the same "don't touch the OTHER radio" symmetry.
+        return _compliance_full_bundle(svc, repo, scope_id, rid, cov_msg=msg,
+                                       cov_radio_value=coverage_label if failed else None,
+                                       applic_radio_value=cur_applic_radio)
+    finally:
+        repo.close()
+
+def compliance_link_evidence_ui(project_dir, scope_id, rid, candidate_label, reviewer,
+                                cur_applic_radio=None, cur_cov_radio=None):
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    repo, svc = cv.open_service(project_dir)
+    try:
+        msg = ""
+        if scope_id and rid:
+            if not candidate_label:
+                msg = "⛔ Scegli un contenuto dalla lista prima di collegarlo come evidenza."
+            elif not str(reviewer or "").strip():
+                msg = "⛔ Indica il tuo nome per registrare il collegamento dell'evidenza."
+            else:
+                try:
+                    head = candidate_label.split(" — ", 1)[0]
+                    kind, object_id, version_str = head.split(":", 2)
+                    cv.link_ccms_object_as_evidence(svc, kind, object_id, int(version_str), rid, actor=reviewer)
+                    msg = "✅ Evidenza collegata."
+                except Exception as exc:
+                    msg = f"⛔ {exc}"
+        # Acceptance fix: linking evidence is a SUPPORTING action for a
+        # pending Covered decision (the acceptance path is: try Covered ->
+        # rejected -> link evidence -> confirm Covered again WITHOUT
+        # reselecting). It must never reset either decision Radio -- echo
+        # back exactly what the panel currently shows for both.
+        return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
+                                       applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
+    finally:
+        repo.close()
+
+def compliance_unlink_evidence_ui(project_dir, scope_id, rid, unlink_label, reviewer,
+                                  cur_applic_radio=None, cur_cov_radio=None):
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    repo, svc = cv.open_service(project_dir)
+    try:
+        msg = ""
+        if scope_id and rid:
+            if not unlink_label:
+                msg = "⛔ Scegli quale evidenza scollegare."
+            elif not str(reviewer or "").strip():
+                msg = "⛔ Indica il tuo nome per registrare lo scollegamento."
+            else:
+                evidence_id = unlink_label.split(" — ", 1)[0].strip()
+                try:
+                    ok = svc.unlink_evidence_requirement(evidence_id, rid, actor=reviewer)
+                    msg = "✅ Evidenza scollegata." if ok else "⛔ Collegamento non trovato (forse già rimosso)."
+                except Exception as exc:
+                    msg = f"⛔ {exc}"
+        # Same symmetry as link: unlinking must never reset a pending
+        # applicability/coverage choice either.
+        return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
+                                       applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
+    finally:
+        repo.close()
+
 with gr.Blocks(title=BRAND_NAME) as demo:
     project_state=gr.State(INITIAL_PROJECT)
     with gr.Sidebar(width=236, elem_id="ms-sidebar"):
@@ -1630,6 +1970,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         gr.HTML("<div class='ms-side-section'>Workflow</div>")
         nav_revision=gr.Button("◫   Revisione",variant="secondary")
         nav_authoring=gr.Button("✎   Contenuti",variant="secondary")
+        nav_compliance=gr.Button("☑   Compliance",variant="secondary")
         nav_translation=gr.Button("⇄   Traduzioni",variant="secondary")
         nav_jobs=gr.Button("▣   Job & fornitori",variant="secondary")
         nav_release=gr.Button("✓   Release",variant="secondary")
@@ -1806,6 +2147,92 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     with gr.Row(): g_topic=gr.Textbox(label='Topic ID'); g_block=gr.Textbox(label='Nuovo Block ID'); g_btype=gr.Dropdown(['paragraph','warning','note','list_item'],value='paragraph',label='Tipo blocco'); g_pos=gr.Number(label='Posizione',value=1,precision=0); g_reviewer=gr.Textbox(label='Revisore')
                     g_queue=gr.Button('Invia in review umana'); g_queue_msg=gr.Markdown(); g_ingest.click(grounding_ingest_ui,[project_state,g_pdf,g_text,g_doc,g_title],[g_ingest_msg,g_chunks]); g_generate.click(grounded_generate_ui,[project_state,g_instruction,g_mode],[g_msg,g_draft,g_evidence,g_claims,g_pid]); g_queue.click(grounded_queue_ui,[project_state,g_pid,g_topic,g_block,g_btype,g_pos,g_reviewer],[g_queue_msg])
 
+        with gr.Tab("Compliance", id="compliance") as cp_tab:
+            gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
+                    "<p>Stato della documentazione rispetto ai requisiti normativi configurati per questa "
+                    "pubblicazione — mai una dichiarazione automatica di conformità.</p></div></div>")
+            with gr.Row():
+                cp_pub = gr.Textbox(label="Publication ID", value="PUB-MAIN")
+                cp_scope = gr.Dropdown(label="Scope compliance", choices=[], value=None)
+                cp_reload = gr.Button("Aggiorna", variant="primary")
+            cp_dashboard = gr.HTML()
+            gr.HTML("<div class='ms-section-title'>Requisiti</div><div class='ms-section-sub'>Ordinati per priorità: "
+                    "prima ciò che manca, poi ciò che va verificato.</div>")
+            cp_table = gr.Dataframe(interactive=False, wrap=True, max_height=380)
+            cp_req_picker = gr.Dropdown(label="Apri un requisito", choices=[], value=None)
+            with gr.Column(elem_classes=["ms-panel"]):
+                cp_header = gr.HTML()
+                with gr.Row():
+                    with gr.Column():
+                        gr.HTML("<div class='ms-section-title'>Applicabilità</div>")
+                        cp_applic_current = gr.HTML()
+                        cp_applic_radio = gr.Radio(["Si applica", "Non applicabile", "Da verificare"],
+                                                   label="Decisione", value=None)
+                        cp_applic_justification = gr.Textbox(label="Motivazione — obbligatoria solo per «Non applicabile»")
+                        cp_applic_reviewer = gr.Textbox(label="Il tuo nome")
+                        cp_applic_comment = gr.Textbox(label="Commento — opzionale")
+                        cp_applic_confirm = gr.Button("Conferma applicabilità", variant="primary")
+                        cp_applic_msg = gr.Markdown()
+                    with gr.Column():
+                        gr.HTML("<div class='ms-section-title'>Copertura</div>")
+                        cp_cov_banner = gr.HTML()
+                        cp_cov_current = gr.HTML()
+                        cp_cov_radio = gr.Radio(["Coperto", "Da verificare", "Mancante"], label="Decisione", value=None)
+                        cp_cov_reviewer = gr.Textbox(label="Il tuo nome")
+                        cp_cov_comment = gr.Textbox(label="Commento — opzionale")
+                        cp_cov_confirm = gr.Button("Conferma copertura", variant="primary")
+                        cp_cov_msg = gr.Markdown()
+                gr.HTML("<div class='ms-section-title'>Evidenze collegate</div><div class='ms-section-sub'>Contenuto "
+                        "ManualSync che dimostra la copertura di questo requisito.</div>")
+                cp_evidence_table = gr.Dataframe(interactive=False, wrap=True, max_height=260)
+                with gr.Row():
+                    cp_evidence_candidates = gr.Dropdown(label="Collega un contenuto esistente come evidenza",
+                                                         choices=[], value=None)
+                    cp_evidence_reviewer = gr.Textbox(label="Il tuo nome")
+                    cp_evidence_link_btn = gr.Button("Collega come evidenza")
+                with gr.Row():
+                    cp_evidence_unlink_dd = gr.Dropdown(label="Scollega un'evidenza già collegata", choices=[], value=None)
+                    cp_evidence_unlink_reviewer = gr.Textbox(label="Il tuo nome")
+                    cp_evidence_unlink_btn = gr.Button("Scollega evidenza")
+                cp_evidence_msg = gr.Markdown()
+                with gr.Accordion("Dettagli tecnici (modalità avanzata)", open=False):
+                    cp_advanced = gr.HTML()
+            cp_open_rid = gr.State("")
+
+            cp_out_full = [cp_dashboard, cp_table, cp_req_picker, cp_header, cp_applic_current, cp_applic_radio,
+                          cp_cov_banner, cp_cov_current, cp_cov_radio, cp_evidence_table, cp_evidence_candidates,
+                          cp_evidence_unlink_dd, cp_advanced, cp_open_rid, cp_applic_msg, cp_cov_msg, cp_evidence_msg]
+            cp_reload.click(compliance_load_ui, [project_state, cp_pub], [cp_scope, *cp_out_full])
+            cp_scope.change(compliance_switch_scope_ui, [project_state, cp_scope], cp_out_full)
+            cp_req_picker.change(compliance_open_requirement_ui, [project_state, cp_scope, cp_req_picker], cp_out_full)
+            cp_applic_confirm.click(compliance_decide_applicability_ui,
+                                    [project_state, cp_scope, cp_open_rid, cp_applic_radio, cp_applic_reviewer,
+                                     cp_applic_justification, cp_applic_comment, cp_cov_radio], cp_out_full)
+            cp_cov_confirm.click(compliance_decide_coverage_ui,
+                                 [project_state, cp_scope, cp_open_rid, cp_cov_radio, cp_cov_reviewer, cp_cov_comment,
+                                  cp_applic_radio],
+                                 cp_out_full)
+            cp_evidence_link_btn.click(compliance_link_evidence_ui,
+                                       [project_state, cp_scope, cp_open_rid, cp_evidence_candidates, cp_evidence_reviewer,
+                                        cp_applic_radio, cp_cov_radio],
+                                       cp_out_full)
+            cp_evidence_unlink_btn.click(compliance_unlink_evidence_ui,
+                                         [project_state, cp_scope, cp_open_rid, cp_evidence_unlink_dd,
+                                          cp_evidence_unlink_reviewer, cp_applic_radio, cp_cov_radio], cp_out_full)
+            # Acceptance fix: this tab must never depend on the user remembering
+            # to press "Aggiorna". Whenever it becomes the selected tab -- first
+            # open, Home -> Compliance, or after a client reconnect that resets
+            # this session's component values back to their construction-time
+            # defaults (empty scope/table/picker) -- reload for real from
+            # ComplianceService, the same call "Aggiorna" makes. This is what
+            # actually fixes "scope/table/picker revert to empty defaults after
+            # navigating away and back": that reset happens to the CLIENT-SIDE
+            # component values on any session/reconnect boundary Gradio itself
+            # manages: nothing here can preserve last-shown data across that
+            # boundary, so the tab must always refresh itself the moment it is
+            # looked at again, rather than trusting stale client state.
+            cp_tab.select(compliance_load_ui, [project_state, cp_pub], [cp_scope, *cp_out_full])
+
         with gr.Tab("Traduzioni",id="translations"):
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Traduzioni</h1><p>Pacchetti lingua, traduzioni, QA e passaggio ai fornitori.</p></div></div><div class='ms-stepper'><div class='ms-step active'><span class='ms-step-num'>1</span>Pacchetti</div><div class='ms-step'><span class='ms-step-num'>2</span>Traduzioni</div><div class='ms-step'><span class='ms-step-num'>3</span>QA</div><div class='ms-step'><span class='ms-step-num'>4</span>Pronto per release</div></div>")
             gr.HTML("<div class='ms-panel'><div class='ms-section-title'>Pacchetti lingua</div><div class='ms-section-sub'>Riuso TM, ripetizioni esatte e codici non traducibili restano fuori dal workfile; solo il lavoro linguistico reale entra nell’XLIFF controllato.</div></div>")
@@ -1864,8 +2291,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             p_health.click(diagnostics_ui,[project_state],[p_health_msg,p_health_table])
             p_support.click(support_bundle_ui,[project_state],[p_support_file,p_support_msg])
 
-    _NAV_IDS=['home','revision','authoring','translations','jobs','release','settings']
-    _NAV_BUTTONS=[nav_home,nav_revision,nav_authoring,nav_translation,nav_jobs,nav_release,nav_settings]
+    _NAV_IDS=['home','revision','authoring','compliance','translations','jobs','release','settings']
+    _NAV_BUTTONS=[nav_home,nav_revision,nav_authoring,nav_compliance,nav_translation,nav_jobs,nav_release,nav_settings]
     def _navigate(tab_id: str):
         updates=[gr.update(variant='primary' if item==tab_id else 'secondary') for item in _NAV_IDS]
         return (gr.Tabs(selected=tab_id), *updates)
@@ -1873,6 +2300,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     nav_home.click(lambda:_navigate('home'),None,_nav_outputs)
     nav_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
     nav_authoring.click(lambda:_navigate('authoring'),None,_nav_outputs)
+    nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
     nav_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
     nav_release.click(lambda:_navigate('release'),None,_nav_outputs)
