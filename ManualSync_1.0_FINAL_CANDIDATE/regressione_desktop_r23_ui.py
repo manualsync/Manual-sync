@@ -10,7 +10,11 @@ def ck(name, cond, detail=''):
 ck('Footer Gradio disabilitato', 'footer_links=[]' in src)
 ck('Home inizialmente attiva', 'nav_home=gr.Button("⌂   Home",variant="primary")' in src)
 ck('Navigazione usa stato active dinamico', "gr.update(variant='primary' if item==tab_id else 'secondary')" in src)
-ck('Tutte le sezioni sidebar partecipano allo stato', "_NAV_IDS=['home','revision','authoring','translations','jobs','release','settings']" in src)
+# Milestone 3.5B added the Compliance tab/nav entry to the shipped, checkpointed
+# product (published at e2fde61) -- this expectation was stale against that
+# real, approved navigation, not the other way around. Updated to match the
+# actual current _NAV_IDS in app.py, verified by direct grep, not guessed.
+ck('Tutte le sezioni sidebar partecipano allo stato', "_NAV_IDS=['home','revision','authoring','compliance','translations','jobs','release','settings']" in src)
 ck('Quick actions sincronizzano sidebar', "home_release.click(lambda:_navigate('release')" in src and "home_translation.click(lambda:_navigate('translations')" in src)
 ck('Stile sidebar active presente', '#ms-sidebar button.primary' in src and 'inset 3px 0 0 var(--ui-primary)' in src)
 ck('Tab strip tecnica resta nascosta', '[role="tablist"]' in src and 'display:none!important' in src)

@@ -245,6 +245,12 @@ class IndustrialRepository(ContentRepository):
             );
             """
         )
+        # 4B.1 schema migration: archived_at, same rationale as topics.archived_at
+        # (authoring_ccms.py) -- a separate axis from the editorial `status`
+        # lifecycle, NULL = active for every pre-existing row.
+        block_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(content_blocks)")}
+        if "archived_at" not in block_cols:
+            self.conn.execute("ALTER TABLE content_blocks ADD COLUMN archived_at TEXT")
         self.conn.commit()
 
     # ---------- Conditions / profiles ----------
@@ -536,13 +542,19 @@ class IndustrialRepository(ContentRepository):
         )
         self.conn.commit()
 
-    def blocks_table(self, topic_id: str | None = None) -> pd.DataFrame:
+    def blocks_table(self, topic_id: str | None = None, *, include_archived: bool = False) -> pd.DataFrame:
         sql = "SELECT * FROM content_blocks"
-        params: tuple[Any, ...] = ()
+        clauses: list[str] = []
+        params: list[Any] = []
         if topic_id:
-            sql += " WHERE topic_id=?"
-            params = (topic_id,)
+            clauses.append("topic_id=?")
+            params.append(topic_id)
+        if not include_archived:
+            clauses.append("archived_at IS NULL")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY topic_id,position,block_id"
+        params = tuple(params)
         rows = []
         for r in self.conn.execute(sql, params):
             rows.append({
@@ -613,6 +625,12 @@ class IndustrialRepository(ContentRepository):
 
         for link in self.conn.execute("SELECT * FROM publication_topics WHERE publication_id=? ORDER BY position", (publication_id,)):
             topic = self.conn.execute("SELECT * FROM topics WHERE topic_id=?", (link["topic_id"],)).fetchone()
+            if topic["archived_at"]:
+                # 4B.1: an archived topic is excluded from assembly (and therefore
+                # from readiness/release/publishing) exactly like a profile-excluded
+                # one -- never a hard delete, always reversible via restore_topic().
+                excluded += 1
+                continue
             if not self._topic_allowed_with_profile(topic, dims):
                 excluded += 1
                 continue
@@ -635,8 +653,21 @@ class IndustrialRepository(ContentRepository):
                 else:
                     topic_title_translation_status = "NOT_REQUIRED"
 
-            blocks = list(self.conn.execute("SELECT * FROM content_blocks WHERE topic_id=? ORDER BY position,block_id", (topic["topic_id"],)))
+            blocks = list(self.conn.execute(
+                "SELECT * FROM content_blocks WHERE topic_id=? AND archived_at IS NULL ORDER BY position,block_id",
+                (topic["topic_id"],)))
             if not blocks:
+                # 4B.1: distinguish "this topic never had any blocks" (the true
+                # legacy-fallback case below) from "every block was archived"
+                # (must NOT resurrect the old topic.body text as a substitute --
+                # an archived block must stay excluded from assembly, not
+                # reappear through the legacy fallback path).
+                has_any_block_ever = self.conn.execute(
+                    "SELECT 1 FROM content_blocks WHERE topic_id=? LIMIT 1", (topic["topic_id"],)
+                ).fetchone()
+                if has_any_block_ever:
+                    excluded += 1
+                    continue
                 # Backward-compatible fallback: a legacy topic becomes one paragraph block.
                 legacy_content = self.resolve_components(topic["body"])
                 legacy_status = "SOURCE"

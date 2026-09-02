@@ -18,6 +18,7 @@ from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversio
 from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
+from authoring_service import AuthoringService
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
 from workflow_management import WorkflowManager
@@ -1274,15 +1275,41 @@ def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
                         "Prendi una decisione per ciascuno nella sezione «Elementi da verificare» qui sopra.")
     repo=IndustrialRepository(_ccms_db(project_dir))
     try:
-        tids=[r[0] for r in repo.conn.execute("SELECT topic_id FROM publication_topics WHERE publication_id=?",(publication_id,))]
-        if not tids: raise ValueError("Pubblicazione non trovata o vuota.")
-        for tid in tids:
-            repo.conn.execute("UPDATE topics SET status='Approved' WHERE topic_id=?",(tid,))
-            repo.conn.execute("UPDATE content_blocks SET status='Approved' WHERE topic_id=?",(tid,))
-        repo._audit('publication',publication_id,'SOURCE_HUMAN_APPROVED',reviewer or 'Human reviewer',{'topics':len(tids)})
-        repo.conn.commit()
+        # 4B.1 fix: bulk_approve_publication() (AuthoringService) also
+        # reconciles/closes any OPEN review_tasks it renders moot -- the
+        # legacy bulk-SQL approval used to leave those orphaned OPEN
+        # forever, which readiness's review_queue(OPEN) gate could then
+        # keep seeing even after "Approva sorgente" was clicked.
+        result = AuthoringService(repo).bulk_approve_publication(publication_id, actor=reviewer or 'Human reviewer')
+    except ValueError as e:
+        raise gr.Error(str(e))
     finally: repo.close()
-    return "✅ Sorgente approvata dal revisore umano."
+    extra = f" {result['review_tasks_closed']} task di revisione in sospeso sono stati riconciliati." if result.get('review_tasks_closed') else ""
+    return f"✅ Sorgente approvata dal revisore umano.{extra}"
+
+def review_queue_ui(project_dir):
+    if not project_dir: return pd.DataFrame()
+    repo=IndustrialRepository(_ccms_db(project_dir))
+    try: return repo.review_queue(status='OPEN')
+    finally: repo.close()
+
+def review_decide_ui(project_dir, review_id, decision, actor, comment):
+    # 4B.1 fix: this is the first real, product-served path that calls
+    # decide_review() -- the 4A audit found it was only ever invoked from
+    # app_engineering.py, a module the shipped launcher never imports, so
+    # a review request opened via grounded_queue_ui could never actually
+    # be closed through the proper mechanism.
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not review_id: raise gr.Error("Review ID obbligatorio.")
+    if not str(actor or '').strip(): raise gr.Error("Il revisore è obbligatorio per registrare una decisione.")
+    repo=IndustrialRepository(_ccms_db(project_dir))
+    try:
+        new_status = repo.decide_review(int(review_id), decision=decision, actor=actor, comment=comment or '')
+        queue = repo.review_queue(status='OPEN')
+    except (KeyError, ValueError) as e:
+        raise gr.Error(str(e))
+    finally: repo.close()
+    return f"✅ Review #{int(review_id)} decisa: nuovo stato **{new_status}**.", queue
 
 def grounding_ingest_ui(project_dir, source_pdf, source_text, document_id, title):
     if not project_dir or not document_id: raise gr.Error("Progetto e Document ID sono obbligatori.")
@@ -2176,6 +2203,14 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     g_generate=gr.Button('Genera proposta grounded',variant='primary'); g_msg=gr.Markdown(); g_draft=gr.Textbox(label='Proposta',lines=8); g_evidence=gr.Dataframe(interactive=False,max_height=350); g_claims=gr.Dataframe(interactive=False); g_pid=gr.Textbox(label='Proposal ID')
                     with gr.Row(): g_topic=gr.Textbox(label='Topic ID'); g_block=gr.Textbox(label='Nuovo Block ID'); g_btype=gr.Dropdown(['paragraph','warning','note','list_item'],value='paragraph',label='Tipo blocco'); g_pos=gr.Number(label='Posizione',value=1,precision=0); g_reviewer=gr.Textbox(label='Revisore')
                     g_queue=gr.Button('Invia in review umana'); g_queue_msg=gr.Markdown(); g_ingest.click(grounding_ingest_ui,[project_state,g_pdf,g_text,g_doc,g_title],[g_ingest_msg,g_chunks]); g_generate.click(grounded_generate_ui,[project_state,g_instruction,g_mode],[g_msg,g_draft,g_evidence,g_claims,g_pid]); g_queue.click(grounded_queue_ui,[project_state,g_pid,g_topic,g_block,g_btype,g_pos,g_reviewer],[g_queue_msg])
+                with gr.Accordion("Coda di revisione",open=False):
+                    gr.Markdown("Le proposte in Draft/In Review restano bloccate finché un revisore umano non decide qui. (Milestone 4B.1: prima UI reale collegata a decide_review().)")
+                    rv_refresh=gr.Button("Aggiorna coda"); rv_queue=gr.Dataframe(interactive=False,max_height=300)
+                    with gr.Row(): rv_review_id=gr.Number(label="Review ID",precision=0); rv_decision=gr.Radio(["APPROVE","REJECT"],value="APPROVE",label="Decisione"); rv_actor=gr.Textbox(label="Revisore")
+                    rv_comment=gr.Textbox(label="Commento — opzionale")
+                    rv_decide=gr.Button("Decidi",variant="primary"); rv_msg=gr.Markdown()
+                    rv_refresh.click(review_queue_ui,[project_state],[rv_queue])
+                    rv_decide.click(review_decide_ui,[project_state,rv_review_id,rv_decision,rv_actor,rv_comment],[rv_msg,rv_queue])
 
         with gr.Tab("Compliance", id="compliance") as cp_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"

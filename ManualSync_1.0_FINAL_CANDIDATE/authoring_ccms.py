@@ -142,6 +142,13 @@ class ContentRepository:
         topic_translation_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(topic_translations)")}
         if "target_title" not in topic_translation_cols:
             self.conn.execute("ALTER TABLE topic_translations ADD COLUMN target_title TEXT NOT NULL DEFAULT ''")
+        # 4B.1 schema migration: archived_at is a separate axis from the editorial
+        # `status` lifecycle (Draft/In Review/Approved) -- archiving a topic must
+        # never be confused with a review/approval state. NULL = active (the
+        # default/common case for every pre-existing row).
+        topic_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(topics)")}
+        if "archived_at" not in topic_cols:
+            self.conn.execute("ALTER TABLE topics ADD COLUMN archived_at TEXT")
         self.conn.commit()
 
     def close(self) -> None:
@@ -282,9 +289,13 @@ class ContentRepository:
         self.conn.execute("UPDATE publications SET updated_at=? WHERE publication_id=?", (_now(), publication_id))
         self.conn.commit()
 
-    def topic_table(self) -> pd.DataFrame:
+    def topic_table(self, *, include_archived: bool = False) -> pd.DataFrame:
+        sql = "SELECT * FROM topics"
+        if not include_archived:
+            sql += " WHERE archived_at IS NULL"
+        sql += " ORDER BY topic_id"
         rows = []
-        for r in self.conn.execute("SELECT * FROM topics ORDER BY topic_id"):
+        for r in self.conn.execute(sql):
             rows.append({
                 "topic_id": r["topic_id"], "title": r["title"], "status": r["status"], "version": r["version"],
                 "include_variants": " | ".join(_load_json(r["include_variants_json"], [])),
