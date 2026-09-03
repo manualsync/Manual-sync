@@ -51,15 +51,21 @@ executescript(), so nothing here can trip that landmine on itself.
 from __future__ import annotations
 
 import json
+import re
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
 
-AUTHORING_SERVICE_BUILD = "0.2.0-authoring-editor-4b2-20260902"
+AUTHORING_SERVICE_BUILD = "0.3.0-authoring-tables-figures-4c-20260903"
 
-_EDITABLE_KINDS = {"topic", "block"}
+# 4C: draft recovery now also covers table/figure editing -- no schema
+# change needed (authoring_drafts.kind has no CHECK constraint), just
+# widening the set of kinds save_draft() accepts.
+_EDITABLE_KINDS = {"topic", "block", "table", "figure"}
 _INVALIDATING_STATUSES = {"Approved", "In Review"}
 
 # 4B.2: the ONLY block types the editor can create. Deliberately a strict
@@ -125,6 +131,27 @@ class VersionConflictError(Exception):
 class ArchivedObjectError(Exception):
     """Raised when an editing operation targets an archived topic/block.
     Restore it first -- an archived object is not editable in place."""
+
+
+class SharedObjectError(Exception):
+    """4C: raised when a save/revert targets a table or figure referenced
+    by more than one content_blocks row. Reuse-aware editing (fork a local
+    copy vs. update every occurrence, with an impact-map UX) is explicitly
+    4D scope -- until then, a shared object is fail-closed: never silently
+    saved as a global edit no one asked for."""
+
+
+class MissingAssetError(Exception):
+    """4C: raised when a figure revert would restore a historical
+    file_path whose bytes no longer exist on disk. Reverting to a missing
+    asset would silently produce a new 'broken image' figure -- fail
+    closed instead, with a message that says exactly why."""
+
+
+_SHARED_OBJECT_MESSAGE = (
+    "Questo elemento è riutilizzato in più punti. La modifica condivisa sarà gestita nella fase "
+    "Reuse-aware authoring."
+)
 
 
 class AuthoringService:
@@ -215,7 +242,39 @@ class AuthoringService:
             "position": int(row["position"]), "text": row["text_content"], "status": row["status"],
             "version": int(row["version"]), "archived": bool(row["archived_at"]), "archived_at": row["archived_at"],
             "source_refs": _load_json(row["source_refs_json"], []),
+            "object_ref_id": row["object_ref_id"],
             "draft": self.load_draft("block", block_id),
+        }
+
+    def load_table_for_edit(self, table_id: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM structured_tables WHERE table_id=?", (table_id,)).fetchone()
+        if not row:
+            raise KeyError(table_id)
+        block = self._referencing_block("table", table_id)
+        return {
+            "table_id": table_id, "title": row["title"], "caption": row["caption"],
+            "columns": _load_json(row["columns_json"], []), "rows": _load_json(row["rows_json"], []),
+            "header_rows": int(row["header_rows"]), "status": row["status"], "version": int(row["version"]),
+            "source_refs": _load_json(row["source_refs_json"], []),
+            "archived": bool(block["archived_at"]) if block is not None else False,
+            "reference_count": self._reference_count("table", table_id),
+            "draft": self.load_draft("table", table_id),
+        }
+
+    def load_figure_for_edit(self, figure_id: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM figures WHERE figure_id=?", (figure_id,)).fetchone()
+        if not row:
+            raise KeyError(figure_id)
+        block = self._referencing_block("figure", figure_id)
+        return {
+            "figure_id": figure_id, "title": row["title"], "caption": row["caption"],
+            "file_path": row["file_path"], "alt_text": row["alt_text"],
+            "status": row["status"], "version": int(row["version"]),
+            "source_refs": _load_json(row["source_refs_json"], []),
+            "archived": bool(block["archived_at"]) if block is not None else False,
+            "reference_count": self._reference_count("figure", figure_id),
+            "asset_missing": bool(row["file_path"]) and not Path(row["file_path"]).exists(),
+            "draft": self.load_draft("figure", figure_id),
         }
 
     # ================================================================
@@ -972,3 +1031,464 @@ class AuthoringService:
             (object_type, object_id),
         ).fetchone()
         return dict(row) if row else None
+
+    # ================================================================
+    # 4C: table/figure authoring. Reuses the EXISTING structured_tables/
+    # figures schema and IndustrialRepository.create_table()/create_figure()
+    # /request_review()/decide_review() primitives completely unchanged --
+    # no second table/figure model, no parallel review workflow. Same CAS/
+    # draft/audit/status-invalidation shape as save_topic/save_block above,
+    # just targeting structured_tables/figures instead of topics/
+    # content_blocks. Neither object type has its own archived_at column
+    # (only the content_blocks row that references it does, via
+    # object_ref_id) -- editing is blocked when that REFERENCING block is
+    # archived, the same "restore it first" meaning ArchivedObjectError
+    # already carries for topics/blocks.
+    #
+    # Shared-object protection (temporary, until 4D's reuse-aware fork/
+    # update-shared UX): before any table/figure save/revert, this counts
+    # how many content_blocks rows reference the object (not
+    # impact_map_industrial()'s topic/publication-row count, which would
+    # over-count an object used by exactly one block in a topic that
+    # belongs to two publications -- the question here is "is this object
+    # wired into more than one point of the content structure", which is a
+    # block-level fact). More than one reference -> SharedObjectError,
+    # fail-closed, no silent global edit.
+    # ================================================================
+
+    def _referencing_block(self, object_type: str, object_id: str):
+        bt = {"table": "table", "figure": "figure"}[object_type]
+        return self.conn.execute(
+            "SELECT * FROM content_blocks WHERE block_type=? AND object_ref_id=? ORDER BY block_id LIMIT 1",
+            (bt, object_id),
+        ).fetchone()
+
+    def _reference_count(self, object_type: str, object_id: str) -> int:
+        bt = {"table": "table", "figure": "figure"}[object_type]
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM content_blocks WHERE block_type=? AND object_ref_id=?",
+            (bt, object_id),
+        ).fetchone()
+        return int(row["c"])
+
+    def _guard_table_or_figure_editable(self, object_type: str, object_id: str) -> None:
+        """Shared by save/revert: archived-referencing-block check first
+        (an archived object being edited at all is the more surprising/
+        dangerous case), then the shared-object guard. Called from inside
+        a caller's own BEGIN IMMEDIATE/try block; raises straight through
+        to that block's own `except Exception: self.conn.rollback(); raise`
+        -- the same pattern every early-exit check elsewhere in this file
+        already relies on (a rollback() with no active transaction is a
+        proven-safe no-op here, not a second, redundant one)."""
+        block = self._referencing_block(object_type, object_id)
+        if block is not None and block["archived_at"]:
+            label = "tabella" if object_type == "table" else "figura"
+            raise ArchivedObjectError(
+                f"Questa {label} è collegata a un blocco archiviato: ripristina il blocco prima di modificarla."
+            )
+        if self._reference_count(object_type, object_id) > 1:
+            raise SharedObjectError(_SHARED_OBJECT_MESSAGE)
+
+    def _project_dir(self) -> Path:
+        return Path(self.repo.path).parent
+
+    def _materialize_uploaded_asset(self, source_path: str | Path, *, subdir: str = "figures") -> Path:
+        """Collision-safe copy of a user-uploaded file into the project's
+        own Assets/<subdir>/ store -- same spirit as idml_import.
+        materialize_figure_assets (never fabricate a path, never silently
+        overwrite a different file's bytes), simplified for a single
+        incoming upload: a short random prefix makes the destination
+        filename unique by construction, so no existence-probing/rename
+        loop is needed. Returns the new file's ABSOLUTE path -- the same
+        convention IDML-imported figures already store in
+        figures.file_path (see idml_import.materialize_figure_assets),
+        so preview/consumption code does not need two path conventions."""
+        source_path = Path(source_path)
+        if not source_path.exists():
+            raise FileNotFoundError(f"File non trovato: {source_path}")
+        assets_dir = self._project_dir() / "Assets" / subdir
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_path.name).strip("_") or "asset"
+        dest = assets_dir / f"{uuid4().hex[:10]}_{safe_name}"
+        shutil.copy2(source_path, dest)
+        return dest
+
+    # ---- table save/create ----
+
+    def save_table(self, table_id: str, *, title: str | None = None, caption: str | None = None,
+                   columns: list[str] | None = None, rows: list[list[Any]] | None = None,
+                   header_rows: int | None = None, expected_version: int, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per salvare una tabella.")
+        if columns is not None and not columns:
+            raise ValueError("La tabella deve avere almeno una colonna.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM structured_tables WHERE table_id=?", (table_id,)).fetchone()
+            if not row:
+                self.conn.rollback()
+                raise KeyError(table_id)
+            self._guard_table_or_figure_editable("table", table_id)
+            new_title = row["title"] if title is None else title.strip()
+            new_caption = row["caption"] if caption is None else caption.strip()
+            new_columns = _load_json(row["columns_json"], []) if columns is None else [str(c) for c in columns]
+            new_rows = _load_json(row["rows_json"], []) if rows is None else [[c for c in r] for r in rows]
+            new_header_rows = int(row["header_rows"]) if header_rows is None else int(header_rows)
+            previous_status = row["status"]
+            new_status = self._status_after_edit(previous_status)
+            new_version = int(expected_version) + 1
+            source_refs = row["source_refs_json"]
+            condition = row["condition_json"]
+
+            cur = self.conn.execute(
+                """UPDATE structured_tables SET title=?,caption=?,columns_json=?,rows_json=?,header_rows=?,
+                   status=?,version=?,updated_at=? WHERE table_id=? AND version=?""",
+                (new_title, new_caption, _json(new_columns), _json(new_rows), new_header_rows,
+                 new_status, new_version, now, table_id, int(expected_version)),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(table_id, expected_version)
+            self.conn.execute(
+                """INSERT INTO structured_table_versions(table_id,version,title,caption,columns_json,rows_json,
+                   header_rows,status,condition_json,source_refs_json,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (table_id, new_version, new_title, new_caption, _json(new_columns), _json(new_rows),
+                 new_header_rows, new_status, condition, source_refs, now),
+            )
+            invalidated = self._invalidate_open_review_if_edited("table", table_id, previous_status, new_status, actor)
+            self.repo.audit_event("table", table_id, "AUTHORING_SAVE", actor,
+                                  {"from_version": int(expected_version), "to_version": new_version,
+                                   "previous_status": previous_status, "new_status": new_status})
+            self._delete_draft("table", table_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"table_id": table_id, "version": new_version, "status": new_status,
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
+
+    def create_table_in_topic(self, topic_id: str, *, actor: str, title: str = "", caption: str = "",
+                              columns: list[str] | None = None, rows: list[list[Any]] | None = None,
+                              header_rows: int = 1, after_block_id: str | None = None) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare una tabella.")
+        columns = [str(c) for c in columns] if columns else ["Colonna 1", "Colonna 2"]
+        rows = [[c for c in r] for r in rows] if rows else [["" for _ in columns]]
+        topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+        if not topic_row:
+            raise KeyError(topic_id)
+        if topic_row["archived_at"]:
+            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere una tabella.")
+
+        table_id = f"TBL-{uuid4().hex[:10].upper()}"
+        while self.conn.execute("SELECT 1 FROM structured_tables WHERE table_id=?", (table_id,)).fetchone():
+            table_id = f"TBL-{uuid4().hex[:10].upper()}"
+        self.repo.create_table(table_id, columns, rows, title=title.strip(), caption=caption.strip(),
+                               header_rows=header_rows, status="Draft")
+        self.repo.audit_event("table", table_id, "AUTHORING_CREATE", actor, {"title": title, "topic_id": topic_id})
+        self.conn.commit()
+
+        block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        while self.conn.execute("SELECT 1 FROM content_blocks WHERE block_id=?", (block_id,)).fetchone():
+            block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        self.repo.add_block(block_id, topic_id, "table", position=1_000_000, object_ref_id=table_id, status="Draft")
+        self.repo.audit_event("block", block_id, "AUTHORING_CREATE", actor,
+                              {"block_type": "table", "topic_id": topic_id, "object_ref_id": table_id})
+        self.conn.commit()
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            active_rows = list(self.conn.execute(
+                "SELECT block_id FROM content_blocks WHERE topic_id=? AND archived_at IS NULL ORDER BY position,block_id",
+                (topic_id,),
+            ))
+            active_ids = [r["block_id"] for r in active_rows if r["block_id"] != block_id]
+            if after_block_id and after_block_id in active_ids:
+                insert_at = active_ids.index(after_block_id) + 1
+            else:
+                insert_at = len(active_ids)
+            new_order = active_ids[:insert_at] + [block_id] + active_ids[insert_at:]
+            now = _now()
+            for pos, bid in enumerate(new_order, start=1):
+                self.conn.execute("UPDATE content_blocks SET position=?,updated_at=? WHERE block_id=?", (pos, now, bid))
+            position = new_order.index(block_id) + 1
+            self.repo.audit_event("topic", topic_id, "ADD_BLOCK", actor,
+                                  {"block_id": block_id, "after_block_id": after_block_id, "position": position})
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"table_id": table_id, "block_id": block_id, "topic_id": topic_id, "position": position}
+
+    def revert_table_to_version(self, table_id: str, version: int, *, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per un revert.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = self.conn.execute("SELECT * FROM structured_tables WHERE table_id=?", (table_id,)).fetchone()
+            if not live:
+                self.conn.rollback()
+                raise KeyError(table_id)
+            self._guard_table_or_figure_editable("table", table_id)
+            hist = self.conn.execute(
+                "SELECT * FROM structured_table_versions WHERE table_id=? AND version=?", (table_id, int(version))
+            ).fetchone()
+            if not hist:
+                self.conn.rollback()
+                raise KeyError((table_id, version))
+            previous_status = live["status"]
+            new_status = self._status_after_edit(previous_status)
+            new_version = int(live["version"]) + 1
+            cur = self.conn.execute(
+                """UPDATE structured_tables SET title=?,caption=?,columns_json=?,rows_json=?,header_rows=?,
+                   status=?,version=?,updated_at=? WHERE table_id=? AND version=?""",
+                (hist["title"], hist["caption"], hist["columns_json"], hist["rows_json"], hist["header_rows"],
+                 new_status, new_version, now, table_id, int(live["version"])),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(table_id, live["version"])
+            self.conn.execute(
+                """INSERT INTO structured_table_versions(table_id,version,title,caption,columns_json,rows_json,
+                   header_rows,status,condition_json,source_refs_json,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (table_id, new_version, hist["title"], hist["caption"], hist["columns_json"], hist["rows_json"],
+                 hist["header_rows"], new_status, hist["condition_json"], hist["source_refs_json"], now),
+            )
+            self._invalidate_open_review_if_edited("table", table_id, previous_status, new_status, actor)
+            self.repo.audit_event("table", table_id, "REVERT_TO_VERSION", actor,
+                                  {"reverted_from_version": int(live["version"]),
+                                   "reverted_to_content_of_version": int(version), "new_version": new_version})
+            self._delete_draft("table", table_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"table_id": table_id, "new_version": new_version,
+                "reverted_to_content_of_version": int(version), "status": new_status}
+
+    def table_history(self, table_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT version,title,caption,status,created_at FROM structured_table_versions WHERE table_id=? ORDER BY version DESC",
+            (table_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "version": int(r["version"]), "title": r["title"], "caption": r["caption"], "status": r["status"],
+                "created_at": r["created_at"], "actor": self._actor_for_version("table", table_id, int(r["version"])),
+            })
+        return out
+
+    # ---- figure save/create/replace ----
+
+    def save_figure(self, figure_id: str, *, title: str | None = None, caption: str | None = None,
+                    alt_text: str | None = None, file_path: str | None = None,
+                    expected_version: int, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per salvare una figura.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM figures WHERE figure_id=?", (figure_id,)).fetchone()
+            if not row:
+                self.conn.rollback()
+                raise KeyError(figure_id)
+            self._guard_table_or_figure_editable("figure", figure_id)
+            new_title = row["title"] if title is None else title.strip()
+            new_caption = row["caption"] if caption is None else caption.strip()
+            new_alt = row["alt_text"] if alt_text is None else alt_text.strip()
+            new_path = row["file_path"] if file_path is None else str(file_path).strip()
+            previous_status = row["status"]
+            new_status = self._status_after_edit(previous_status)
+            new_version = int(expected_version) + 1
+            source_refs = row["source_refs_json"]
+            condition = row["condition_json"]
+
+            cur = self.conn.execute(
+                """UPDATE figures SET title=?,caption=?,file_path=?,alt_text=?,status=?,version=?,updated_at=?
+                   WHERE figure_id=? AND version=?""",
+                (new_title, new_caption, new_path, new_alt, new_status, new_version, now, figure_id, int(expected_version)),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(figure_id, expected_version)
+            self.conn.execute(
+                """INSERT INTO figure_versions(figure_id,version,title,caption,file_path,alt_text,status,
+                   condition_json,source_refs_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (figure_id, new_version, new_title, new_caption, new_path, new_alt, new_status, condition, source_refs, now),
+            )
+            invalidated = self._invalidate_open_review_if_edited("figure", figure_id, previous_status, new_status, actor)
+            self.repo.audit_event("figure", figure_id, "AUTHORING_SAVE", actor,
+                                  {"from_version": int(expected_version), "to_version": new_version,
+                                   "previous_status": previous_status, "new_status": new_status,
+                                   "file_path_changed": file_path is not None})
+            self._delete_draft("figure", figure_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"figure_id": figure_id, "version": new_version, "status": new_status,
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
+
+    def replace_figure_image(self, figure_id: str, *, source_file_path: str | Path,
+                             expected_version: int, actor: str) -> dict[str, Any]:
+        """Materializes the new file FIRST (fail-closed: if the copy itself
+        fails, nothing about the figure has changed at all), then does a
+        normal CAS save_figure() with only file_path set -- caption/alt/
+        title are left untouched (None) unless the caller also passes a
+        change. If the save fails for ANY reason (conflict/archived/
+        shared/missing), the live figure row is guaranteed untouched
+        (save_figure() rolled back its own transaction before raising) --
+        the only remaining cleanup is the orphaned copy on disk, deleted
+        here so no unclassified asset is left behind."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per sostituire un'immagine.")
+        if not self.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (figure_id,)).fetchone():
+            raise KeyError(figure_id)
+        materialized_path = self._materialize_uploaded_asset(source_file_path)
+        try:
+            result = self.save_figure(figure_id, file_path=str(materialized_path),
+                                      expected_version=expected_version, actor=actor)
+        except Exception:
+            materialized_path.unlink(missing_ok=True)
+            raise
+        return result
+
+    def create_figure_in_topic(self, topic_id: str, *, actor: str, source_file_path: str | Path,
+                               title: str = "", caption: str = "", alt_text: str = "",
+                               after_block_id: str | None = None) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per aggiungere una figura.")
+        topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+        if not topic_row:
+            raise KeyError(topic_id)
+        if topic_row["archived_at"]:
+            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere una figura.")
+
+        # Materialize BEFORE any DB write: if this fails, nothing partial
+        # exists yet at all -- genuinely fail-closed, not a compensation.
+        materialized_path = self._materialize_uploaded_asset(source_file_path)
+        try:
+            figure_id = f"FIG-{uuid4().hex[:10].upper()}"
+            while self.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (figure_id,)).fetchone():
+                figure_id = f"FIG-{uuid4().hex[:10].upper()}"
+            self.repo.create_figure(figure_id, title=title.strip(), caption=caption.strip(),
+                                    file_path=str(materialized_path), alt_text=alt_text.strip(), status="Draft")
+        except Exception:
+            materialized_path.unlink(missing_ok=True)
+            raise
+        self.repo.audit_event("figure", figure_id, "AUTHORING_CREATE", actor, {"title": title, "topic_id": topic_id})
+        self.conn.commit()
+
+        block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        while self.conn.execute("SELECT 1 FROM content_blocks WHERE block_id=?", (block_id,)).fetchone():
+            block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        self.repo.add_block(block_id, topic_id, "figure", position=1_000_000, object_ref_id=figure_id, status="Draft")
+        self.repo.audit_event("block", block_id, "AUTHORING_CREATE", actor,
+                              {"block_type": "figure", "topic_id": topic_id, "object_ref_id": figure_id})
+        self.conn.commit()
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            active_rows = list(self.conn.execute(
+                "SELECT block_id FROM content_blocks WHERE topic_id=? AND archived_at IS NULL ORDER BY position,block_id",
+                (topic_id,),
+            ))
+            active_ids = [r["block_id"] for r in active_rows if r["block_id"] != block_id]
+            if after_block_id and after_block_id in active_ids:
+                insert_at = active_ids.index(after_block_id) + 1
+            else:
+                insert_at = len(active_ids)
+            new_order = active_ids[:insert_at] + [block_id] + active_ids[insert_at:]
+            now = _now()
+            for pos, bid in enumerate(new_order, start=1):
+                self.conn.execute("UPDATE content_blocks SET position=?,updated_at=? WHERE block_id=?", (pos, now, bid))
+            position = new_order.index(block_id) + 1
+            self.repo.audit_event("topic", topic_id, "ADD_BLOCK", actor,
+                                  {"block_id": block_id, "after_block_id": after_block_id, "position": position})
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"figure_id": figure_id, "block_id": block_id, "topic_id": topic_id, "position": position,
+                "file_path": str(materialized_path)}
+
+    def revert_figure_to_version(self, figure_id: str, version: int, *, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per un revert.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = self.conn.execute("SELECT * FROM figures WHERE figure_id=?", (figure_id,)).fetchone()
+            if not live:
+                self.conn.rollback()
+                raise KeyError(figure_id)
+            self._guard_table_or_figure_editable("figure", figure_id)
+            hist = self.conn.execute(
+                "SELECT * FROM figure_versions WHERE figure_id=? AND version=?", (figure_id, int(version))
+            ).fetchone()
+            if not hist:
+                self.conn.rollback()
+                raise KeyError((figure_id, version))
+            # The historical asset must still exist on disk before
+            # reverting to it -- otherwise this would silently produce a
+            # new "missing asset" figure, indistinguishable from data loss.
+            if hist["file_path"] and not Path(hist["file_path"]).exists():
+                self.conn.rollback()
+                raise MissingAssetError(
+                    f"L'immagine della versione {version} non è più disponibile su disco: impossibile ripristinare questa versione."
+                )
+            previous_status = live["status"]
+            new_status = self._status_after_edit(previous_status)
+            new_version = int(live["version"]) + 1
+            cur = self.conn.execute(
+                """UPDATE figures SET title=?,caption=?,file_path=?,alt_text=?,status=?,version=?,updated_at=?
+                   WHERE figure_id=? AND version=?""",
+                (hist["title"], hist["caption"], hist["file_path"], hist["alt_text"], new_status, new_version,
+                 now, figure_id, int(live["version"])),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(figure_id, live["version"])
+            self.conn.execute(
+                """INSERT INTO figure_versions(figure_id,version,title,caption,file_path,alt_text,status,
+                   condition_json,source_refs_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (figure_id, new_version, hist["title"], hist["caption"], hist["file_path"], hist["alt_text"],
+                 new_status, hist["condition_json"], hist["source_refs_json"], now),
+            )
+            self._invalidate_open_review_if_edited("figure", figure_id, previous_status, new_status, actor)
+            self.repo.audit_event("figure", figure_id, "REVERT_TO_VERSION", actor,
+                                  {"reverted_from_version": int(live["version"]),
+                                   "reverted_to_content_of_version": int(version), "new_version": new_version})
+            self._delete_draft("figure", figure_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"figure_id": figure_id, "new_version": new_version,
+                "reverted_to_content_of_version": int(version), "status": new_status}
+
+    def figure_history(self, figure_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT version,title,caption,file_path,status,created_at FROM figure_versions WHERE figure_id=? ORDER BY version DESC",
+            (figure_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "version": int(r["version"]), "title": r["title"], "caption": r["caption"],
+                "file_path": r["file_path"], "status": r["status"], "created_at": r["created_at"],
+                "actor": self._actor_for_version("figure", figure_id, int(r["version"])),
+            })
+        return out

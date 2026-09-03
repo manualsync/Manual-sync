@@ -14,11 +14,12 @@ into one screen's worth of data.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 from ccms_industrial import IndustrialRepository
-from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES
+from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES, _SHARED_OBJECT_MESSAGE
 
 STATUS_LABELS = {"Draft": "Bozza", "In Review": "In revisione", "Approved": "Approvato",
                  "Migrated": "Importato", "Published": "Pubblicato"}
@@ -32,6 +33,15 @@ BLOCK_TYPE_LABELS = {
 # silently disabled control -- the editor must never let a generic textarea
 # corrupt a shared table/figure/component object (see 4A architecture gate).
 _NOT_YET_EDITABLE_SUFFIX = " — modifica disponibile nel prossimo incremento"
+
+# 4C: table/figure blocks get their OWN dedicated editor (not the generic
+# textarea EDITABLE_TEXT_BLOCK_TYPES governs) -- kept as a separate set so
+# the text-block guard in AuthoringService.save_block stays exactly as
+# strict as it already was; this is a presentation-layer concern only
+# (which outline rows should show a real preview instead of the "not yet
+# editable" suffix, and which block types the Studio UI should route to a
+# dedicated editor rather than the plain text box).
+DEDICATED_EDITOR_BLOCK_TYPES = {"table", "figure"}
 
 
 def status_label(status: str) -> str:
@@ -73,6 +83,22 @@ def _block_preview(text: str, *, width: int = 70) -> str:
     return flat[:width] + ("…" if len(flat) > width else "") if flat else "(vuoto)"
 
 
+def _table_preview(repo: IndustrialRepository, table_id: str, *, width: int = 70) -> str:
+    row = repo.conn.execute("SELECT title,caption FROM structured_tables WHERE table_id=?", (table_id,)).fetchone()
+    if not row:
+        return "(tabella non trovata)"
+    label = row["caption"] or row["title"]
+    return _block_preview(label, width=width) if label else "(tabella senza titolo)"
+
+
+def _figure_preview(repo: IndustrialRepository, figure_id: str, *, width: int = 70) -> str:
+    row = repo.conn.execute("SELECT title,caption FROM figures WHERE figure_id=?", (figure_id,)).fetchone()
+    if not row:
+        return "(figura non trovata)"
+    label = row["caption"] or row["title"]
+    return _block_preview(label, width=width) if label else "(figura senza didascalia)"
+
+
 def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:
     """Flat, ordered rows: one per active topic (or archived too, if
     requested), each immediately followed by its own blocks in the same
@@ -105,13 +131,26 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
             block_sql += " AND archived_at IS NULL"
         block_sql += " ORDER BY position,block_id"
         for b in repo.conn.execute(block_sql, (tid,)):
-            editable = b["block_type"] in EDITABLE_TEXT_BLOCK_TYPES
+            bt = b["block_type"]
+            editable_text = bt in EDITABLE_TEXT_BLOCK_TYPES
+            has_dedicated_editor = bt in DEDICATED_EDITOR_BLOCK_TYPES
+            editable = editable_text or has_dedicated_editor
+            if bt == "table":
+                preview = _table_preview(repo, b["object_ref_id"])
+            elif bt == "figure":
+                preview = _figure_preview(repo, b["object_ref_id"])
+            elif editable_text:
+                preview = _block_preview(b["text_content"])
+            else:
+                preview = block_type_label(bt, editable=False)
             rows.append({
-                "kind": "block", "id": b["block_id"], "topic_id": tid, "block_type": b["block_type"],
-                "type_label": block_type_label(b["block_type"], editable=editable),
-                "preview": _block_preview(b["text_content"]) if editable else block_type_label(b["block_type"], editable=editable),
+                "kind": "block", "id": b["block_id"], "topic_id": tid, "block_type": bt,
+                "object_ref_id": b["object_ref_id"],
+                "type_label": block_type_label(bt, editable=editable),
+                "preview": preview,
                 "status": b["status"], "status_label": status_label(b["status"]), "version": int(b["version"]),
                 "archived": bool(b["archived_at"]), "editable": editable,
+                "has_dedicated_editor": has_dedicated_editor,
             })
     return rows
 
@@ -203,6 +242,84 @@ def block_detail(service: AuthoringService, block_id: str) -> dict[str, Any]:
     }
 
 
+def table_detail(service: AuthoringService, table_id: str) -> dict[str, Any]:
+    data = service.load_table_for_edit(table_id)
+    draft = data.get("draft")
+    open_review = service.open_review_for("table", table_id)
+    return {
+        **data,
+        "status_label": status_label(data["status"]),
+        "has_draft": draft is not None,
+        "draft_notice": ("È presente una bozza non salvata." if draft else ""),
+        "can_submit_for_review": data["status"] == "Draft" and not data["archived"] and data["reference_count"] <= 1,
+        "open_review": open_review,
+        "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
+        "is_shared": data["reference_count"] > 1,
+        "shared_notice": (_SHARED_OBJECT_MESSAGE if data["reference_count"] > 1 else ""),
+    }
+
+
+def figure_detail(service: AuthoringService, figure_id: str) -> dict[str, Any]:
+    data = service.load_figure_for_edit(figure_id)
+    draft = data.get("draft")
+    open_review = service.open_review_for("figure", figure_id)
+    return {
+        **data,
+        "status_label": status_label(data["status"]),
+        "has_draft": draft is not None,
+        "draft_notice": ("È presente una bozza non salvata." if draft else ""),
+        "can_submit_for_review": data["status"] == "Draft" and not data["archived"] and data["reference_count"] <= 1,
+        "open_review": open_review,
+        "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
+        "is_shared": data["reference_count"] > 1,
+        "shared_notice": (_SHARED_OBJECT_MESSAGE if data["reference_count"] > 1 else ""),
+    }
+
+
+def table_history_rows(service: AuthoringService, table_id: str) -> list[dict[str, Any]]:
+    out = []
+    for h in service.table_history(table_id):
+        out.append({
+            "Versione": h["version"], "Quando": (h["created_at"] or "")[:16].replace("T", " "),
+            "Stato al salvataggio": status_label(h["status"]), "Autore": h["actor"] or "—",
+            "Anteprima": _block_preview(h["caption"] or h["title"], width=50),
+        })
+    return out
+
+
+def figure_history_rows(service: AuthoringService, figure_id: str) -> list[dict[str, Any]]:
+    out = []
+    for h in service.figure_history(figure_id):
+        out.append({
+            "Versione": h["version"], "Quando": (h["created_at"] or "")[:16].replace("T", " "),
+            "Stato al salvataggio": status_label(h["status"]), "Autore": h["actor"] or "—",
+            "Anteprima": _block_preview(h["caption"] or h["title"], width=50),
+        })
+    return out
+
+
+def impact_summary(repo: IndustrialRepository, object_type: str, object_id: str) -> list[str]:
+    """Advanced-mode-only 'where is this reused' listing (topic titles),
+    built from the EXISTING impact_map_industrial() -- never a second
+    impact-tracing implementation. Deduplicates by topic title since
+    impact_map_industrial() is topic/publication-row granularity (a topic
+    in two publications yields two rows) and this is purely informational,
+    not the shared-object gate itself (see AuthoringService._reference_count,
+    which is block-level and is what actually decides the fail-closed
+    guard)."""
+    try:
+        df = repo.impact_map_industrial(object_id, kind=object_type)
+    except Exception:
+        return []
+    if df is None or df.empty or "topic_title" not in df.columns:
+        return []
+    seen: list[str] = []
+    for v in df["topic_title"].tolist():
+        if v and v not in seen:
+            seen.append(str(v))
+    return seen
+
+
 def topic_history_rows(service: AuthoringService, topic_id: str) -> list[dict[str, Any]]:
     out = []
     for h in service.topic_history(topic_id):
@@ -264,20 +381,50 @@ def search(repo: IndustrialRepository, publication_id: str, query: str) -> list[
     # Block text is searched against the live, untruncated text_content
     # (not outline_rows()'s already-truncated preview) so a match past the
     # preview boundary is never missed.
-    block_sql = """SELECT b.block_id,b.topic_id,b.block_type,b.text_content,b.status,t.title AS topic_title
+    block_sql = """SELECT b.block_id,b.topic_id,b.block_type,b.text_content,b.object_ref_id,b.status,t.title AS topic_title
                    FROM content_blocks b JOIN topics t ON t.topic_id=b.topic_id
                    WHERE b.topic_id IN (SELECT pt.topic_id FROM publication_topics pt JOIN topics tt ON tt.topic_id=pt.topic_id
                                         WHERE pt.publication_id=? AND tt.archived_at IS NULL)
                    AND b.archived_at IS NULL ORDER BY b.topic_id,b.position"""
     for b in repo.conn.execute(block_sql, (publication_id,)):
-        if b["block_type"] not in EDITABLE_TEXT_BLOCK_TYPES:
-            continue
-        text = b["text_content"] or ""
-        if q in text.lower():
-            out.append({"kind": "block", "id": b["block_id"], "topic_id": b["topic_id"],
-                        "label": f"{b['topic_title']} — {_block_preview(text)}",
-                        "context": f"{block_type_label(b['block_type'], editable=True)} — {status_label(b['status'])}"})
+        bt = b["block_type"]
+        if bt in EDITABLE_TEXT_BLOCK_TYPES:
+            text = b["text_content"] or ""
+            if q in text.lower():
+                out.append({"kind": "block", "id": b["block_id"], "topic_id": b["topic_id"],
+                            "label": f"{b['topic_title']} — {_block_preview(text)}",
+                            "context": f"{block_type_label(bt, editable=True)} — {status_label(b['status'])}"})
+        elif bt == "table":
+            t = repo.conn.execute(
+                "SELECT title,caption,rows_json FROM structured_tables WHERE table_id=?", (b["object_ref_id"],)
+            ).fetchone()
+            if not t:
+                continue
+            cells_text = " ".join(str(c) for row in _load_json_safe(t["rows_json"], []) for c in row)
+            haystack = f"{t['title']} {t['caption']} {cells_text}".lower()
+            if q in haystack:
+                out.append({"kind": "block", "id": b["block_id"], "topic_id": b["topic_id"],
+                            "label": f"{b['topic_title']} — {_block_preview(t['caption'] or t['title'])}",
+                            "context": f"Tabella — {status_label(b['status'])}"})
+        elif bt == "figure":
+            f = repo.conn.execute(
+                "SELECT title,caption,alt_text FROM figures WHERE figure_id=?", (b["object_ref_id"],)
+            ).fetchone()
+            if not f:
+                continue
+            haystack = f"{f['title']} {f['caption']} {f['alt_text']}".lower()
+            if q in haystack:
+                out.append({"kind": "block", "id": b["block_id"], "topic_id": b["topic_id"],
+                            "label": f"{b['topic_title']} — {_block_preview(f['caption'] or f['title'])}",
+                            "context": f"Figura — {status_label(b['status'])}"})
     return out
+
+
+def _load_json_safe(value: str | None, default):
+    try:
+        return json.loads(value or "")
+    except Exception:
+        return default
 
 
 def conflict_message(detail: str = "") -> str:

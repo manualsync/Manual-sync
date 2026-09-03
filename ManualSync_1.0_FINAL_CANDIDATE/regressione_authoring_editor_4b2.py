@@ -61,6 +61,42 @@ def _new_project(name: str) -> Path:
 
 
 # ------------------------------------------------------------------
+# 4C compatibility adapters: studio_save_ui/studio_save_draft_ui/
+# studio_restore_draft_ui/studio_discard_draft_ui/studio_revert_ui all
+# gained new REQUIRED (block_type, object_ref_id, ...table/figure field...)
+# parameters when 4C added dedicated table/figure editors alongside the
+# existing topic/text-block path. Every call below in THIS 4B.2 suite is
+# topic/text-block only, so block_type/object_ref_id are always None here
+# (exactly what the real UI leaves them at when a topic or a plain text
+# block is open) and the table/figure field values are never touched by
+# the code path being exercised. These thin wrappers keep every assertion
+# body below byte-for-byte the same as before 4C -- only the call shape
+# was adapted, proving the topic/text-block BEHAVIOR itself is unchanged.
+# ------------------------------------------------------------------
+
+def _save_ui(project_dir, pub, kind, object_id, expected_version, title_val, text_val, actor, show_archived):
+    return app.studio_save_ui(project_dir, pub, kind, object_id, None, None, expected_version,
+                              title_val, text_val, "", "", None, "", "", actor, show_archived)
+
+
+def _save_draft_ui(project_dir, kind, object_id, expected_version, title_val, text_val, actor):
+    return app.studio_save_draft_ui(project_dir, kind, object_id, None, None, expected_version,
+                                    title_val, text_val, "", "", None, "", "", actor)
+
+
+def _restore_draft_ui(project_dir, kind, object_id):
+    return app.studio_restore_draft_ui(project_dir, kind, object_id, None, None)
+
+
+def _discard_draft_ui(project_dir, pub, kind, object_id, show_archived):
+    return app.studio_discard_draft_ui(project_dir, pub, kind, object_id, None, None, show_archived)
+
+
+def _revert_ui(project_dir, pub, kind, object_id, version, show_archived, actor):
+    return app.studio_revert_ui(project_dir, pub, kind, object_id, None, None, version, show_archived, actor)
+
+
+# ------------------------------------------------------------------
 # Group 1 (AC#1): outline publication ordinata.
 # ------------------------------------------------------------------
 p1 = _new_project("g01_outline_order")
@@ -95,7 +131,7 @@ check("g2: studio_new_topic_ui (real UI callback) creates a topic from a title a
 # Group 3 (AC#3): rename topic.
 # ------------------------------------------------------------------
 p3 = _new_project("g03_rename_topic")
-bundle3 = app.studio_save_ui(str(p3), "PUB-MAIN", "topic", "SEED-TOPIC", 1, "Renamed Title", "", "Writer A", False)
+bundle3 = _save_ui(str(p3), "PUB-MAIN", "topic", "SEED-TOPIC", 1, "Renamed Title", "", "Writer A", False)
 check("g3: rename via studio_save_ui succeeds", "✅" in bundle3[app.ST_IDX_SAVE_MSG], bundle3[app.ST_IDX_SAVE_MSG])
 repo3, _ = av.open_service(p3)
 check("g3: the live topic title is actually renamed", repo3.conn.execute(
@@ -165,7 +201,7 @@ p10 = _new_project("g10_edit_reorder_archive_block")
 repo10 = IndustrialRepository(p10 / "ManualSync_CCMS.sqlite")
 repo10.add_block("BLK-B", "SEED-TOPIC", "note", position=2, text="Second block.", status="Draft")
 repo10.close()
-bundle10 = app.studio_save_ui(str(p10), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Edited text.", "Writer A", False)
+bundle10 = _save_ui(str(p10), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Edited text.", "Writer A", False)
 check("g10: edit/save block via the real UI callback succeeds", "✅" in bundle10[app.ST_IDX_SAVE_MSG], bundle10[app.ST_IDX_SAVE_MSG])
 repo10b = IndustrialRepository(p10 / "ManualSync_CCMS.sqlite")
 check("g10: the live block text is actually updated", repo10b.conn.execute(
@@ -188,7 +224,7 @@ check("g12: restore block via UI succeeds", "Ripristinato" in bundle12b[app.ST_I
 # version bump, and reopening shows it's available.
 # ------------------------------------------------------------------
 p13 = _new_project("g13_draft_recovery")
-msg13 = app.studio_save_draft_ui(str(p13), "block", "SEED-BLK", 1, "", "Unsaved draft text.", "Writer A")
+msg13 = _save_draft_ui(str(p13), "block", "SEED-BLK", 1, "", "Unsaved draft text.", "Writer A")
 check("g13: draft saved via the real UI callback confirms no new version", "nessuna nuova versione" in msg13, msg13)
 repo13, svc13 = av.open_service(p13)
 check("g13: the live block version is unchanged after a draft save", repo13.conn.execute(
@@ -206,7 +242,7 @@ repo13b.close()
 # ------------------------------------------------------------------
 # Group 15 (AC#15): discard draft.
 # ------------------------------------------------------------------
-bundle15 = app.studio_discard_draft_ui(str(p13), "PUB-MAIN", "block", "SEED-BLK", False)
+bundle15 = _discard_draft_ui(str(p13), "PUB-MAIN", "block", "SEED-BLK", False)
 check("g15: discard draft via the real UI callback succeeds", "scartata" in bundle15[app.ST_IDX_SAVE_MSG], bundle15[app.ST_IDX_SAVE_MSG])
 repo15, svc15 = av.open_service(p13)
 check("g15: the draft is actually gone after discard", svc15.load_draft("block", "SEED-BLK") is None, None)
@@ -216,8 +252,8 @@ repo15.close()
 # Group 16 (AC#16): Save from a draft state creates exactly ONE version.
 # ------------------------------------------------------------------
 p16 = _new_project("g16_save_from_draft_one_version")
-app.studio_save_draft_ui(str(p16), "block", "SEED-BLK", 1, "", "Draft content.", "Writer A")
-bundle16 = app.studio_save_ui(str(p16), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Draft content.", "Writer A", False)
+_save_draft_ui(str(p16), "block", "SEED-BLK", 1, "", "Draft content.", "Writer A")
+bundle16 = _save_ui(str(p16), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Draft content.", "Writer A", False)
 check("g16: Save succeeds", "✅" in bundle16[app.ST_IDX_SAVE_MSG], bundle16[app.ST_IDX_SAVE_MSG])
 repo16, _ = av.open_service(p16)
 vcount16 = repo16.conn.execute("SELECT COUNT(*) c FROM block_versions WHERE block_id='SEED-BLK'").fetchone()["c"]
@@ -228,9 +264,9 @@ repo16.close()
 # Group 17 (AC#17): a version conflict preserves the draft.
 # ------------------------------------------------------------------
 p17 = _new_project("g17_conflict_preserves_draft")
-app.studio_save_ui(str(p17), "PUB-MAIN", "block", "SEED-BLK", 1, "", "First writer saved.", "Writer A", False)  # -> v2
-app.studio_save_draft_ui(str(p17), "block", "SEED-BLK", 1, "", "Second writer's stale draft.", "Writer B")
-bundle17 = app.studio_save_ui(str(p17), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Second writer's stale attempt.", "Writer B", False)
+_save_ui(str(p17), "PUB-MAIN", "block", "SEED-BLK", 1, "", "First writer saved.", "Writer A", False)  # -> v2
+_save_draft_ui(str(p17), "block", "SEED-BLK", 1, "", "Second writer's stale draft.", "Writer B")
+bundle17 = _save_ui(str(p17), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Second writer's stale attempt.", "Writer B", False)
 check("g17: a stale Save (expected_version=1, live is now 2) surfaces the conflict message, not a crash",
       "modificato da un'altra sessione" in bundle17[app.ST_IDX_SAVE_MSG], bundle17[app.ST_IDX_SAVE_MSG])
 repo17, svc17 = av.open_service(p17)
@@ -252,7 +288,7 @@ repo18.decide_review(rid18_first, decision="APPROVE", actor="Reviewer X")  # clo
 # Approved -- the OPEN task this edit must invalidate.
 rid18_reopened = repo18.request_review("block", "SEED-BLK", requested_by="Writer A")
 repo18.close()
-bundle18 = app.studio_save_ui(str(p18), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Edited after approval.", "Writer A", False)
+bundle18 = _save_ui(str(p18), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Edited after approval.", "Writer A", False)
 check("g18: the status HTML reflects the Approved-content edit reverting to Draft",
       "tornato a Bozza" in bundle18[app.ST_IDX_SAVE_MSG], bundle18[app.ST_IDX_SAVE_MSG])
 repo18b, svc18b = av.open_service(p18)
@@ -281,7 +317,7 @@ repo19.close()
 # Group 20 (AC#20): history list.
 # ------------------------------------------------------------------
 p20 = _new_project("g20_history_list")
-app.studio_save_ui(str(p20), "PUB-MAIN", "block", "SEED-BLK", 1, "", "v2 text.", "Writer A", False)
+_save_ui(str(p20), "PUB-MAIN", "block", "SEED-BLK", 1, "", "v2 text.", "Writer A", False)
 repo20, svc20 = av.open_service(p20)
 hist20 = av.block_history_rows(svc20, "SEED-BLK")
 check("g20: history has both versions, newest first", [h["Versione"] for h in hist20] == [2, 1], hist20)
@@ -292,8 +328,8 @@ repo20.close()
 # Group 21 (AC#21): revert.
 # ------------------------------------------------------------------
 p21 = _new_project("g21_revert")
-app.studio_save_ui(str(p21), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Changed text.", "Writer A", False)
-bundle21 = app.studio_revert_ui(str(p21), "PUB-MAIN", "block", "SEED-BLK", 1, False, "Writer A")
+_save_ui(str(p21), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Changed text.", "Writer A", False)
+bundle21 = _revert_ui(str(p21), "PUB-MAIN", "block", "SEED-BLK", 1, False, "Writer A")
 check("g21: revert via the real UI callback succeeds", "ripristinata" in bundle21[app.ST_IDX_SAVE_MSG], bundle21[app.ST_IDX_SAVE_MSG])
 repo21, _ = av.open_service(p21)
 row21 = repo21.conn.execute("SELECT version,text_content FROM content_blocks WHERE block_id='SEED-BLK'").fetchone()
@@ -366,7 +402,7 @@ repo25.close()
 # Group 27 (AC#27): refresh/navigation preserve the correct persisted state.
 # ------------------------------------------------------------------
 p27 = _new_project("g27_refresh_persistence")
-app.studio_save_ui(str(p27), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Persisted across reload.", "Writer A", False)
+_save_ui(str(p27), "PUB-MAIN", "block", "SEED-BLK", 1, "", "Persisted across reload.", "Writer A", False)
 bundle27_first = app.studio_open_ui(str(p27), "PUB-MAIN", "block:SEED-BLK", False)
 bundle27_reloaded = app.studio_load_ui(str(p27), "PUB-MAIN", False)  # simulates a fresh tab-select / reload with nothing pre-opened
 check("g27: a fresh load (no prior selection) still reflects the persisted structure correctly",
@@ -473,7 +509,7 @@ repo29 = IndustrialRepository(p29 / "ManualSync_CCMS.sqlite")
 check("g29: no review task was created", repo29.conn.execute("SELECT COUNT(*) c FROM review_tasks").fetchone()["c"] == 0, None)
 repo29.close()
 
-bundle29b = app.studio_revert_ui(str(p29), "PUB-MAIN", "block", "SEED-BLK", None, False, "Writer A")
+bundle29b = _revert_ui(str(p29), "PUB-MAIN", "block", "SEED-BLK", None, False, "Writer A")
 check("g29: revert without a chosen version gives inline guidance, not a gr.Error toast",
       bundle29b[app.ST_IDX_SAVE_MSG] == "Seleziona la versione da ripristinare.", bundle29b[app.ST_IDX_SAVE_MSG])
 
@@ -522,19 +558,27 @@ check("g30.1: the one remaining shared identity field is still labelled exactly 
 check("g30.1: it carries the plain-language helper text, not 'actor'/'audit actor'/'user id' jargon",
       app.c_actor.info == "Serve per registrare chi effettua modifiche e decisioni.", app.c_actor.info)
 
-# 2) Authoring Studio actions are wired to that same shared field (checked
-#    against the real dependency graph, not just by convention).
+# 2) Authoring Studio actions are wired to that same shared field's
+#    identity (checked against the real dependency graph, not just by
+#    convention). Actor state consistency fix: every mutation callback
+#    now reads actor_state (a gr.State synced from c_actor via .change()
+#    -- proven the only trigger of .input()/.change()/.blur() that
+#    actually reaches the backend for a plain Textbox in this Gradio
+#    build), never c_actor directly -- see
+#    regressione_authoring_tables_figures_4c.py groups 45-54 for the
+#    full root-cause writeup and coverage. Still exactly one visible
+#    "Il tuo nome" field; nothing here changes that.
 dep_new_topic = _dep_for("studio_new_topic_ui")
-check("g30.2: studio_new_topic_ui's wired inputs end with the shared c_actor component, not a separate one",
-      dep_new_topic is not None and dep_new_topic["inputs"][-1] == app.c_actor._id, dep_new_topic)
+check("g30.2: studio_new_topic_ui's wired inputs end with the shared actor_state (sourced from the single c_actor field)",
+      dep_new_topic is not None and dep_new_topic["inputs"][-1] == app.actor_state._id, dep_new_topic)
 dep_save = _dep_for("studio_save_ui")
-check("g30.2: studio_save_ui's wired inputs include the shared c_actor component",
-      dep_save is not None and app.c_actor._id in dep_save["inputs"], dep_save)
+check("g30.2: studio_save_ui's wired inputs include the shared actor_state",
+      dep_save is not None and app.actor_state._id in dep_save["inputs"], dep_save)
 
 # 3) source approval uses the same shared value where appropriate.
 dep_approve = _dep_for("guided_approve_source_ui")
-check("g30.3: 'Approva sorgente' (guided_approve_source_ui) is wired to the shared c_actor component",
-      dep_approve is not None and app.c_actor._id in dep_approve["inputs"], dep_approve)
+check("g30.3: 'Approva sorgente' (guided_approve_source_ui) is wired to the shared actor_state",
+      dep_approve is not None and app.actor_state._id in dep_approve["inputs"], dep_approve)
 
 # 4) a genuinely separate reviewer role keeps its own explicit "Revisore"
 #    label -- never a second "Il tuo nome".

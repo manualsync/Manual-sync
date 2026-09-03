@@ -18,7 +18,7 @@ from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversio
 from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
-from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError
+from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError, SharedObjectError, MissingAssetError
 import authoring_view as av
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
@@ -1408,6 +1408,16 @@ def _studio_tech_html_block(detail: dict) -> str:
             f"block_type: <code>{html.escape(detail['block_type'])}</code><br>topic_id: <code>{html.escape(detail['topic_id'])}</code><br>"
             f"source_refs: {html.escape(refs)}<br>archived_at: {html.escape(str(detail.get('archived_at') or '—'))}</div>")
 
+def _studio_tech_html_shared_object(repo, object_type: str, object_id: str, tfdetail: dict, block_detail_: dict) -> str:
+    refs = ", ".join(tfdetail.get("source_refs") or []) or "—"
+    id_label = "table_id" if object_type == "table" else "figure_id"
+    extra = f"file_path: <code>{html.escape(str(tfdetail.get('file_path') or '—'))}</code><br>" if object_type == "figure" else ""
+    impact = av.impact_summary(repo, object_type, object_id)
+    impact_html = ("usato in: " + ", ".join(html.escape(t) for t in impact)) if impact else "usato in un solo topic"
+    return (f"<div class='ms-muted' style='font-size:12px'>{id_label}: <code>{html.escape(object_id)}</code> · "
+            f"block_id (contenitore): <code>{html.escape(block_detail_['block_id'])}</code><br>{extra}"
+            f"source_refs: {html.escape(refs)}<br>reference_count: {tfdetail['reference_count']} — {impact_html}</div>")
+
 _ST_EMPTY_TABLE_COLS = ["Elemento", "Tipo", "Stato", "Versione", "Archiviato"]
 
 def _studio_pub_header_html(repo, publication_id: str) -> str:
@@ -1428,22 +1438,31 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
     # reach the browser when it is nested inside a Group whose own
     # visibility does not change in that same response (confirmed both in
     # this app and in the standalone repro). So instead, every action
-    # button gets its OWN visible= set directly here (alongside its
+    # button/field gets its OWN visible= set directly here (alongside its
     # existing interactive=), exactly like title_upd/text_upd already did
-    # correctly all along -- no nested dynamic Group anywhere.
+    # correctly all along -- no nested dynamic Group anywhere, including
+    # for the new 4C table/figure editor fields below.
     repo, svc = av.open_service(project_dir)
     try:
         publication_id = (publication_id or "").strip() or "PUB-MAIN"
         pub_header = _studio_pub_header_html(repo, publication_id)
+        empty_table_upd = _fixed_grid_update(pd.DataFrame(), visible=False)  # default for st_table_grid only
+        hidden_field = gr.update(value="", visible=False)
+        hidden_btn = gr.update(visible=False, interactive=False)
+        hidden_notice = gr.update(value="", visible=False)
         if not repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?", (publication_id,)).fetchone():
             empty = pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
             return (gr.update(value=empty), gr.update(choices=[], value=None), None, None, None,
                     "Pubblicazione", f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>",
-                    gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False),
-                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False), gr.update(visible=False),
-                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False),
-                    gr.update(visible=False, interactive=False), review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
-                    pub_header)
+                    hidden_field, hidden_field, hidden_notice,
+                    hidden_btn, hidden_btn, gr.update(visible=False), gr.update(visible=False),
+                    hidden_btn, hidden_btn, hidden_btn, hidden_btn,
+                    hidden_btn, review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
+                    pub_header,
+                    None, None,
+                    hidden_field, hidden_field, empty_table_upd,
+                    gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
+                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False))
 
         rows = av.outline_rows(repo, publication_id, include_archived=bool(show_archived))
         table = pd.DataFrame(av.outline_table(rows)) if rows else pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
@@ -1455,34 +1474,114 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
         if not kind or not object_id:
             return (gr.update(value=table), gr.update(choices=picker_choices, value=None), None, None, None,
                     "Pubblicazione", "<div class='ms-muted'>Seleziona un topic o un blocco dalla struttura a sinistra, oppure crea un nuovo topic.</div>",
-                    gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False),
-                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False), gr.update(visible=False),
-                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False),
-                    gr.update(visible=False, interactive=False), review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
-                    pub_header)
+                    hidden_field, hidden_field, hidden_notice,
+                    hidden_btn, hidden_btn, gr.update(visible=False), gr.update(visible=False),
+                    hidden_btn, hidden_btn, hidden_btn, hidden_btn,
+                    hidden_btn, review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
+                    pub_header,
+                    None, None,
+                    hidden_field, hidden_field, empty_table_upd,
+                    gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
+                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False))
 
         breadcrumb = av.breadcrumb(rows, kind, object_id)
+        block_type = None
+        object_ref_id = None
+        table_title_upd = hidden_field
+        table_caption_upd = hidden_field
+        table_grid_upd = empty_table_upd
+        figure_preview_upd = gr.update(value=None, visible=False)
+        figure_caption_upd = hidden_field
+        figure_alt_upd = hidden_field
+        figure_replace_row_visible = False
+        shared_notice_upd = hidden_notice
+        new_table_row_visible = False
+        new_figure_row_visible = False
+        table_rowcol_row_visible = False
+
         if kind == "topic":
             detail = av.topic_detail(svc, object_id)
+            status_detail = detail
             title_upd = gr.update(value=detail["title"], visible=True, interactive=not detail["archived"])
             text_upd = gr.update(value="", visible=False)
-            readonly_notice = gr.update(value="", visible=False)
+            readonly_notice = hidden_notice
             can_edit = not detail["archived"]
+            version_for_save = detail["version"]
             history = pd.DataFrame(av.topic_history_rows(svc, object_id))
             tech_html = _studio_tech_html_topic(detail)
             new_block_row_visible = not detail["archived"]
+            new_table_row_visible = not detail["archived"]
+            new_figure_row_visible = not detail["archived"]
+            submit_review_visible = True
         else:
             detail = av.block_detail(svc, object_id)
-            editable = detail["editable"]
-            title_upd = gr.update(value="", visible=False)
-            text_upd = gr.update(value=detail["text"], visible=editable, interactive=(editable and not detail["archived"]))
-            readonly_notice = gr.update(value=("" if editable else f"ℹ️ {detail['type_label']}"), visible=not editable)
-            can_edit = editable and not detail["archived"]
-            history = pd.DataFrame(av.block_history_rows(svc, object_id))
-            tech_html = _studio_tech_html_block(detail)
+            status_detail = detail
+            block_type = detail["block_type"]
+            editable_text = detail["editable"]
+            is_table = block_type == "table"
+            is_figure = block_type == "figure"
+            title_upd = hidden_field
+            text_upd = gr.update(value=detail["text"], visible=editable_text, interactive=(editable_text and not detail["archived"]))
+            readonly_notice = hidden_notice
             new_block_row_visible = False
+            submit_review_visible = not (is_table or is_figure)
 
-        status_html = _studio_status_html(detail)
+            if is_table:
+                object_ref_id = detail["object_ref_id"]
+                tdetail = av.table_detail(svc, object_ref_id)
+                status_detail = tdetail
+                version_for_save = tdetail["version"]
+                can_edit = not detail["archived"] and not tdetail["is_shared"]
+                cols = tdetail["columns"] or ["Colonna 1"]
+                grid_rows = tdetail["rows"] if tdetail["rows"] else [["" for _ in cols]]
+                table_title_upd = gr.update(value=tdetail["title"], visible=True, interactive=can_edit)
+                table_caption_upd = gr.update(value=tdetail["caption"], visible=True, interactive=can_edit)
+                table_grid_upd = _fixed_grid_update(pd.DataFrame(grid_rows, columns=[str(c) for c in cols]),
+                                                    visible=True, interactive=can_edit)
+                # Real Gradio 6.5.1 bug found in browser stabilization: the
+                # Dataframe's own built-in right-click "Add row"/"Add
+                # column" context-menu mutates the visible grid but does
+                # NOT reliably update the value Gradio submits on a
+                # subsequent event (confirmed with a clean single-cycle
+                # test against this exact app: DOM showed 5 rows, Save
+                # still persisted only the original 4). These dedicated
+                # buttons are the supported, tested mechanism -- they
+                # round-trip through Python, so the value st_table_grid
+                # holds afterward is exactly what gets saved.
+                table_rowcol_row_visible = can_edit
+                if tdetail["is_shared"]:
+                    shared_notice_upd = gr.update(value=f"🔗 {tdetail['shared_notice']}", visible=True)
+                elif detail["archived"]:
+                    readonly_notice = gr.update(value=f"⛔ {av.archived_message('block', object_id)}", visible=True)
+                history = pd.DataFrame(av.table_history_rows(svc, object_ref_id))
+                tech_html = _studio_tech_html_shared_object(repo, "table", object_ref_id, tdetail, detail)
+            elif is_figure:
+                object_ref_id = detail["object_ref_id"]
+                fdetail = av.figure_detail(svc, object_ref_id)
+                status_detail = fdetail
+                version_for_save = fdetail["version"]
+                can_edit = not detail["archived"] and not fdetail["is_shared"]
+                asset_ok = bool(fdetail["file_path"]) and not fdetail["asset_missing"]
+                figure_preview_upd = gr.update(value=(fdetail["file_path"] if asset_ok else None), visible=True)
+                figure_caption_upd = gr.update(value=fdetail["caption"], visible=True, interactive=can_edit)
+                figure_alt_upd = gr.update(value=fdetail["alt_text"], visible=True, interactive=can_edit)
+                figure_replace_row_visible = can_edit
+                if fdetail["is_shared"]:
+                    shared_notice_upd = gr.update(value=f"🔗 {fdetail['shared_notice']}", visible=True)
+                elif detail["archived"]:
+                    readonly_notice = gr.update(value=f"⛔ {av.archived_message('block', object_id)}", visible=True)
+                elif fdetail["asset_missing"]:
+                    readonly_notice = gr.update(value="🖼️ Immagine non disponibile.", visible=True)
+                history = pd.DataFrame(av.figure_history_rows(svc, object_ref_id))
+                tech_html = _studio_tech_html_shared_object(repo, "figure", object_ref_id, fdetail, detail)
+            else:
+                version_for_save = detail["version"]
+                readonly_notice = gr.update(value=("" if editable_text else f"ℹ️ {detail['type_label']}"), visible=not editable_text)
+                can_edit = editable_text and not detail["archived"]
+                history = pd.DataFrame(av.block_history_rows(svc, object_id))
+                tech_html = _studio_tech_html_block(detail)
+
+        status_html = _studio_status_html(status_detail)
         can_move = not detail["archived"]
         can_archive = not detail["archived"]
         can_restore = detail["archived"]
@@ -1490,16 +1589,21 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
 
         return (
             gr.update(value=table), gr.update(choices=picker_choices, value=picker_value),
-            kind, object_id, detail["version"],
+            kind, object_id, version_for_save,
             breadcrumb, status_html, title_upd, text_upd, readonly_notice,
             gr.update(visible=True, interactive=can_edit), gr.update(visible=True, interactive=can_edit),
-            gr.update(visible=detail["has_draft"]), gr.update(visible=detail["has_draft"]),
+            gr.update(visible=status_detail["has_draft"]), gr.update(visible=status_detail["has_draft"]),
             gr.update(visible=True, interactive=can_move), gr.update(visible=True, interactive=can_move),
             gr.update(visible=True, interactive=can_archive), gr.update(visible=True, interactive=can_restore),
-            gr.update(visible=True, interactive=can_submit_review), review_msg,
+            gr.update(visible=submit_review_visible, interactive=can_submit_review), review_msg,
             gr.update(visible=new_block_row_visible),
             tech_html, history, save_msg,
             pub_header,
+            block_type, object_ref_id,
+            table_title_upd, table_caption_upd, table_grid_upd,
+            figure_preview_upd, figure_caption_upd, figure_alt_upd, gr.update(visible=figure_replace_row_visible),
+            shared_notice_upd, gr.update(visible=new_table_row_visible), gr.update(visible=new_figure_row_visible),
+            gr.update(visible=table_rowcol_row_visible),
         )
     finally:
         repo.close()
@@ -1508,7 +1612,12 @@ ST_IDX_TABLE, ST_IDX_PICKER, ST_IDX_KIND, ST_IDX_ID, ST_IDX_VERSION, ST_IDX_BREA
     ST_IDX_TITLE, ST_IDX_TEXT, ST_IDX_READONLY, ST_IDX_SAVE_BTN, ST_IDX_DISCARD_EDITS_BTN, ST_IDX_RESTORE_DRAFT_BTN, \
     ST_IDX_DISCARD_DRAFT_BTN, ST_IDX_MOVE_UP_BTN, ST_IDX_MOVE_DOWN_BTN, ST_IDX_ARCHIVE_BTN, ST_IDX_RESTORE_BTN, \
     ST_IDX_SUBMIT_REVIEW_BTN, ST_IDX_REVIEW_MSG, ST_IDX_NEW_BLOCK_ROW, ST_IDX_TECH, ST_IDX_HISTORY, ST_IDX_SAVE_MSG, \
-    ST_IDX_PUB_HEADER = range(25)
+    ST_IDX_PUB_HEADER, \
+    ST_IDX_BLOCK_TYPE, ST_IDX_OBJECT_REF_ID, \
+    ST_IDX_TABLE_TITLE, ST_IDX_TABLE_CAPTION, ST_IDX_TABLE_GRID, \
+    ST_IDX_FIGURE_PREVIEW, ST_IDX_FIGURE_CAPTION, ST_IDX_FIGURE_ALT, ST_IDX_FIGURE_REPLACE_ROW, \
+    ST_IDX_SHARED_NOTICE, ST_IDX_NEW_TABLE_ROW, ST_IDX_NEW_FIGURE_ROW, \
+    ST_IDX_TABLE_ROWCOL_ROW = range(38)
 
 def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # Standard-mode validation UX fix: a predictable, user-correctable input
@@ -1517,12 +1626,13 @@ def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # never raise gr.Error (which pops a global red toast and, on this
     # multi-output panel, would otherwise force a full _studio_full_bundle
     # re-render from the DB, silently discarding whatever the user had just
-    # typed in the title/text box). gr.update() with no args, returned for
-    # every one of the 25 outputs, touches nothing: verified against
-    # Gradio 6.5.1's own dispatch code (blocks.py) that a State output
-    # (st_kind/st_id/st_version) receiving an update-dict with no "value"
-    # key is left at its previous value rather than being overwritten.
-    out = [gr.update() for _ in range(25)]
+    # typed in a title/text/caption/grid field). gr.update() with no args,
+    # returned for every one of the 38 outputs, touches nothing: verified
+    # against Gradio 6.5.1's own dispatch code (blocks.py) that a State
+    # output (st_kind/st_id/st_version/st_block_type/st_object_ref_id)
+    # receiving an update-dict with no "value" key is left at its previous
+    # value rather than being overwritten.
+    out = [gr.update() for _ in range(38)]
     out[ST_IDX_SAVE_MSG] = save_msg
     out[ST_IDX_REVIEW_MSG] = review_msg
     return tuple(out)
@@ -1541,18 +1651,84 @@ def studio_refresh_ui(project_dir, publication_id, kind, object_id, show_archive
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
 
-def _studio_draft_payload(kind, title_val, text_val):
-    return {"title": title_val} if kind == "topic" else {"text": text_val}
+def _studio_draft_target(kind, object_id, block_type, object_ref_id):
+    # 4C: a table/figure's editable CONTENT lives on the table_id/figure_id
+    # row, with its OWN version counter -- distinct from the wrapping
+    # content_blocks row's own version/position. Drafts (and saves) for a
+    # table/figure block must key off the table_id/figure_id
+    # (object_ref_id), never the block_id -- otherwise a draft saved here
+    # could never be found by load_table_for_edit/load_figure_for_edit,
+    # which look drafts up by (kind, table_id/figure_id).
+    if kind == "topic":
+        return "topic", object_id
+    if block_type == "table":
+        return "table", object_ref_id
+    if block_type == "figure":
+        return "figure", object_ref_id
+    return "block", object_id
 
-def studio_save_draft_ui(project_dir, kind, object_id, expected_version, title_val, text_val, actor):
-    # Blur-triggered recovery save -- NEVER calls save_topic/save_block, so
-    # this can never create a CCMS content version (4B.1 invariant).
+def _grid_to_columns_rows(df):
+    if df is None:
+        return [], []
+    try:
+        cols = [str(c) for c in df.columns.tolist()]
+    except Exception:
+        return [], []
+    rows = df.fillna("").astype(str).values.tolist()
+    return cols, rows
+
+def _fixed_grid_update(df, **kwargs):
+    # 4C integrity gate: Gradio 6.5.1's Dataframe has a real data-loss bug
+    # (see _table_rowcol_op) -- its own built-in right-click "Add row" /
+    # "Add column" / "Delete row" / "Delete column" context menu mutates
+    # the grid client-side without reliably updating the value Save reads.
+    # The new `row_limits`/`column_limits` kwargs that would be the
+    # "correct" way to cap this are explicitly unimplemented in this
+    # Gradio version (components/dataframe.py: "not yet implemented",
+    # warns and is otherwise a no-op). The OLD `row_count`/`column_count`
+    # tuple form ("fixed" mode) is still what the shipped frontend bundle
+    # actually honors -- empirically verified (isolated repro app): with
+    # row_count=(n,"fixed") + column_count=(m,"fixed") the right-click
+    # menu renders with ZERO structural items (no Add/Delete row/column
+    # at all), cell editing keeps working normally, and a SEPARATE
+    # Dataframe elsewhere in the same app with no row_count/column_count
+    # override keeps its full menu -- this is a per-component prop, not a
+    # global behavior change. Recomputed on every push (open/add-row/
+    # remove-row/restore-draft/...) from the row/column counts actually
+    # being pushed, so "fixed" always tracks the real current shape
+    # instead of freezing the table at whatever size it happened to be
+    # when first opened.
+    n_rows = max(1, len(df.index)) if df is not None else 1
+    n_cols = max(1, len(df.columns)) if df is not None else 1
+    return gr.update(value=df, row_count=(n_rows, "fixed"), column_count=(n_cols, "fixed"), **kwargs)
+
+def _studio_draft_payload(draft_kind, title_val, text_val, table_title_val, table_caption_val, table_grid_val,
+                          figure_caption_val, figure_alt_val):
+    if draft_kind == "topic":
+        return {"title": title_val}
+    if draft_kind == "table":
+        cols, rows = _grid_to_columns_rows(table_grid_val)
+        return {"title": table_title_val, "caption": table_caption_val, "columns": cols, "rows": rows}
+    if draft_kind == "figure":
+        return {"caption": figure_caption_val, "alt_text": figure_alt_val}
+    return {"text": text_val}
+
+def studio_save_draft_ui(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                         title_val, text_val, table_title_val, table_caption_val, table_grid_val,
+                         figure_caption_val, figure_alt_val, actor):
+    # Blur/change-triggered recovery save -- NEVER calls save_topic/
+    # save_block/save_table/save_figure, so this can never create a CCMS
+    # content version (4B.1 invariant, unchanged for 4C).
     if not project_dir or not kind or not object_id or expected_version is None:
+        return ""
+    draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
+    if not draft_id:
         return ""
     repo, svc = av.open_service(project_dir)
     try:
-        svc.save_draft(kind, object_id, base_version=int(expected_version),
-                       payload=_studio_draft_payload(kind, title_val, text_val),
+        svc.save_draft(draft_kind, draft_id, base_version=int(expected_version),
+                       payload=_studio_draft_payload(draft_kind, title_val, text_val, table_title_val,
+                                                     table_caption_val, table_grid_val, figure_caption_val, figure_alt_val),
                        actor=(actor or "").strip() or "Autore sconosciuto")
         return "💾 Bozza salvata in locale (nessuna nuova versione creata)."
     except Exception:
@@ -1560,27 +1736,120 @@ def studio_save_draft_ui(project_dir, kind, object_id, expected_version, title_v
     finally:
         repo.close()
 
-def studio_restore_draft_ui(project_dir, kind, object_id):
+def _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                     table_title_val, table_caption_val, table_grid_val, actor, op):
+    # Root-cause fix for a real Gradio 6.5.1 bug found in 4C browser
+    # stabilization: the Dataframe's built-in right-click "Add row"/"Add
+    # column" context menu visibly mutates the grid but does not reliably
+    # update the value Gradio submits as an input on a later event -- a
+    # clean, single, DB-verified repro against this exact table showed
+    # Save persisting only the pre-existing rows after a context-menu
+    # "Add row below". These functions replace it: they read the CURRENT
+    # submitted grid (which genuine cell edits/.input() DO update
+    # correctly -- only the native row/column insertion is unreliable),
+    # compute the new grid in Python, and push it back via
+    # gr.update(value=...), so the very next Save reads the correct value.
+    cols, rows = _grid_to_columns_rows(table_grid_val)
+    if op == "add_row":
+        if not cols:
+            return gr.update(), "Aggiungi almeno una colonna."
+        rows = rows + [["" for _ in cols]]
+    elif op == "remove_row":
+        if len(rows) <= 1:
+            return gr.update(), "La tabella deve avere almeno una riga."
+        rows = rows[:-1]
+    elif op == "add_col":
+        n = len(cols) + 1
+        new_name = f"Colonna {n}"
+        while new_name in cols:
+            n += 1
+            new_name = f"Colonna {n}"
+        cols = cols + [new_name]
+        rows = [list(r) + [""] for r in rows] if rows else [[""]]
+    else:  # remove_col
+        if len(cols) <= 1:
+            return gr.update(), "Aggiungi almeno una colonna."
+        cols = cols[:-1]
+        rows = [r[:-1] for r in rows]
+    new_df = pd.DataFrame(rows, columns=[str(c) for c in cols])
+    msg = ""
+    if project_dir and kind and object_id and expected_version is not None:
+        draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
+        if draft_id:
+            repo, svc = av.open_service(project_dir)
+            try:
+                svc.save_draft(draft_kind, draft_id, base_version=int(expected_version),
+                               payload=_studio_draft_payload(draft_kind, "", "", table_title_val,
+                                                             table_caption_val, new_df, "", ""),
+                               actor=(actor or "").strip() or "Autore sconosciuto")
+                msg = "💾 Bozza salvata in locale (nessuna nuova versione creata)."
+            except Exception:
+                msg = ""
+            finally:
+                repo.close()
+    return _fixed_grid_update(new_df), msg
+
+def studio_table_add_row_ui(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor):
+    return _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor, "add_row")
+
+def studio_table_remove_row_ui(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                               table_title_val, table_caption_val, table_grid_val, actor):
+    return _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor, "remove_row")
+
+def studio_table_add_col_ui(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor):
+    return _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor, "add_col")
+
+def studio_table_remove_col_ui(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                               table_title_val, table_caption_val, table_grid_val, actor):
+    return _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, expected_version,
+                            table_title_val, table_caption_val, table_grid_val, actor, "remove_col")
+
+def studio_restore_draft_ui(project_dir, kind, object_id, block_type, object_ref_id):
+    # Outputs: [st_title_input, st_text_input, st_table_title, st_table_caption,
+    #           st_table_grid, st_figure_caption, st_figure_alt,
+    #           st_restore_draft_btn, st_discard_draft_btn]
+    draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
+    hide2 = (gr.update(visible=False), gr.update(visible=False))
+    noop7 = (gr.update(),) * 7
+    if not draft_id:
+        return noop7 + hide2
     repo, svc = av.open_service(project_dir)
     try:
-        draft = svc.load_draft(kind, object_id)
-        if not draft:
-            return gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
-        payload = draft["payload"]
-        if kind == "topic":
-            return (gr.update(value=payload.get("title", "")), gr.update(),
-                    gr.update(visible=False), gr.update(visible=False))
-        return (gr.update(), gr.update(value=payload.get("text", "")),
-                gr.update(visible=False), gr.update(visible=False))
+        draft = svc.load_draft(draft_kind, draft_id)
     finally:
         repo.close()
+    if not draft:
+        return noop7 + hide2
+    payload = draft["payload"]
+    if draft_kind == "topic":
+        return (gr.update(value=payload.get("title", "")), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(), gr.update()) + hide2
+    if draft_kind == "table":
+        cols = payload.get("columns") or ["Colonna 1"]
+        rows = payload.get("rows") or [["" for _ in cols]]
+        grid_df = pd.DataFrame(rows, columns=[str(c) for c in cols])
+        return (gr.update(), gr.update(), gr.update(value=payload.get("title", "")),
+                gr.update(value=payload.get("caption", "")), _fixed_grid_update(grid_df),
+                gr.update(), gr.update()) + hide2
+    if draft_kind == "figure":
+        return (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+                gr.update(value=payload.get("caption", "")), gr.update(value=payload.get("alt_text", ""))) + hide2
+    return (gr.update(), gr.update(value=payload.get("text", "")), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update()) + hide2
 
-def studio_discard_draft_ui(project_dir, publication_id, kind, object_id, show_archived):
+def studio_discard_draft_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, show_archived):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
     repo, svc = av.open_service(project_dir)
     try:
-        svc.discard_draft(kind, object_id)
+        if draft_id:
+            svc.discard_draft(draft_kind, draft_id)
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="Bozza scartata.")
@@ -1589,7 +1858,9 @@ def studio_discard_edits_ui(project_dir, publication_id, kind, object_id, show_a
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
 
-def studio_save_ui(project_dir, publication_id, kind, object_id, expected_version, title_val, text_val, actor, show_archived):
+def studio_save_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, expected_version,
+                   title_val, text_val, table_title_val, table_caption_val, table_grid_val,
+                   figure_caption_val, figure_alt_val, actor, show_archived):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
     if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
@@ -1597,6 +1868,16 @@ def studio_save_ui(project_dir, publication_id, kind, object_id, expected_versio
     try:
         if kind == "topic":
             result = svc.save_topic(object_id, title=title_val, expected_version=int(expected_version), actor=actor)
+        elif block_type == "table":
+            cols, rows = _grid_to_columns_rows(table_grid_val)
+            if not cols:
+                repo.close()
+                return _studio_noop_bundle(save_msg="Aggiungi almeno una colonna.")
+            result = svc.save_table(object_ref_id, title=table_title_val, caption=table_caption_val,
+                                    columns=cols, rows=rows, expected_version=int(expected_version), actor=actor)
+        elif block_type == "figure":
+            result = svc.save_figure(object_ref_id, caption=figure_caption_val, alt_text=figure_alt_val,
+                                     expected_version=int(expected_version), actor=actor)
         else:
             result = svc.save_block(object_id, text=text_val, expected_version=int(expected_version), actor=actor)
         msg = f"✅ Salvato — versione {result['version']}."
@@ -1607,7 +1888,7 @@ def studio_save_ui(project_dir, publication_id, kind, object_id, expected_versio
     except VersionConflictError:
         repo.close()
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {av.conflict_message()}")
-    except ArchivedObjectError as e:
+    except (ArchivedObjectError, SharedObjectError) as e:
         repo.close()
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
     except (KeyError, ValueError) as e:
@@ -1708,6 +1989,64 @@ def studio_new_block_ui(project_dir, publication_id, kind, object_id, block_type
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Blocco aggiunto.")
 
+def studio_new_table_ui(project_dir, publication_id, kind, object_id, caption, show_archived, actor):
+    # Deliberately asks for nothing but an OPTIONAL caption -- "se il titolo
+    # non è obbligatorio backend, non renderlo obbligatorio arbitrariamente"
+    # (create_table_in_topic() itself requires no title/caption). Columns/
+    # rows start at a small, sensible default (2 columns, 1 empty row) the
+    # user immediately edits via the grid itself once it opens -- no
+    # separate "define your columns" step, matching how "+ Nuovo topic"
+    # only ever asks for a title and nothing else.
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind != "topic" or not object_id: return _studio_noop_bundle(save_msg="Apri prima un topic a cui aggiungere la tabella.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        result = svc.create_table_in_topic(object_id, actor=actor, caption=(caption or "").strip(),
+                                           columns=["Colonna 1", "Colonna 2"], rows=[["", ""]])
+    except (KeyError, ValueError, ArchivedObjectError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Tabella creata.")
+
+def studio_new_figure_ui(project_dir, publication_id, kind, object_id, image_file, caption, alt_text, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind != "topic" or not object_id: return _studio_noop_bundle(save_msg="Apri prima un topic a cui aggiungere la figura.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    if not image_file: return _studio_noop_bundle(save_msg="Seleziona un file immagine.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        result = svc.create_figure_in_topic(object_id, actor=actor, source_file_path=image_file,
+                                            caption=(caption or "").strip(), alt_text=(alt_text or "").strip())
+    except (KeyError, ValueError, ArchivedObjectError, FileNotFoundError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Figura aggiunta.")
+
+def studio_replace_figure_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id,
+                             expected_version, image_file, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind != "block" or block_type != "figure" or not object_ref_id:
+        return _studio_noop_bundle(save_msg="Apri prima una figura per sostituire l'immagine.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    if not image_file: return _studio_noop_bundle(save_msg="Seleziona un file immagine.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        result = svc.replace_figure_image(object_ref_id, source_file_path=image_file,
+                                          expected_version=int(expected_version), actor=actor)
+        msg = f"✅ Immagine sostituita — versione {result['version']}."
+    except VersionConflictError:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {av.conflict_message()}")
+    except (KeyError, ValueError, ArchivedObjectError, SharedObjectError, FileNotFoundError) as e:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=msg)
+
 def studio_submit_review_ui(project_dir, publication_id, kind, object_id, show_archived, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(review_msg="Seleziona prima un elemento.")
@@ -1723,7 +2062,7 @@ def studio_submit_review_ui(project_dir, publication_id, kind, object_id, show_a
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=review_msg)
 
-def studio_revert_ui(project_dir, publication_id, kind, object_id, version, show_archived, actor):
+def studio_revert_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, version, show_archived, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
     if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
@@ -1731,8 +2070,10 @@ def studio_revert_ui(project_dir, publication_id, kind, object_id, version, show
     repo, svc = av.open_service(project_dir)
     try:
         if kind == "topic": svc.revert_topic_to_version(object_id, int(version), actor=actor)
+        elif block_type == "table": svc.revert_table_to_version(object_ref_id, int(version), actor=actor)
+        elif block_type == "figure": svc.revert_figure_to_version(object_ref_id, int(version), actor=actor)
         else: svc.revert_block_to_version(object_id, int(version), actor=actor)
-    except (KeyError, ValueError, ArchivedObjectError) as e:
+    except (KeyError, ValueError, ArchivedObjectError, SharedObjectError, MissingAssetError) as e:
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
     finally:
         repo.close()
@@ -2578,6 +2919,35 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # reusing or duplicating this one.
             gr.HTML("<div class='ms-section-title'>La tua identità</div>")
             c_actor = gr.Textbox(label="Il tuo nome", info="Serve per registrare chi effettua modifiche e decisioni.")
+            # Actor state consistency fix: a real user typed a name here,
+            # saw it stay visibly filled, went back to a table and pressed
+            # Salva -- and still got "Inserisci il tuo nome per
+            # continuare." even though the field was genuinely non-empty.
+            # Every mutation callback below now reads actor_state (this
+            # State), never c_actor directly: a gr.State value is tracked
+            # authoritatively server-side per session and isn't subject to
+            # whatever can leave a live Textbox's client-rendered value
+            # transiently out of sync with what a DIFFERENT button's click
+            # payload captures at that instant.
+            #
+            # Sync trigger: .change(), not .input() -- empirically verified
+            # against this exact Gradio 6.5.1 build (isolated file-based
+            # server-side trace, both synthetic and real-keyboard typing):
+            # .input() on a plain gr.Textbox never reached the backend at
+            # all in this build, while .change() fired reliably every time.
+            # This isn't a UX regression: c_actor is never a programmatic
+            # update target anywhere in this app (confirmed -- it only ever
+            # appears as an input, never an output), so .change()'s usual
+            # "also fires on programmatic pushes" caveat (the reason
+            # st_table_grid deliberately uses .input() instead) doesn't
+            # apply here -- there is nothing programmatic to filter out.
+            # A Textbox's change event fires on native blur, which already
+            # happens automatically the instant the user clicks anywhere
+            # else (including the very button they're about to press) --
+            # so this never asks the user to do anything beyond typing the
+            # name once and continuing normally.
+            actor_state = gr.State("")
+            c_actor.change(lambda v: v, [c_actor], [actor_state])
 
             # Milestone 3A: standard view, shown by default. Same topics/blocks data as
             # the technical dataframes below (no second backend) — just friendlier
@@ -2610,6 +2980,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             gr.HTML("<div class='ms-section-title'>Editor professionale</div>")
             st_pub_header = gr.HTML()
             st_kind = gr.State(None); st_id = gr.State(None); st_version = gr.State(None)
+            # 4C: a table/figure block's editable CONTENT lives on a
+            # separate table_id/figure_id row (own version counter) --
+            # st_block_type tells Save/Revert/Replace which dedicated
+            # editor is open, st_object_ref_id carries that table_id/
+            # figure_id (st_id stays the wrapping BLOCK's id, used by
+            # Move/Archive/Restore exactly as for any other block).
+            st_block_type = gr.State(None); st_object_ref_id = gr.State(None)
             with gr.Row():
                 with gr.Column(scale=2):
                     # UX clarity fix: replaces the old technical Dataframe as
@@ -2623,6 +3000,15 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     with gr.Row():
                         st_new_topic_title = gr.Textbox(label="Titolo nuovo topic", placeholder="Titolo del nuovo topic…", scale=3)
                         st_new_topic_btn = gr.Button("+ Nuovo topic", scale=1)
+                    with gr.Row(visible=False) as st_new_table_row:
+                        st_new_table_caption = gr.Textbox(label="Didascalia nuova tabella — opzionale", scale=3)
+                        st_new_table_btn = gr.Button("+ Aggiungi tabella", scale=1)
+                    with gr.Row(visible=False) as st_new_figure_row:
+                        st_new_figure_file = gr.Image(label="Nuova figura — file immagine", type="filepath", scale=2)
+                        with gr.Column(scale=2):
+                            st_new_figure_caption = gr.Textbox(label="Didascalia — opzionale")
+                            st_new_figure_alt = gr.Textbox(label="Testo alternativo — consigliato")
+                            st_new_figure_btn = gr.Button("+ Aggiungi figura")
                     st_show_archived = gr.Checkbox(label="Mostra elementi archiviati", value=False)
                     st_refresh_btn = gr.Button("Aggiorna struttura")
                     st_search_box = gr.Textbox(label="Cerca nel manuale", placeholder="Titolo topic o testo di un blocco…")
@@ -2645,13 +3031,58 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     # child's own visible= update when nested inside a Group
                     # whose own visibility does not change in that same
                     # response, so title/text ended up both showing at once --
-                    # each control's visible= is set directly here instead.)
+                    # each control's visible= is set directly here instead.
+                    # Same reasoning applies to the 4C table/figure fields
+                    # below: each one carries its own visible=, never a
+                    # shared wrapping Group.)
                     with gr.Row():
                         st_prev_btn = gr.Button("‹ Topic precedente")
                         st_next_btn = gr.Button("Topic successivo ›")
                     st_title_input = gr.Textbox(label="Titolo", visible=False)
                     st_text_input = gr.Textbox(label="Testo", lines=10, visible=False)
+                    # 4C table editor -- reuses structured_tables/
+                    # structured_table_versions unchanged (see
+                    # AuthoringService.save_table); a plain interactive
+                    # Dataframe gives cell edit, add/remove row, add/remove
+                    # column and header-rename for free (Gradio 6.5.1's own
+                    # built-in grid controls), with no spreadsheet formulas/
+                    # sorting/merge-cells layered on top.
+                    st_table_title = gr.Textbox(label="Titolo tabella", visible=False)
+                    st_table_caption = gr.Textbox(label="Didascalia", visible=False)
+                    # row_count/column_count "fixed" -- not the deprecated
+                    # "let you cap size" use case, but the only mechanism
+                    # this Gradio version actually honors to empty out the
+                    # Dataframe's own unsafe right-click structural menu
+                    # (see _fixed_grid_update). Kept in sync on every push.
+                    st_table_grid = gr.Dataframe(interactive=True, type="pandas", visible=False, wrap=True,
+                                                 row_count=(1, "fixed"), column_count=(2, "fixed"))
+                    # The grid's own built-in right-click "Add row"/"Add
+                    # column" context menu is a real, confirmed Gradio
+                    # 6.5.1 reliability gap (see _table_rowcol_op above):
+                    # it mutates the visible grid without reliably
+                    # updating what Save reads. These 4 buttons are the
+                    # supported way to add/remove rows and columns --
+                    # each round-trips through Python, so Save always
+                    # sees exactly what they produced.
+                    with gr.Row(visible=False) as st_table_rowcol_row:
+                        st_table_add_row_btn = gr.Button("+ Aggiungi riga")
+                        st_table_remove_row_btn = gr.Button("− Rimuovi riga")
+                        st_table_add_col_btn = gr.Button("+ Aggiungi colonna")
+                        st_table_remove_col_btn = gr.Button("− Rimuovi colonna")
+                    # 4C figure editor -- reuses figures/figure_versions
+                    # unchanged (see AuthoringService.save_figure/
+                    # replace_figure_image); preview is read-only, caption/
+                    # alt text are the only inline-editable fields, "Sostituisci
+                    # immagine" is a distinct action that creates a new
+                    # figure version rather than silently overwriting bytes.
+                    st_figure_preview = gr.Image(label="Anteprima", type="filepath", interactive=False, visible=False)
+                    st_figure_caption = gr.Textbox(label="Didascalia", visible=False)
+                    st_figure_alt = gr.Textbox(label="Testo alternativo", visible=False)
+                    with gr.Row(visible=False) as st_figure_replace_row:
+                        st_figure_replace_file = gr.Image(label="Sostituisci immagine — carica un nuovo file", type="filepath", scale=2)
+                        st_figure_replace_btn = gr.Button("Sostituisci immagine", scale=1)
                     st_readonly_notice = gr.Markdown(visible=False)
+                    st_shared_notice = gr.Markdown(visible=False)
                     st_restore_draft_btn = gr.Button("Ripristina bozza", visible=False)
                     st_discard_draft_btn = gr.Button("Scarta bozza", visible=False)
                     with gr.Row():
@@ -2711,35 +3142,84 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                           st_title_input, st_text_input, st_readonly_notice, st_save_btn, st_discard_edits_btn,
                           st_restore_draft_btn, st_discard_draft_btn, st_move_up_btn, st_move_down_btn,
                           st_archive_btn, st_restore_btn, st_submit_review_btn, st_review_msg, st_new_block_row,
-                          st_tech_html, st_history_table, st_save_msg, st_pub_header]
+                          st_tech_html, st_history_table, st_save_msg, st_pub_header,
+                          st_block_type, st_object_ref_id,
+                          st_table_title, st_table_caption, st_table_grid,
+                          st_figure_preview, st_figure_caption, st_figure_alt, st_figure_replace_row,
+                          st_shared_notice, st_new_table_row, st_new_figure_row, st_table_rowcol_row]
             authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL)
             st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL)
 
-            st_title_input.blur(studio_save_draft_ui, [project_state, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor], [st_save_msg])
-            st_text_input.blur(studio_save_draft_ui, [project_state, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor], [st_save_msg])
-            st_restore_draft_btn.click(studio_restore_draft_ui, [project_state, st_kind, st_id],
-                                       [st_title_input, st_text_input, st_restore_draft_btn, st_discard_draft_btn])
-            st_discard_draft_btn.click(studio_discard_draft_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            # 4C: draft recovery now also covers the table/figure editors --
+            # any of these fields blurring/changing saves a draft the same
+            # blur-triggered way title/text already did, keyed by
+            # (kind/block_type -> table_id/figure_id when applicable, see
+            # _studio_draft_target()), never creating a CCMS version.
+            _ST_DRAFT_INPUTS = [project_state, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
+                                st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
+                                st_figure_caption, st_figure_alt, actor_state]
+            st_title_input.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            st_text_input.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            st_table_title.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            st_table_caption.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            # .input() (not .change()): Gradio fires .change() for BOTH a
+            # genuine user edit AND a programmatic gr.update(value=...) --
+            # confirmed the hard way (a freshly created/opened table's own
+            # grid-population push was silently writing a spurious draft
+            # via .change()). .input() fires ONLY on a real user edit, the
+            # same guarantee .blur() already gives every other draft-saved
+            # field here.
+            st_table_grid.input(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            st_figure_caption.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            st_figure_alt.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+
+            # Add/remove row/column -- see _table_rowcol_op: replaces
+            # reliance on the Dataframe's own native right-click menu,
+            # which does not reliably sync to what Save submits.
+            _TABLE_ROWCOL_INPUTS = [project_state, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
+                                    st_table_title, st_table_caption, st_table_grid, actor_state]
+            st_table_add_row_btn.click(studio_table_add_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
+            st_table_remove_row_btn.click(studio_table_remove_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
+            st_table_add_col_btn.click(studio_table_add_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
+            st_table_remove_col_btn.click(studio_table_remove_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
+
+            st_restore_draft_btn.click(studio_restore_draft_ui, [project_state, st_kind, st_id, st_block_type, st_object_ref_id],
+                                       [st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
+                                        st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn])
+            st_discard_draft_btn.click(studio_discard_draft_ui,
+                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL)
             st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
-            st_save_btn.click(studio_save_ui, [project_state, c_pub, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor, st_show_archived], ST_OUT_FULL)
+            st_save_btn.click(studio_save_ui,
+                              [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
+                               st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
+                               st_figure_caption, st_figure_alt, actor_state, st_show_archived], ST_OUT_FULL)
 
             st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
-                                 [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
             st_move_down_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "down", sa, ac),
-                                   [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
-            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
-            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
             st_prev_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "prev", sa),
                               [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_next_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "next", sa),
                               [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
 
-            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
-            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, c_actor], ST_OUT_FULL)
-            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
-            st_revert_btn.click(studio_revert_ui, [project_state, c_pub, st_kind, st_id, st_revert_version, st_show_archived, c_actor], ST_OUT_FULL)
+            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL)
+            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL)
+            st_new_figure_btn.click(studio_new_figure_ui,
+                                    [project_state, c_pub, st_kind, st_id, st_new_figure_file, st_new_figure_caption,
+                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL)
+            st_figure_replace_btn.click(studio_replace_figure_ui,
+                                        [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
+                                         st_version, st_figure_replace_file, st_show_archived, actor_state], ST_OUT_FULL)
+            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+            st_revert_btn.click(studio_revert_ui,
+                                [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
+                                 st_revert_version, st_show_archived, actor_state], ST_OUT_FULL)
 
             st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
             st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL)
@@ -2918,10 +3398,10 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # "Importa come draft") -- keeps "Elementi da verificare" in sync with
     # whatever the most recent import actually produced.
     c_blocks.change(_idml_review_panel_ui,[project_state],[c_idml_review_html,c_idml_review_row]+c_idml_review_radios)
-    c_idml_review_confirm.click(idml_review_confirm_ui,[project_state,c_actor]+c_idml_review_radios,
+    c_idml_review_confirm.click(idml_review_confirm_ui,[project_state,actor_state]+c_idml_review_radios,
                                  [c_idml_review_html,c_idml_review_row]+c_idml_review_radios,
                                  trigger_mode="once",concurrency_limit=1)
-    c_simple_approve.click(guided_approve_source_ui,[project_state,c_actor,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
+    c_simple_approve.click(guided_approve_source_ui,[project_state,actor_state,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
     _guided_outputs=[project_state,project_card,sidebar_context,p_msg,
                      onboarding_choice_panel,legacy_onboarding_panel,lg_review,
                      lg_lang_prompt,lg_lang_pick,lg_lang_confirm,
