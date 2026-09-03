@@ -18,7 +18,8 @@ from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversio
 from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
-from authoring_service import AuthoringService
+from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError
+import authoring_view as av
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
 from workflow_management import WorkflowManager
@@ -1373,6 +1374,404 @@ def approved_objects_ui(project_dir):
         return blocks[blocks['status'].astype(str).isin(['Approved','Published'])] if not blocks.empty else blocks
     finally: repo.close()
 
+# ============================================================================
+# Milestone 4B.2: Professional Topic & Block Editor ("Studio"), built on the
+# 4B.1 AuthoringService foundation. Every rule (CAS save, draft recovery,
+# status invalidation, reorder, archive/restore, revert) lives in
+# authoring_service.py; every presentation decision (labels, outline
+# flattening, breadcrumbs, history rows) lives in authoring_view.py -- these
+# _studio_*_ui functions are thin Gradio-formatting wrappers, exactly the
+# same discipline established for Compliance (3.5B) and Studio's own review
+# panel (4B.1). A failed action NEVER raises gr.Error on this multi-output
+# panel (would corrupt sibling outputs) -- always an inline message inside
+# the same rebuilt bundle.
+# ============================================================================
+def _studio_status_html(detail: dict) -> str:
+    parts = [f"<div class='ms-card'><b>{html.escape(detail['status_label'])}</b> · versione {detail['version']}"]
+    if detail.get("archived"):
+        parts.append(" · <span class='ms-block'>Archiviato</span>")
+    parts.append("</div>")
+    if detail.get("draft_notice"):
+        parts.append(f"<div class='ms-prod' style='margin-top:6px'>📝 {html.escape(detail['draft_notice'])}</div>")
+    if detail.get("open_review_notice"):
+        parts.append(f"<div class='ms-prod' style='margin-top:6px'>👁 {html.escape(detail['open_review_notice'])}</div>")
+    return "".join(parts)
+
+def _studio_tech_html_topic(detail: dict) -> str:
+    refs = ", ".join(detail.get("source_refs") or []) or "—"
+    return (f"<div class='ms-muted' style='font-size:12px'>topic_id: <code>{html.escape(detail['topic_id'])}</code><br>"
+            f"source_refs: {html.escape(refs)}<br>archived_at: {html.escape(str(detail.get('archived_at') or '—'))}</div>")
+
+def _studio_tech_html_block(detail: dict) -> str:
+    refs = ", ".join(detail.get("source_refs") or []) or "—"
+    return (f"<div class='ms-muted' style='font-size:12px'>block_id: <code>{html.escape(detail['block_id'])}</code> · "
+            f"block_type: <code>{html.escape(detail['block_type'])}</code><br>topic_id: <code>{html.escape(detail['topic_id'])}</code><br>"
+            f"source_refs: {html.escape(refs)}<br>archived_at: {html.escape(str(detail.get('archived_at') or '—'))}</div>")
+
+_ST_EMPTY_TABLE_COLS = ["Elemento", "Tipo", "Stato", "Versione", "Archiviato"]
+
+def _studio_pub_header_html(repo, publication_id: str) -> str:
+    # UX clarity fix: "Editor professionale" alone never told the user WHICH
+    # manual they were looking at -- the static header just said the generic
+    # word "Pubblicazione". This shows the real, current publication title.
+    row = repo.conn.execute("SELECT title FROM publications WHERE publication_id=?", (publication_id,)).fetchone()
+    if not row:
+        return f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>"
+    return f"<div class='ms-prod'>Pubblicazione: <b>{html.escape(row['title'])}</b></div>"
+
+def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, *, save_msg="", review_msg=""):
+    # UX clarity fix (and a real Gradio 6.5.1 bug worked around here): the
+    # "nothing selected -> hide the action controls, not just grey them
+    # out" requirement was first tried as a single gr.Group(visible=...)
+    # wrapping the whole action area. Reproduced against a minimal isolated
+    # repro app: a component's OWN visible=False update does not reliably
+    # reach the browser when it is nested inside a Group whose own
+    # visibility does not change in that same response (confirmed both in
+    # this app and in the standalone repro). So instead, every action
+    # button gets its OWN visible= set directly here (alongside its
+    # existing interactive=), exactly like title_upd/text_upd already did
+    # correctly all along -- no nested dynamic Group anywhere.
+    repo, svc = av.open_service(project_dir)
+    try:
+        publication_id = (publication_id or "").strip() or "PUB-MAIN"
+        pub_header = _studio_pub_header_html(repo, publication_id)
+        if not repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?", (publication_id,)).fetchone():
+            empty = pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
+            return (gr.update(value=empty), gr.update(choices=[], value=None), None, None, None,
+                    "Pubblicazione", f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>",
+                    gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False),
+                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False), gr.update(visible=False),
+                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False),
+                    gr.update(visible=False, interactive=False), review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
+                    pub_header)
+
+        rows = av.outline_rows(repo, publication_id, include_archived=bool(show_archived))
+        table = pd.DataFrame(av.outline_table(rows)) if rows else pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
+        picker_choices = av.open_choices(rows)
+        picker_value = f"{kind}:{object_id}" if kind and object_id else None
+        if picker_value not in [v for _, v in picker_choices]:
+            picker_value, kind, object_id = None, None, None
+
+        if not kind or not object_id:
+            return (gr.update(value=table), gr.update(choices=picker_choices, value=None), None, None, None,
+                    "Pubblicazione", "<div class='ms-muted'>Seleziona un topic o un blocco dalla struttura a sinistra, oppure crea un nuovo topic.</div>",
+                    gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False),
+                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False), gr.update(visible=False),
+                    gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False), gr.update(visible=False, interactive=False),
+                    gr.update(visible=False, interactive=False), review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
+                    pub_header)
+
+        breadcrumb = av.breadcrumb(rows, kind, object_id)
+        if kind == "topic":
+            detail = av.topic_detail(svc, object_id)
+            title_upd = gr.update(value=detail["title"], visible=True, interactive=not detail["archived"])
+            text_upd = gr.update(value="", visible=False)
+            readonly_notice = gr.update(value="", visible=False)
+            can_edit = not detail["archived"]
+            history = pd.DataFrame(av.topic_history_rows(svc, object_id))
+            tech_html = _studio_tech_html_topic(detail)
+            new_block_row_visible = not detail["archived"]
+        else:
+            detail = av.block_detail(svc, object_id)
+            editable = detail["editable"]
+            title_upd = gr.update(value="", visible=False)
+            text_upd = gr.update(value=detail["text"], visible=editable, interactive=(editable and not detail["archived"]))
+            readonly_notice = gr.update(value=("" if editable else f"ℹ️ {detail['type_label']}"), visible=not editable)
+            can_edit = editable and not detail["archived"]
+            history = pd.DataFrame(av.block_history_rows(svc, object_id))
+            tech_html = _studio_tech_html_block(detail)
+            new_block_row_visible = False
+
+        status_html = _studio_status_html(detail)
+        can_move = not detail["archived"]
+        can_archive = not detail["archived"]
+        can_restore = detail["archived"]
+        can_submit_review = bool(detail.get("can_submit_for_review"))
+
+        return (
+            gr.update(value=table), gr.update(choices=picker_choices, value=picker_value),
+            kind, object_id, detail["version"],
+            breadcrumb, status_html, title_upd, text_upd, readonly_notice,
+            gr.update(visible=True, interactive=can_edit), gr.update(visible=True, interactive=can_edit),
+            gr.update(visible=detail["has_draft"]), gr.update(visible=detail["has_draft"]),
+            gr.update(visible=True, interactive=can_move), gr.update(visible=True, interactive=can_move),
+            gr.update(visible=True, interactive=can_archive), gr.update(visible=True, interactive=can_restore),
+            gr.update(visible=True, interactive=can_submit_review), review_msg,
+            gr.update(visible=new_block_row_visible),
+            tech_html, history, save_msg,
+            pub_header,
+        )
+    finally:
+        repo.close()
+
+ST_IDX_TABLE, ST_IDX_PICKER, ST_IDX_KIND, ST_IDX_ID, ST_IDX_VERSION, ST_IDX_BREADCRUMB, ST_IDX_STATUS, \
+    ST_IDX_TITLE, ST_IDX_TEXT, ST_IDX_READONLY, ST_IDX_SAVE_BTN, ST_IDX_DISCARD_EDITS_BTN, ST_IDX_RESTORE_DRAFT_BTN, \
+    ST_IDX_DISCARD_DRAFT_BTN, ST_IDX_MOVE_UP_BTN, ST_IDX_MOVE_DOWN_BTN, ST_IDX_ARCHIVE_BTN, ST_IDX_RESTORE_BTN, \
+    ST_IDX_SUBMIT_REVIEW_BTN, ST_IDX_REVIEW_MSG, ST_IDX_NEW_BLOCK_ROW, ST_IDX_TECH, ST_IDX_HISTORY, ST_IDX_SAVE_MSG, \
+    ST_IDX_PUB_HEADER = range(25)
+
+def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
+    # Standard-mode validation UX fix: a predictable, user-correctable input
+    # gap (missing actor name, missing title, nothing selected for an action
+    # that needs a selection) is guidance, not a system error -- it must
+    # never raise gr.Error (which pops a global red toast and, on this
+    # multi-output panel, would otherwise force a full _studio_full_bundle
+    # re-render from the DB, silently discarding whatever the user had just
+    # typed in the title/text box). gr.update() with no args, returned for
+    # every one of the 25 outputs, touches nothing: verified against
+    # Gradio 6.5.1's own dispatch code (blocks.py) that a State output
+    # (st_kind/st_id/st_version) receiving an update-dict with no "value"
+    # key is left at its previous value rather than being overwritten.
+    out = [gr.update() for _ in range(25)]
+    out[ST_IDX_SAVE_MSG] = save_msg
+    out[ST_IDX_REVIEW_MSG] = review_msg
+    return tuple(out)
+
+
+def studio_load_ui(project_dir, publication_id, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    return _studio_full_bundle(project_dir, publication_id, None, None, show_archived)
+
+def studio_open_ui(project_dir, publication_id, picker_value, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    kind, object_id = av.parse_open_value(picker_value)
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+
+def studio_refresh_ui(project_dir, publication_id, kind, object_id, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+
+def _studio_draft_payload(kind, title_val, text_val):
+    return {"title": title_val} if kind == "topic" else {"text": text_val}
+
+def studio_save_draft_ui(project_dir, kind, object_id, expected_version, title_val, text_val, actor):
+    # Blur-triggered recovery save -- NEVER calls save_topic/save_block, so
+    # this can never create a CCMS content version (4B.1 invariant).
+    if not project_dir or not kind or not object_id or expected_version is None:
+        return ""
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.save_draft(kind, object_id, base_version=int(expected_version),
+                       payload=_studio_draft_payload(kind, title_val, text_val),
+                       actor=(actor or "").strip() or "Autore sconosciuto")
+        return "💾 Bozza salvata in locale (nessuna nuova versione creata)."
+    except Exception:
+        return ""
+    finally:
+        repo.close()
+
+def studio_restore_draft_ui(project_dir, kind, object_id):
+    repo, svc = av.open_service(project_dir)
+    try:
+        draft = svc.load_draft(kind, object_id)
+        if not draft:
+            return gr.update(), gr.update(), gr.update(visible=False), gr.update(visible=False)
+        payload = draft["payload"]
+        if kind == "topic":
+            return (gr.update(value=payload.get("title", "")), gr.update(),
+                    gr.update(visible=False), gr.update(visible=False))
+        return (gr.update(), gr.update(value=payload.get("text", "")),
+                gr.update(visible=False), gr.update(visible=False))
+    finally:
+        repo.close()
+
+def studio_discard_draft_ui(project_dir, publication_id, kind, object_id, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.discard_draft(kind, object_id)
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="Bozza scartata.")
+
+def studio_discard_edits_ui(project_dir, publication_id, kind, object_id, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+
+def studio_save_ui(project_dir, publication_id, kind, object_id, expected_version, title_val, text_val, actor, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic":
+            result = svc.save_topic(object_id, title=title_val, expected_version=int(expected_version), actor=actor)
+        else:
+            result = svc.save_block(object_id, text=text_val, expected_version=int(expected_version), actor=actor)
+        msg = f"✅ Salvato — versione {result['version']}."
+        if result.get("previous_status") in ("Approved", "In Review"):
+            msg += " Era Approvato/In revisione: è tornato a Bozza."
+            if result.get("review_tasks_invalidated"):
+                msg += " La review aperta precedente è stata invalidata."
+    except VersionConflictError:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {av.conflict_message()}")
+    except ArchivedObjectError as e:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    except (KeyError, ValueError) as e:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=msg)
+
+def studio_move_ui(project_dir, publication_id, kind, object_id, direction, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic":
+            rows = av.outline_rows(repo, publication_id, include_archived=False)
+            ids = av.topic_ids_in_order(rows)
+            if object_id not in ids:
+                return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="⛔ Elemento non più attivo.")
+            i = ids.index(object_id)
+            j = i - 1 if direction == "up" else i + 1
+            if j < 0 or j >= len(ids):
+                return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+            new_order = list(ids); new_order[i], new_order[j] = new_order[j], new_order[i]
+            svc.reorder_publication_topics(publication_id, new_order, expected_topic_ids=ids, actor=actor)
+        elif kind == "block":
+            detail = av.block_detail(svc, object_id)
+            topic_id = detail["topic_id"]
+            rows = av.outline_rows(repo, publication_id, include_archived=False)
+            ids = av.block_ids_in_order(rows, topic_id)
+            if object_id not in ids:
+                return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="⛔ Elemento non più attivo.")
+            i = ids.index(object_id)
+            j = i - 1 if direction == "up" else i + 1
+            if j < 0 or j >= len(ids):
+                return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+            new_order = list(ids); new_order[i], new_order[j] = new_order[j], new_order[i]
+            svc.reorder_blocks(topic_id, new_order, expected_block_ids=ids, actor=actor)
+    except (KeyError, ValueError, VersionConflictError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+
+def studio_archive_ui(project_dir, publication_id, kind, object_id, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic": svc.archive_topic(object_id, actor=actor)
+        else: svc.archive_block(object_id, actor=actor)
+    except (KeyError, ValueError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Archiviato.")
+
+def studio_restore_obj_ui(project_dir, publication_id, kind, object_id, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic": svc.restore_topic(object_id, actor=actor)
+        else: svc.restore_block(object_id, actor=actor)
+    except (KeyError, ValueError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Ripristinato.")
+
+def studio_new_topic_ui(project_dir, publication_id, new_title, kind, object_id, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    if not str(new_title or "").strip(): return _studio_noop_bundle(save_msg="Inserisci un titolo per il nuovo topic.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        after_topic_id = object_id if kind == "topic" else (av.block_detail(svc, object_id)["topic_id"] if kind == "block" else None)
+        result = svc.create_topic_in_publication(publication_id, new_title, actor=actor, after_topic_id=after_topic_id)
+    except (KeyError, ValueError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, "topic", result["topic_id"], show_archived, save_msg="✅ Topic creato.")
+
+def studio_new_block_ui(project_dir, publication_id, kind, object_id, block_type, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind != "topic" or not object_id: return _studio_noop_bundle(save_msg="Apri prima un topic a cui aggiungere il blocco.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        result = svc.create_block_in_topic(object_id, block_type, actor=actor, text="")
+    except (KeyError, ValueError, ArchivedObjectError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Blocco aggiunto.")
+
+def studio_submit_review_ui(project_dir, publication_id, kind, object_id, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(review_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(review_msg="Inserisci il tuo nome per continuare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        rid = repo.request_review(kind, object_id, requested_by=actor)
+        review_msg = f"✅ Inviato in revisione — Review #{rid}."
+    except (KeyError, ValueError) as e:
+        repo.close()
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=review_msg)
+
+def studio_revert_ui(project_dir, publication_id, kind, object_id, version, show_archived, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    if version is None: return _studio_noop_bundle(save_msg="Seleziona la versione da ripristinare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic": svc.revert_topic_to_version(object_id, int(version), actor=actor)
+        else: svc.revert_block_to_version(object_id, int(version), actor=actor)
+    except (KeyError, ValueError, ArchivedObjectError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Versione ripristinata (creata una nuova versione corrente).")
+
+def studio_search_ui(project_dir, publication_id, query):
+    if not project_dir:
+        return gr.update(choices=[], value=None, visible=False), gr.update(visible=False), "Nessun progetto attivo."
+    repo, svc = av.open_service(project_dir)
+    try:
+        results = av.search(repo, publication_id, query)
+    finally:
+        repo.close()
+    if not results:
+        msg = "Nessun risultato." if (query or "").strip() else ""
+        return gr.update(choices=[], value=None, visible=False), gr.update(visible=False), msg
+    choices = [(f"{r['label']}  ({r['context']})", f"{r['kind']}:{r['id']}") for r in results]
+    return gr.update(choices=choices, value=None, visible=True), gr.update(visible=True), f"{len(results)} risultati."
+
+def studio_search_open_ui(project_dir, publication_id, picked_value, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not picked_value: return _studio_noop_bundle(save_msg="Seleziona prima un risultato da aprire.")
+    kind, object_id = av.parse_open_value(picked_value)
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+
+def studio_next_prev_ui(project_dir, publication_id, kind, object_id, direction, show_archived):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind != "topic" or not object_id: return _studio_noop_bundle(save_msg="Apri prima un topic per navigare.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        rows = av.outline_rows(repo, publication_id, include_archived=False)
+        prev_id, next_id = av.next_previous_topic(rows, object_id)
+    finally:
+        repo.close()
+    target = prev_id if direction == "prev" else next_id
+    if not target:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
+    return _studio_full_bundle(project_dir, publication_id, "topic", target, show_archived)
+
 def _auto_project_legacy_tm(project_dir: str | Path) -> Path | None:
     """Build/reuse a project TM from the bilingual evidence already produced by Revision Analysis.
 
@@ -2163,12 +2562,27 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             with gr.Row(): a_report=gr.File(label="Rapporto"); a_queue_file=gr.File(label="Coda di lavoro")
             a_btn.click(revision_analysis_ui,[project_state,a_old,a_tr,a_new,a_full],[a_summary,a_queue,a_report,a_queue_file])
 
-        with gr.Tab("Redazione & contenuti",id="authoring"):
+        with gr.Tab("Redazione & contenuti",id="authoring") as authoring_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Redazione & contenuti</h1><p>Repository strutturato e redazione AI grounded con revisione umana.</p></div></div>")
+
+            # UX clarity fix: ONE shared identity field for the whole tab,
+            # shown first, before any action that can modify or approve
+            # content (source approval, topic/block creation, save, reorder,
+            # archive/restore, revert, review submission). There used to be
+            # two separate "Il tuo nome" textboxes -- one here, one inside
+            # the Studio panel below -- with nothing to tell them apart; a
+            # real user hit exactly that during manual acceptance. The
+            # backend actor requirement is untouched and stays fail-closed
+            # either way; a distinct reviewer role (review-decide, grounded
+            # queue) keeps its own explicit "Revisore" label rather than
+            # reusing or duplicating this one.
+            gr.HTML("<div class='ms-section-title'>La tua identità</div>")
+            c_actor = gr.Textbox(label="Il tuo nome", info="Serve per registrare chi effettua modifiche e decisioni.")
+
             # Milestone 3A: standard view, shown by default. Same topics/blocks data as
             # the technical dataframes below (no second backend) — just friendlier
             # columns. No ID/metadata/re-import button in this default view.
-            gr.HTML("<div class='ms-section-title'>Contenuto importato</div><div class='ms-section-sub'>Queste sono le sezioni trovate nel documento. Per i dettagli tecnici, apri “Dettagli tecnici (modalità avanzata)” qui sotto.</div>")
+            gr.HTML("<div class='ms-section-title'>Revisione del contenuto importato</div><div class='ms-section-sub'>Controlla il contenuto importato prima di approvarlo come sorgente. Per i dettagli tecnici, apri “Dettagli tecnici (modalità avanzata)” qui sotto.</div>")
             c_simple_table=gr.Dataframe(interactive=False,wrap=True,max_height=500)
             # Milestone 3D constraint: master-spread/orphan/unsupported/ambiguous-
             # asset/caption-candidate items from an IDML import are shown here in
@@ -2181,14 +2595,89 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     c_idml_review_radios=[gr.Radio(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS)]
                     c_idml_review_confirm=gr.Button("Conferma decisioni")
             c_simple_confirm=gr.Checkbox(label="Confermo di aver revisionato il contenuto")
-            # Acceptance fix: this same field is required by "Conferma decisioni"
-            # above whenever there are pending IDML review items (each decision
-            # is stamped with decided_by for audit) -- "opzionale" was only ever
-            # true for the final "Approva sorgente" step (falls back to "Human
-            # reviewer"). One field, relabeled to stop claiming it is always
-            # optional; not duplicated, no new data model.
-            with gr.Row(): c_simple_reviewer=gr.Textbox(label="Il tuo nome",info="Richiesto per confermare le decisioni di revisione"); c_simple_approve=gr.Button("Approva sorgente",variant="primary")
+            c_simple_approve=gr.Button("Approva sorgente",variant="primary")
             c_simple_msg=gr.Markdown()
+
+            # ----------------------------------------------------------------
+            # Milestone 4B.2: Professional Topic & Block Editor ("Studio").
+            # Component LAYOUT only here (kept visually prominent, right where
+            # a technical writer lands on this tab); the .click()/.blur()
+            # WIRING is deferred to just below c_pub's own definition further
+            # down this same Blocks scope, since the Studio reuses that exact
+            # Publication ID field -- "non inventare una seconda nozione di
+            # documento aperto" -- rather than declare a second one here.
+            # ----------------------------------------------------------------
+            gr.HTML("<div class='ms-section-title'>Editor professionale</div>")
+            st_pub_header = gr.HTML()
+            st_kind = gr.State(None); st_id = gr.State(None); st_version = gr.State(None)
+            with gr.Row():
+                with gr.Column(scale=2):
+                    # UX clarity fix: replaces the old technical Dataframe as
+                    # the primary standard-mode navigation -- a real document
+                    # tree (topic rows, blocks indented beneath with human
+                    # type labels + a short preview, no technical IDs, no
+                    # horizontal scrollbar), one click to open. The Dataframe
+                    # is kept for diagnostics only, moved into "Dettagli
+                    # tecnici (modalità avanzata)" below.
+                    st_outline_radio = gr.Radio(choices=[], label="Struttura manuale", value=None)
+                    with gr.Row():
+                        st_new_topic_title = gr.Textbox(label="Titolo nuovo topic", placeholder="Titolo del nuovo topic…", scale=3)
+                        st_new_topic_btn = gr.Button("+ Nuovo topic", scale=1)
+                    st_show_archived = gr.Checkbox(label="Mostra elementi archiviati", value=False)
+                    st_refresh_btn = gr.Button("Aggiorna struttura")
+                    st_search_box = gr.Textbox(label="Cerca nel manuale", placeholder="Titolo topic o testo di un blocco…")
+                    st_search_btn = gr.Button("Cerca")
+                    st_search_msg = gr.Markdown()
+                    st_search_picker = gr.Dropdown(label="Risultati", choices=[], visible=False)
+                    st_search_open_btn = gr.Button("Apri risultato", visible=False)
+                with gr.Column(scale=3):
+                    st_breadcrumb = gr.Markdown("Pubblicazione")
+                    st_status_html = gr.HTML()
+                    # UX clarity fix: with nothing selected, only the empty-state
+                    # message above (from st_status_html) is shown -- every
+                    # action control below carries its OWN visible= (not just
+                    # interactive=), set together with interactive= in
+                    # _studio_full_bundle, so the whole area disappears rather
+                    # than showing as a wall of greyed-out buttons. (A first
+                    # version wrapped this area in a single dynamically-visible
+                    # gr.Group instead; reproduced against a minimal isolated
+                    # repro app that Gradio 6.5.1 does not reliably apply a
+                    # child's own visible= update when nested inside a Group
+                    # whose own visibility does not change in that same
+                    # response, so title/text ended up both showing at once --
+                    # each control's visible= is set directly here instead.)
+                    with gr.Row():
+                        st_prev_btn = gr.Button("‹ Topic precedente")
+                        st_next_btn = gr.Button("Topic successivo ›")
+                    st_title_input = gr.Textbox(label="Titolo", visible=False)
+                    st_text_input = gr.Textbox(label="Testo", lines=10, visible=False)
+                    st_readonly_notice = gr.Markdown(visible=False)
+                    st_restore_draft_btn = gr.Button("Ripristina bozza", visible=False)
+                    st_discard_draft_btn = gr.Button("Scarta bozza", visible=False)
+                    with gr.Row():
+                        st_save_btn = gr.Button("Salva", variant="primary", visible=False, interactive=False)
+                        st_discard_edits_btn = gr.Button("Scarta modifiche", visible=False, interactive=False)
+                    st_save_msg = gr.Markdown()
+                    with gr.Row():
+                        st_move_up_btn = gr.Button("↑ Sposta su", visible=False, interactive=False)
+                        st_move_down_btn = gr.Button("↓ Sposta giù", visible=False, interactive=False)
+                        st_archive_btn = gr.Button("Archivia", visible=False, interactive=False)
+                        st_restore_btn = gr.Button("Ripristina", visible=False, interactive=False)
+                    st_submit_review_btn = gr.Button("Invia in revisione", visible=False, interactive=False)
+                    st_review_msg = gr.Markdown()
+                    with gr.Row(visible=False) as st_new_block_row:
+                        st_new_block_type = gr.Dropdown(["paragraph", "note", "warning", "list_item"], value="paragraph", label="Nuovo blocco — tipo")
+                        st_new_block_btn = gr.Button("+ Aggiungi blocco in fondo al topic")
+                    with gr.Accordion("Dettagli tecnici (modalità avanzata)", open=False):
+                        st_tech_html = gr.HTML()
+                        gr.Markdown("**Struttura (tabella tecnica, per diagnostica)**")
+                        st_outline_table = gr.Dataframe(interactive=False, wrap=True, max_height=360)
+                        gr.Markdown("**Storico versioni**")
+                        st_history_table = gr.Dataframe(interactive=False, max_height=240)
+                        with gr.Row():
+                            st_revert_version = gr.Number(label="Versione da ripristinare", precision=0)
+                            st_revert_btn = gr.Button("Ripristina questa versione")
+
             with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
                 with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
                 c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
@@ -2211,6 +2700,49 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     rv_decide=gr.Button("Decidi",variant="primary"); rv_msg=gr.Markdown()
                     rv_refresh.click(review_queue_ui,[project_state],[rv_queue])
                     rv_decide.click(review_decide_ui,[project_state,rv_review_id,rv_decision,rv_actor,rv_comment],[rv_msg,rv_queue])
+
+            # ----------------------------------------------------------------
+            # Milestone 4B.2 Studio wiring -- deferred to here so it can reuse
+            # c_pub (the Publication ID field already defined above in this
+            # same tab's advanced section) instead of declaring a second
+            # "which document is open" concept.
+            # ----------------------------------------------------------------
+            ST_OUT_FULL = [st_outline_table, st_outline_radio, st_kind, st_id, st_version, st_breadcrumb, st_status_html,
+                          st_title_input, st_text_input, st_readonly_notice, st_save_btn, st_discard_edits_btn,
+                          st_restore_draft_btn, st_discard_draft_btn, st_move_up_btn, st_move_down_btn,
+                          st_archive_btn, st_restore_btn, st_submit_review_btn, st_review_msg, st_new_block_row,
+                          st_tech_html, st_history_table, st_save_msg, st_pub_header]
+            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL)
+            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL)
+
+            st_title_input.blur(studio_save_draft_ui, [project_state, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor], [st_save_msg])
+            st_text_input.blur(studio_save_draft_ui, [project_state, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor], [st_save_msg])
+            st_restore_draft_btn.click(studio_restore_draft_ui, [project_state, st_kind, st_id],
+                                       [st_title_input, st_text_input, st_restore_draft_btn, st_discard_draft_btn])
+            st_discard_draft_btn.click(studio_discard_draft_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_save_btn.click(studio_save_ui, [project_state, c_pub, st_kind, st_id, st_version, st_title_input, st_text_input, c_actor, st_show_archived], ST_OUT_FULL)
+
+            st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
+                                 [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_move_down_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "down", sa, ac),
+                                   [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_prev_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "prev", sa),
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_next_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "next", sa),
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+
+            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, c_actor], ST_OUT_FULL)
+            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, c_actor], ST_OUT_FULL)
+            st_revert_btn.click(studio_revert_ui, [project_state, c_pub, st_kind, st_id, st_revert_version, st_show_archived, c_actor], ST_OUT_FULL)
+
+            st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
+            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL)
 
         with gr.Tab("Compliance", id="compliance") as cp_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
@@ -2386,10 +2918,10 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # "Importa come draft") -- keeps "Elementi da verificare" in sync with
     # whatever the most recent import actually produced.
     c_blocks.change(_idml_review_panel_ui,[project_state],[c_idml_review_html,c_idml_review_row]+c_idml_review_radios)
-    c_idml_review_confirm.click(idml_review_confirm_ui,[project_state,c_simple_reviewer]+c_idml_review_radios,
+    c_idml_review_confirm.click(idml_review_confirm_ui,[project_state,c_actor]+c_idml_review_radios,
                                  [c_idml_review_html,c_idml_review_row]+c_idml_review_radios,
                                  trigger_mode="once",concurrency_limit=1)
-    c_simple_approve.click(guided_approve_source_ui,[project_state,c_simple_reviewer,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
+    c_simple_approve.click(guided_approve_source_ui,[project_state,c_actor,c_simple_confirm],[c_simple_msg,project_card,sidebar_context,c_simple_table],trigger_mode="once",concurrency_limit=1)
     _guided_outputs=[project_state,project_card,sidebar_context,p_msg,
                      onboarding_choice_panel,legacy_onboarding_panel,lg_review,
                      lg_lang_prompt,lg_lang_pick,lg_lang_confirm,

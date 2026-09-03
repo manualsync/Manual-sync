@@ -53,13 +53,22 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Iterable
+from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
 
-AUTHORING_SERVICE_BUILD = "0.1.0-authoring-foundation-review-repair-4b1-20260902"
+AUTHORING_SERVICE_BUILD = "0.2.0-authoring-editor-4b2-20260902"
 
 _EDITABLE_KINDS = {"topic", "block"}
 _INVALIDATING_STATUSES = {"Approved", "In Review"}
+
+# 4B.2: the ONLY block types the editor can create. Deliberately a strict
+# subset of IndustrialRepository.add_block()'s own allow-list -- table/
+# figure/component_ref are structural/object-referencing types the text
+# editor must never be able to touch (it would corrupt a shared object via
+# a generic textarea), and no new enum value (heading/procedure_step) is
+# introduced in this increment.
+EDITABLE_TEXT_BLOCK_TYPES = {"paragraph", "note", "warning", "list_item"}
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS authoring_drafts (
@@ -292,7 +301,7 @@ class AuthoringService:
             self.conn.rollback()
             raise
         return {"topic_id": topic_id, "version": new_version, "status": new_status,
-                "review_tasks_invalidated": invalidated}
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
 
     # ================================================================
     # Atomic save (compare-and-swap) -- block
@@ -313,6 +322,12 @@ class AuthoringService:
             if row["archived_at"]:
                 self.conn.rollback()
                 raise ArchivedObjectError(f"Il blocco {block_id} è archiviato: ripristinalo prima di modificarlo.")
+            if text is not None and row["block_type"] not in EDITABLE_TEXT_BLOCK_TYPES:
+                self.conn.rollback()
+                raise ValueError(
+                    f"Il blocco {block_id} è di tipo {row['block_type']!r}: non è editabile come testo generico "
+                    "in questo incremento (tabelle/figure/componenti riusabili non vanno corrotti da una textarea)."
+                )
             new_text = row["text_content"] if text is None else text.strip()
             new_refs = _load_json(row["source_refs_json"], []) if source_refs is None else _norm_set(source_refs)
             previous_status = row["status"]
@@ -347,7 +362,7 @@ class AuthoringService:
             self.conn.rollback()
             raise
         return {"block_id": block_id, "version": new_version, "status": new_status,
-                "review_tasks_invalidated": invalidated}
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
 
     # ================================================================
     # Reorder
@@ -779,3 +794,181 @@ class AuthoringService:
             self.conn.rollback()
             raise
         return {"topics_approved": len(tids), "review_tasks_closed": closed}
+
+    # ================================================================
+    # 4B.2: topic/block CREATION with backend-generated IDs -- the editor
+    # never asks a technical writer for an ID. Both follow the same
+    # two-step shape: (1) call the existing, already-tested
+    # IndustrialRepository create_topic()/add_block() primitive (which
+    # commits on its own -- reused, never re-implemented here), then (2) a
+    # SEPARATE atomic step places the new object at its deterministic
+    # position (after a chosen sibling, or at the end), renumbering only
+    # the active siblings, exactly like reorder_blocks()/
+    # reorder_publication_topics() already do. This is NOT a single
+    # all-or-nothing transaction across both steps (repo.create_topic()/
+    # add_block() own their own commit and cannot be folded into this
+    # service's BEGIN IMMEDIATE without breaking atomicity the same way
+    # replace_publication_topics() would -- see reorder_publication_topics()'s
+    # docstring for the identical reasoning). The residual risk is narrow
+    # and low-severity: if step 2 fails, the new topic/block row exists but
+    # is not yet linked/positioned -- an orphan, invisible to assembly and
+    # outline, never a corrupted read for anyone else. Documented, not
+    # hidden.
+    # ================================================================
+
+    def create_topic_in_publication(self, publication_id: str, title: str, *, actor: str,
+                                    after_topic_id: str | None = None, source_lang: str = "en-US") -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare un topic.")
+        title = str(title or "").strip()
+        if not title:
+            raise ValueError("Il titolo del topic è obbligatorio.")
+        if not self.conn.execute("SELECT 1 FROM publications WHERE publication_id=?", (publication_id,)).fetchone():
+            raise KeyError(publication_id)
+
+        topic_id = f"TOPIC-{uuid4().hex[:10].upper()}"
+        while self.conn.execute("SELECT 1 FROM topics WHERE topic_id=?", (topic_id,)).fetchone():
+            topic_id = f"TOPIC-{uuid4().hex[:10].upper()}"
+        self.repo.create_topic(topic_id, title, "", source_lang=source_lang, status="Draft")
+        self.repo.audit_event("topic", topic_id, "AUTHORING_CREATE", actor, {"title": title, "publication_id": publication_id})
+        self.conn.commit()  # audit_event() itself doesn't commit; this closes out step 1 before step 2's own BEGIN IMMEDIATE.
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            active_rows = list(self.conn.execute(
+                """SELECT pt.topic_id FROM publication_topics pt
+                   JOIN topics t ON t.topic_id=pt.topic_id
+                   WHERE pt.publication_id=? AND t.archived_at IS NULL ORDER BY pt.position""",
+                (publication_id,),
+            ))
+            active_ids = [r["topic_id"] for r in active_rows]
+            if after_topic_id and after_topic_id in active_ids:
+                insert_at = active_ids.index(after_topic_id) + 1
+            else:
+                insert_at = len(active_ids)
+            new_order = active_ids[:insert_at] + [topic_id] + active_ids[insert_at:]
+            for pos, tid in enumerate(new_order, start=1):
+                if tid == topic_id:
+                    self.conn.execute(
+                        "INSERT INTO publication_topics(publication_id,topic_id,position) VALUES(?,?,?)",
+                        (publication_id, tid, pos),
+                    )
+                else:
+                    self.conn.execute(
+                        "UPDATE publication_topics SET position=? WHERE publication_id=? AND topic_id=?",
+                        (pos, publication_id, tid),
+                    )
+            position = new_order.index(topic_id) + 1
+            self.repo.audit_event("publication", publication_id, "ADD_TOPIC", actor,
+                                  {"topic_id": topic_id, "after_topic_id": after_topic_id, "position": position})
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"topic_id": topic_id, "publication_id": publication_id, "position": position}
+
+    def create_block_in_topic(self, topic_id: str, block_type: str, *, actor: str, text: str = "",
+                              after_block_id: str | None = None) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare un blocco.")
+        bt = str(block_type or "").strip().lower()
+        if bt not in EDITABLE_TEXT_BLOCK_TYPES:
+            raise ValueError(f"Tipo blocco non creabile dall'editor: {bt!r} (ammessi: {sorted(EDITABLE_TEXT_BLOCK_TYPES)}).")
+        topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
+        if not topic_row:
+            raise KeyError(topic_id)
+        if topic_row["archived_at"]:
+            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere blocchi.")
+
+        block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        while self.conn.execute("SELECT 1 FROM content_blocks WHERE block_id=?", (block_id,)).fetchone():
+            block_id = f"BLK-{uuid4().hex[:10].upper()}"
+        # Placeholder position: real placement happens atomically below. Any
+        # int works here since add_block()'s own commit is immediately
+        # followed by the renumbering step before anyone else observes it
+        # through the outline/assembly (both order by position,block_id).
+        self.repo.add_block(block_id, topic_id, bt, position=1_000_000, text=text, status="Draft")
+        self.repo.audit_event("block", block_id, "AUTHORING_CREATE", actor, {"block_type": bt, "topic_id": topic_id})
+        self.conn.commit()
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            active_rows = list(self.conn.execute(
+                "SELECT block_id FROM content_blocks WHERE topic_id=? AND archived_at IS NULL ORDER BY position,block_id",
+                (topic_id,),
+            ))
+            active_ids = [r["block_id"] for r in active_rows if r["block_id"] != block_id]
+            if after_block_id and after_block_id in active_ids:
+                insert_at = active_ids.index(after_block_id) + 1
+            else:
+                insert_at = len(active_ids)
+            new_order = active_ids[:insert_at] + [block_id] + active_ids[insert_at:]
+            now = _now()
+            for pos, bid in enumerate(new_order, start=1):
+                self.conn.execute("UPDATE content_blocks SET position=?,updated_at=? WHERE block_id=?", (pos, now, bid))
+            position = new_order.index(block_id) + 1
+            self.repo.audit_event("topic", topic_id, "ADD_BLOCK", actor,
+                                  {"block_id": block_id, "after_block_id": after_block_id, "position": position})
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"block_id": block_id, "topic_id": topic_id, "block_type": bt, "position": position}
+
+    # ================================================================
+    # 4B.2: read-only helpers for the editor UI -- version history and
+    # open-review lookup. Pure reads, no new business rule; every field
+    # comes straight from *_versions/review_tasks, cross-referenced with
+    # audit_events on a best-effort basis for the actor (a version row
+    # itself never stores who saved it -- see the 4B.1 Integrity Gate
+    # finding on content-version vs workflow-status semantics: *_versions
+    # is frozen content+status-at-save-time, never a workflow ledger by
+    # itself).
+    # ================================================================
+
+    def topic_history(self, topic_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT version,title,status,created_at FROM topic_versions WHERE topic_id=? ORDER BY version DESC",
+            (topic_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "version": int(r["version"]), "title": r["title"], "status": r["status"],
+                "created_at": r["created_at"], "actor": self._actor_for_version("topic", topic_id, int(r["version"])),
+            })
+        return out
+
+    def block_history(self, block_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT version,text_content,status,created_at FROM block_versions WHERE block_id=? ORDER BY version DESC",
+            (block_id,),
+        ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "version": int(r["version"]), "text": r["text_content"], "status": r["status"],
+                "created_at": r["created_at"], "actor": self._actor_for_version("block", block_id, int(r["version"])),
+            })
+        return out
+
+    def _actor_for_version(self, object_type: str, object_id: str, version: int) -> str:
+        for row in self.conn.execute(
+            """SELECT actor, detail_json FROM audit_events
+               WHERE object_type=? AND object_id=? AND action IN ('AUTHORING_SAVE','REVERT_TO_VERSION','AUTHORING_CREATE')
+               ORDER BY event_id DESC""",
+            (object_type, object_id),
+        ):
+            detail = _load_json(row["detail_json"], {})
+            if detail.get("to_version") == version or detail.get("new_version") == version or (version == 1 and not detail):
+                return str(row["actor"])
+        return ""
+
+    def open_review_for(self, object_type: str, object_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM review_tasks WHERE object_type=? AND object_id=? AND status='OPEN' ORDER BY created_at DESC LIMIT 1",
+            (object_type, object_id),
+        ).fetchone()
+        return dict(row) if row else None

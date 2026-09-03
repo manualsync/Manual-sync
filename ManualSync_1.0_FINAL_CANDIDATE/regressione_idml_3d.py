@@ -1109,12 +1109,21 @@ finally:
 
 # The reviewer textbox is shared with "Conferma decisioni" (mandatory there);
 # its label must not claim to be optional.
+# 4B.2 UX Clarity Gate update: this field (c_simple_reviewer) was merged into
+# a single shared "Il tuo nome" identity field (c_actor) reused across the
+# whole Contenuti tab -- source approval, topic/block creation, save,
+# reorder, archive/restore, revert, review submission -- per an explicit,
+# reviewed product decision (there used to be two separate "Il tuo nome"
+# textboxes with nothing to tell them apart). The behavioral assertions
+# above (idml_review_confirm_ui rejects an empty name, shows inline
+# guidance, echoes choices back unchanged, persists once filled in) are
+# unchanged and still pass against c_actor; only this literal-source-text
+# check is updated to match the new, still-non-optional field.
 app_source = (BASE / "app.py").read_text(encoding="utf-8")
 check("group28: the reviewer name field no longer claims to be optional",
       'label="Il tuo nome — opzionale"' not in app_source, "")
-check("group28: the reviewer name field states it is required for review decisions",
-      'c_simple_reviewer=gr.Textbox(label="Il tuo nome"' in app_source and
-      "Richiesto per confermare le decisioni di revisione" in app_source, "")
+check("group28: the shared 'Il tuo nome' field states its purpose (recording who makes changes/decisions), not that it's optional",
+      'c_actor = gr.Textbox(label="Il tuo nome", info="Serve per registrare chi effettua modifiche e decisioni.")' in app_source, "")
 
 print(f"parse build: {idml.IDML_IMPORT_BUILD}")
 
