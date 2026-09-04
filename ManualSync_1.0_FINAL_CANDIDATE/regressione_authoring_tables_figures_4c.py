@@ -280,10 +280,16 @@ check("g15: saving a table referenced by 2 blocks is fail-closed (SharedObjectEr
 before15 = repo15.conn.execute("SELECT version,rows_json FROM structured_tables WHERE table_id=?", (res15["table_id"],)).fetchone()
 check("g15: the shared table is genuinely untouched (no silent global edit)", before15["version"] == 1 and '"1"' in before15["rows_json"], dict(before15))
 bundle15 = app.studio_open_ui(str(p15), "PUB-MAIN", f"block:{res15['block_id']}", False)
-check("g15: the UI shows the exact required shared-object message",
-      "riutilizzato in più punti" in bundle15[app.ST_IDX_SHARED_NOTICE]["value"], bundle15[app.ST_IDX_SHARED_NOTICE])
-check("g15: the table grid becomes non-interactive (viewable, not editable) while shared",
-      bundle15[app.ST_IDX_TABLE_GRID].get("interactive") is False, bundle15[app.ST_IDX_TABLE_GRID])
+check("g15: the UI shows the required shared-object message",
+      # 4D deliberately supersedes the 4C-era placeholder wording ("...sarà
+      # gestita nella fase Reuse-aware authoring", now literally untrue,
+      # since 4D IS that phase) with the real decision prompt -- see
+      # authoring_service._SHARED_OBJECT_MESSAGE and the 4D report.
+      "utilizzato in più punti" in bundle15[app.ST_IDX_SHARED_NOTICE]["value"], bundle15[app.ST_IDX_SHARED_NOTICE])
+check("g15: the READ-ONLY table grid twin (permanently interactive=False) is the one shown while shared",
+      bundle15[app.ST_IDX_TABLE_GRID_VIEW]["visible"] is True, bundle15[app.ST_IDX_TABLE_GRID_VIEW])
+check("g15: the EDITABLE table grid twin stays hidden while shared and unconfirmed",
+      bundle15[app.ST_IDX_TABLE_GRID_EDIT]["visible"] is False, bundle15[app.ST_IDX_TABLE_GRID_EDIT])
 repo15.close()
 
 
@@ -469,8 +475,9 @@ check("g29: saving a figure referenced by 2 blocks is fail-closed (SharedObjectE
 before29 = dict(repo29b.conn.execute("SELECT version,caption FROM figures WHERE figure_id='FIG-29'").fetchone())
 check("g29: the shared figure is genuinely untouched", before29 == {"version": 1, "caption": "Cap"}, before29)
 bundle29 = app.studio_open_ui(str(p29), "PUB-MAIN", "block:BLK-29-A", False)
-check("g29: the UI shows the exact required shared-object message",
-      "riutilizzato in più punti" in bundle29[app.ST_IDX_SHARED_NOTICE]["value"], bundle29[app.ST_IDX_SHARED_NOTICE])
+check("g29: the UI shows the required shared-object message",
+      # See the identical g15 note above -- 4D wording, not 4C's.
+      "utilizzato in più punti" in bundle29[app.ST_IDX_SHARED_NOTICE]["value"], bundle29[app.ST_IDX_SHARED_NOTICE])
 # 30: provenance preserved across a (rejected) shared edit AND across a normal edit on an unshared figure.
 check("g30: source_refs are still exactly what they were (guard fired before any write)",
       json.loads(repo29b.conn.execute("SELECT source_refs_json FROM figures WHERE figure_id='FIG-29'").fetchone()["source_refs_json"]) == ["evidence:doc-7#p2"],
@@ -508,15 +515,22 @@ tres32 = svc32.create_table_in_topic("SEED-TOPIC", actor="Writer A", columns=["A
 fres32 = svc32.create_figure_in_topic("SEED-TOPIC", actor="Writer A", source_file_path=str(IMG1))
 repo32.close()
 bundle32t = app.studio_open_ui(str(p32), "PUB-MAIN", f"block:{tres32['block_id']}", False)
-check("g32: opening a table block shows the table grid", bundle32t[app.ST_IDX_TABLE_GRID]["visible"] is True, bundle32t[app.ST_IDX_TABLE_GRID])
+# 4D Shared Table Unlock Editing Fix: a non-shared table (can_edit=True
+# immediately) shows via st_table_grid_edit; st_table_grid_view (the
+# permanently-read-only twin) stays hidden.
+check("g32: opening a non-shared table block shows the EDITABLE table grid",
+      bundle32t[app.ST_IDX_TABLE_GRID_EDIT]["visible"] is True, bundle32t[app.ST_IDX_TABLE_GRID_EDIT])
+check("g32: the read-only table grid twin stays hidden for a non-shared table",
+      bundle32t[app.ST_IDX_TABLE_GRID_VIEW]["visible"] is False, bundle32t[app.ST_IDX_TABLE_GRID_VIEW])
 check("g34: opening a table block hides the generic text editor", bundle32t[app.ST_IDX_TEXT]["visible"] is False, bundle32t[app.ST_IDX_TEXT])
 check("g34: opening a table block hides the topic title field too", bundle32t[app.ST_IDX_TITLE]["visible"] is False, bundle32t[app.ST_IDX_TITLE])
 bundle33f = app.studio_open_ui(str(p32), "PUB-MAIN", f"block:{fres32['block_id']}", False)
 check("g33: opening a figure block shows the figure preview/caption/alt fields",
       bundle33f[app.ST_IDX_FIGURE_PREVIEW]["visible"] is True and bundle33f[app.ST_IDX_FIGURE_CAPTION]["visible"] is True, bundle33f)
 check("g34: opening a figure block hides the generic text editor", bundle33f[app.ST_IDX_TEXT]["visible"] is False, bundle33f[app.ST_IDX_TEXT])
-check("g34: opening a figure block also hides the table grid (never both editors at once)",
-      bundle33f[app.ST_IDX_TABLE_GRID]["visible"] is False, bundle33f[app.ST_IDX_TABLE_GRID])
+check("g34: opening a figure block also hides BOTH table grid twins (never both editors at once)",
+      bundle33f[app.ST_IDX_TABLE_GRID_VIEW]["visible"] is False and bundle33f[app.ST_IDX_TABLE_GRID_EDIT]["visible"] is False,
+      (bundle33f[app.ST_IDX_TABLE_GRID_VIEW], bundle33f[app.ST_IDX_TABLE_GRID_EDIT]))
 check("g34: opening a table block also hides the figure fields (never both editors at once)",
       bundle32t[app.ST_IDX_FIGURE_PREVIEW]["visible"] is False, bundle32t[app.ST_IDX_FIGURE_PREVIEW])
 
@@ -617,10 +631,23 @@ repo38b.close()
 #     dataframe.py -- checked against the installed package, not
 #     assumed). This is the real component config, not a comment.
 # ------------------------------------------------------------------
-check("g39: st_table_grid is constructed with row_count in 'fixed' mode",
-      app.st_table_grid.row_count[1] == "fixed", app.st_table_grid.row_count)
-check("g39: st_table_grid is constructed with column_count in 'fixed' mode",
-      app.st_table_grid.column_count[1] == "fixed", app.st_table_grid.column_count)
+# 4D Shared Table Unlock Editing Fix: st_table_grid is now TWO mutually
+# exclusive components (st_table_grid_view, permanently interactive=False;
+# st_table_grid_edit, permanently interactive=True) instead of one whose
+# `interactive` prop got toggled dynamically -- the native structural menu
+# must stay neutralized on BOTH, since either one can be the visible one.
+check("g39: st_table_grid_view is constructed with row_count in 'fixed' mode",
+      app.st_table_grid_view.row_count[1] == "fixed", app.st_table_grid_view.row_count)
+check("g39: st_table_grid_view is constructed with column_count in 'fixed' mode",
+      app.st_table_grid_view.column_count[1] == "fixed", app.st_table_grid_view.column_count)
+check("g39: st_table_grid_edit is constructed with row_count in 'fixed' mode",
+      app.st_table_grid_edit.row_count[1] == "fixed", app.st_table_grid_edit.row_count)
+check("g39: st_table_grid_edit is constructed with column_count in 'fixed' mode",
+      app.st_table_grid_edit.column_count[1] == "fixed", app.st_table_grid_edit.column_count)
+check("g39: st_table_grid_view is permanently interactive=False (never the one relied on for editing)",
+      app.st_table_grid_view.interactive is False, app.st_table_grid_view.interactive)
+check("g39: st_table_grid_edit is permanently interactive=True (never dynamically toggled)",
+      app.st_table_grid_edit.interactive is True, app.st_table_grid_edit.interactive)
 import gradio as _gr
 import inspect as _inspect
 _row_limits_src = _inspect.getsource(_gr.components.dataframe.Dataframe.__init__)
@@ -654,10 +681,12 @@ t40 = svc40.create_table_in_topic("SEED-TOPIC", actor="Writer A",
 blk40 = repo40.conn.execute("SELECT block_id FROM content_blocks WHERE object_ref_id=?", (t40,)).fetchone()["block_id"]
 repo40.close()
 bundle40 = app.studio_open_ui(str(p40), "PUB-MAIN", f"block:{blk40}", False)
+# Non-shared table -> shown via the EDITABLE grid twin (see the 4D Shared
+# Table Unlock Editing Fix note at ST_IDX_TABLE_GRID_VIEW/_EDIT).
 check("g40: opening a real 3-column/2-row table pushes row_count=(2,'fixed')",
-      bundle40[app.ST_IDX_TABLE_GRID]["row_count"] == (2, "fixed"), bundle40[app.ST_IDX_TABLE_GRID])
+      bundle40[app.ST_IDX_TABLE_GRID_EDIT]["row_count"] == (2, "fixed"), bundle40[app.ST_IDX_TABLE_GRID_EDIT])
 check("g40: opening a real 3-column/2-row table pushes column_count=(3,'fixed')",
-      bundle40[app.ST_IDX_TABLE_GRID]["column_count"] == (3, "fixed"), bundle40[app.ST_IDX_TABLE_GRID])
+      bundle40[app.ST_IDX_TABLE_GRID_EDIT]["column_count"] == (3, "fixed"), bundle40[app.ST_IDX_TABLE_GRID_EDIT])
 
 # ------------------------------------------------------------------
 # 41) the four ERYLOS controls are the official structural path --
@@ -748,8 +777,8 @@ repo43b.close()
 # simulated reopen (reload)
 bundle43_reopen = app.studio_open_ui(str(p43), "PUB-MAIN", f"block:{blk43}", False)
 check("g43: a fresh open (simulated reload) shows the same persisted row -- zero silent loss",
-      bundle43_reopen[app.ST_IDX_TABLE_GRID]["value"].values.tolist() == [["1", "2"], ["3", "4"]],
-      bundle43_reopen[app.ST_IDX_TABLE_GRID]["value"])
+      bundle43_reopen[app.ST_IDX_TABLE_GRID_EDIT]["value"].values.tolist() == [["1", "2"], ["3", "4"]],
+      bundle43_reopen[app.ST_IDX_TABLE_GRID_EDIT]["value"])
 
 # ------------------------------------------------------------------
 # 44) shared-object protection covers the four controls too: hidden/
@@ -772,7 +801,10 @@ up44, msg44 = app.studio_table_add_row_ui(str(p44), "block", blk44a, "table", t4
 save44 = app.studio_save_ui(str(p44), "PUB-MAIN", "block", blk44a, "table", t44, 1, "", "", "", "", up44["value"], "", "", "Writer A", False)
 check("g44: even if the add-row handler is invoked directly (bypassing the hidden UI), the actual Save that follows "
       "still fails closed with the shared-object message -- the CAS guard in save_table is the real enforcement point",
-      "riutilizzato in più punti" in save44[app.ST_IDX_SAVE_MSG], save44[app.ST_IDX_SAVE_MSG])
+      # See the identical g15 note above -- 4D wording, not 4C's. This call
+      # also exercises studio_save_ui's new (default-False) shared_confirmed
+      # param -- omitted here, so it still fails closed exactly as before.
+      "utilizzato in più punti" in save44[app.ST_IDX_SAVE_MSG], save44[app.ST_IDX_SAVE_MSG])
 repo44b, _ = av.open_service(p44)
 v44_after = repo44b.conn.execute("SELECT version FROM structured_tables WHERE table_id=?", (t44,)).fetchone()["version"]
 repo44b.close()

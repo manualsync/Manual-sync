@@ -1429,7 +1429,8 @@ def _studio_pub_header_html(repo, publication_id: str) -> str:
         return f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>"
     return f"<div class='ms-prod'>Pubblicazione: <b>{html.escape(row['title'])}</b></div>"
 
-def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, *, save_msg="", review_msg=""):
+def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, *, save_msg="", review_msg="",
+                        shared_confirmed=False, shared_impact_token=None, diff_output=""):
     # UX clarity fix (and a real Gradio 6.5.1 bug worked around here): the
     # "nothing selected -> hide the action controls, not just grey them
     # out" requirement was first tried as a single gr.Group(visible=...)
@@ -1446,7 +1447,43 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
     try:
         publication_id = (publication_id or "").strip() or "PUB-MAIN"
         pub_header = _studio_pub_header_html(repo, publication_id)
-        empty_table_upd = _fixed_grid_update(pd.DataFrame(), visible=False)  # default for st_table_grid only
+        # 4D Shared Table Unlock Editing Fix: st_table_grid was a SINGLE
+        # gr.Dataframe whose `interactive` prop got toggled False->True
+        # dynamically (shared/unconfirmed -> confirmed via 'Aggiorna
+        # ovunque'). Diagnosed live: Gradio 6.5.1's virtualized Dataframe
+        # (<svelte-virtual-table-viewport>) DOES apply that toggle
+        # correctly when it receives a complete, real pointer+mouse event
+        # sequence -- but relying on dynamic interactive-toggling of an
+        # ALREADY-MOUNTED virtualized grid component is inherently more
+        # fragile than never doing it at all (undocumented third-party
+        # behavior, sensitive to exactly which events the browser/input
+        # path delivers). Root-caused and fixed the robust way the ticket
+        # itself pre-authorized: TWO mutually exclusive components --
+        # st_table_grid_view (permanently interactive=False, shown while
+        # read-only/undecided) and st_table_grid_edit (permanently
+        # interactive=True, shown once editable) -- swapped only via
+        # `visible=`, the exact same proven mechanism already used
+        # everywhere else in this function. Neither component's own
+        # `interactive` value is EVER toggled after creation.
+        #
+        # 4D freeze fix: hiding a twin must NEVER also push it a new
+        # value/row_count/column_count. The previous version cleared the
+        # twin being hidden to an empty df via _fixed_grid_update() in the
+        # very same response that populated the OTHER twin with real data
+        # and flipped ITS visibility on -- i.e. both virtualized Dataframe
+        # components underwent a simultaneous visible+shape+value mutation
+        # in one Gradio update batch. Reproduced live: exactly this
+        # double-mutation (confirmed shared table -> "Aggiorna ovunque")
+        # is what left the browser tab unresponsive with several elements
+        # stuck "processing" -- consistent with the virtualized grid's
+        # frontend (svelte-virtual-table-viewport) not tolerating two of
+        # its own instances being resized/repopulated at once. A hidden
+        # twin's stale value is never read (Save only reads st_table_
+        # grid_edit; the view twin is display-only) and gets overwritten
+        # with fresh data the next time it is legitimately shown, so there
+        # is nothing to gain from clearing it -- only a component update to
+        # avoid. `hidden_grid` therefore carries `visible=False` alone.
+        hidden_grid = gr.update(visible=False)
         hidden_field = gr.update(value="", visible=False)
         hidden_btn = gr.update(visible=False, interactive=False)
         hidden_notice = gr.update(value="", visible=False)
@@ -1460,9 +1497,10 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     hidden_btn, review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
                     pub_header,
                     None, None,
-                    hidden_field, hidden_field, empty_table_upd,
+                    hidden_field, hidden_field, hidden_grid, hidden_grid,
                     gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
-                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False))
+                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output)
 
         rows = av.outline_rows(repo, publication_id, include_archived=bool(show_archived))
         table = pd.DataFrame(av.outline_table(rows)) if rows else pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
@@ -1480,16 +1518,18 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     hidden_btn, review_msg, gr.update(visible=False), "", pd.DataFrame(), save_msg,
                     pub_header,
                     None, None,
-                    hidden_field, hidden_field, empty_table_upd,
+                    hidden_field, hidden_field, hidden_grid, hidden_grid,
                     gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
-                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False))
+                    hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output)
 
         breadcrumb = av.breadcrumb(rows, kind, object_id)
         block_type = None
         object_ref_id = None
         table_title_upd = hidden_field
         table_caption_upd = hidden_field
-        table_grid_upd = empty_table_upd
+        table_grid_view_upd = hidden_grid
+        table_grid_edit_upd = hidden_grid
         figure_preview_upd = gr.update(value=None, visible=False)
         figure_caption_upd = hidden_field
         figure_alt_upd = hidden_field
@@ -1498,6 +1538,19 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
         new_table_row_visible = False
         new_figure_row_visible = False
         table_rowcol_row_visible = False
+        # 4D: reuse-aware shared-object decision UX defaults -- overridden
+        # below only inside the is_table/is_figure branches, where
+        # tdetail["is_shared"]/fdetail["is_shared"] (AuthoringService.
+        # get_reuse_impact()'s block-level-precise count, via table_detail/
+        # figure_detail) actually applies. shared_confirmed only ever comes
+        # from the explicit "Aggiorna ovunque" button callback below --
+        # every OTHER navigation path (open/refresh/save/revert/fork) calls
+        # this function without it, which defaults it back to False, so a
+        # fresh edit session on a still-shared object always requires the
+        # decision again (deliberate, never sticky across saves).
+        reuse_impact_upd = hidden_notice
+        update_everywhere_btn_visible = False
+        fork_local_btn_visible = False
 
         if kind == "topic":
             detail = av.topic_detail(svc, object_id)
@@ -1531,13 +1584,37 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                 tdetail = av.table_detail(svc, object_ref_id)
                 status_detail = tdetail
                 version_for_save = tdetail["version"]
-                can_edit = not detail["archived"] and not tdetail["is_shared"]
+                can_edit = not detail["archived"] and (not tdetail["is_shared"] or shared_confirmed)
                 cols = tdetail["columns"] or ["Colonna 1"]
                 grid_rows = tdetail["rows"] if tdetail["rows"] else [["" for _ in cols]]
                 table_title_upd = gr.update(value=tdetail["title"], visible=True, interactive=can_edit)
                 table_caption_upd = gr.update(value=tdetail["caption"], visible=True, interactive=can_edit)
-                table_grid_upd = _fixed_grid_update(pd.DataFrame(grid_rows, columns=[str(c) for c in cols]),
-                                                    visible=True, interactive=can_edit)
+                grid_df = pd.DataFrame(grid_rows, columns=[str(c) for c in cols])
+                # Shared Table Unlock Editing Fix: st_table_grid_view
+                # (interactive=False, never toggled) shows the SAME data
+                # read-only while can_edit is False; st_table_grid_edit
+                # (interactive=True, never toggled) shows it once
+                # editable. Exactly one of the two is ever visible.
+                # interactive= is re-affirmed explicitly on every push
+                # (False for the view twin, True for the edit twin) --
+                # always the SAME fixed value each component was created
+                # with, never toggled across renders, but pushed
+                # explicitly so the update graph is self-verifying rather
+                # than relying on an implicit/unstated component default.
+                #
+                # 4D freeze fix: the twin being HIDDEN gets `hidden_grid`
+                # (visible=False only, no value/row_count/column_count) --
+                # never a fresh _fixed_grid_update() -- so only the twin
+                # becoming/staying VISIBLE undergoes a value+shape mutation
+                # in this response. See the `hidden_grid` comment above for
+                # why pushing both twins at once (one clearing, one
+                # populating) is what produced the browser freeze.
+                if can_edit:
+                    table_grid_view_upd = hidden_grid
+                    table_grid_edit_upd = _fixed_grid_update(grid_df, visible=True, interactive=True)
+                else:
+                    table_grid_view_upd = _fixed_grid_update(grid_df, visible=True, interactive=False)
+                    table_grid_edit_upd = hidden_grid
                 # Real Gradio 6.5.1 bug found in browser stabilization: the
                 # Dataframe's own built-in right-click "Add row"/"Add
                 # column" context-menu mutates the visible grid but does
@@ -1550,7 +1627,17 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                 # holds afterward is exactly what gets saved.
                 table_rowcol_row_visible = can_edit
                 if tdetail["is_shared"]:
-                    shared_notice_upd = gr.update(value=f"🔗 {tdetail['shared_notice']}", visible=True)
+                    ris = tdetail["reuse_impact_summary"]
+                    if shared_confirmed:
+                        shared_notice_upd = gr.update(
+                            value=f"🔗 Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
+                                  f"{tdetail['reference_count']} riferimenti.", visible=True)
+                    else:
+                        shared_notice_upd = gr.update(value=f"🔗 {tdetail['shared_notice']}", visible=True)
+                        update_everywhere_btn_visible = not detail["archived"]
+                        fork_local_btn_visible = not detail["archived"]
+                    lines = [ris["usage_line"]] + ris["topic_lines"] + ris["notes"]
+                    reuse_impact_upd = gr.update(value="  \n".join(x for x in lines if x), visible=True)
                 elif detail["archived"]:
                     readonly_notice = gr.update(value=f"⛔ {av.archived_message('block', object_id)}", visible=True)
                 history = pd.DataFrame(av.table_history_rows(svc, object_ref_id))
@@ -1560,14 +1647,24 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                 fdetail = av.figure_detail(svc, object_ref_id)
                 status_detail = fdetail
                 version_for_save = fdetail["version"]
-                can_edit = not detail["archived"] and not fdetail["is_shared"]
+                can_edit = not detail["archived"] and (not fdetail["is_shared"] or shared_confirmed)
                 asset_ok = bool(fdetail["file_path"]) and not fdetail["asset_missing"]
                 figure_preview_upd = gr.update(value=(fdetail["file_path"] if asset_ok else None), visible=True)
                 figure_caption_upd = gr.update(value=fdetail["caption"], visible=True, interactive=can_edit)
                 figure_alt_upd = gr.update(value=fdetail["alt_text"], visible=True, interactive=can_edit)
                 figure_replace_row_visible = can_edit
                 if fdetail["is_shared"]:
-                    shared_notice_upd = gr.update(value=f"🔗 {fdetail['shared_notice']}", visible=True)
+                    ris = fdetail["reuse_impact_summary"]
+                    if shared_confirmed:
+                        shared_notice_upd = gr.update(
+                            value=f"🔗 Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
+                                  f"{fdetail['reference_count']} riferimenti.", visible=True)
+                    else:
+                        shared_notice_upd = gr.update(value=f"🔗 {fdetail['shared_notice']}", visible=True)
+                        update_everywhere_btn_visible = not detail["archived"]
+                        fork_local_btn_visible = not detail["archived"]
+                    lines = [ris["usage_line"]] + ris["topic_lines"] + ris["notes"]
+                    reuse_impact_upd = gr.update(value="  \n".join(x for x in lines if x), visible=True)
                 elif detail["archived"]:
                     readonly_notice = gr.update(value=f"⛔ {av.archived_message('block', object_id)}", visible=True)
                 elif fdetail["asset_missing"]:
@@ -1576,7 +1673,32 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                 tech_html = _studio_tech_html_shared_object(repo, "figure", object_ref_id, fdetail, detail)
             else:
                 version_for_save = detail["version"]
-                readonly_notice = gr.update(value=("" if editable_text else f"ℹ️ {detail['type_label']}"), visible=not editable_text)
+                # 4D Blocker B (component scope decision, Option 1):
+                # component_ref gets real reuse-impact reporting -- it is
+                # genuinely block-level-precise, via the SAME get_
+                # reuse_impact()/reuse_impact_summary() primitives table/
+                # figure use -- but NEVER the decision buttons or an
+                # unlocked editor: can_edit stays False unconditionally
+                # (editable_text is always False for component_ref, since
+                # it is deliberately excluded from EDITABLE_TEXT_BLOCK_
+                # TYPES/DEDICATED_EDITOR_BLOCK_TYPES), and update_
+                # everywhere_btn_visible/fork_local_btn_visible are never
+                # set True in this branch. There is no editor for a
+                # decision to unlock, so no decision is offered -- shown
+                # instead as a plain, explicit "not yet editable" notice
+                # plus the real usage count, never silence about either.
+                if block_type == "component_ref" and detail.get("object_ref_id"):
+                    object_ref_id = detail["object_ref_id"]
+                    cimpact = svc.get_reuse_impact("component", object_ref_id)
+                    notice = "ℹ️ Componente riusabile — non ancora editabile in questo Studio."
+                    if cimpact["is_shared"]:
+                        cris = av.reuse_impact_summary(cimpact)
+                        notice += f" 🔗 Utilizzato in {cimpact['reference_count']} punti."
+                        lines = [cris["usage_line"]] + cris["topic_lines"] + cris["notes"]
+                        reuse_impact_upd = gr.update(value="  \n".join(x for x in lines if x), visible=True)
+                    readonly_notice = gr.update(value=notice, visible=True)
+                else:
+                    readonly_notice = gr.update(value=("" if editable_text else f"ℹ️ {detail['type_label']}"), visible=not editable_text)
                 can_edit = editable_text and not detail["archived"]
                 history = pd.DataFrame(av.block_history_rows(svc, object_id))
                 tech_html = _studio_tech_html_block(detail)
@@ -1600,10 +1722,14 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
             tech_html, history, save_msg,
             pub_header,
             block_type, object_ref_id,
-            table_title_upd, table_caption_upd, table_grid_upd,
+            table_title_upd, table_caption_upd, table_grid_view_upd, table_grid_edit_upd,
             figure_preview_upd, figure_caption_upd, figure_alt_upd, gr.update(visible=figure_replace_row_visible),
             shared_notice_upd, gr.update(visible=new_table_row_visible), gr.update(visible=new_figure_row_visible),
             gr.update(visible=table_rowcol_row_visible),
+            shared_confirmed, shared_impact_token, reuse_impact_upd,
+            gr.update(visible=update_everywhere_btn_visible, interactive=update_everywhere_btn_visible),
+            gr.update(visible=fork_local_btn_visible, interactive=fork_local_btn_visible),
+            gr.update(visible=True), diff_output,
         )
     finally:
         repo.close()
@@ -1614,10 +1740,13 @@ ST_IDX_TABLE, ST_IDX_PICKER, ST_IDX_KIND, ST_IDX_ID, ST_IDX_VERSION, ST_IDX_BREA
     ST_IDX_SUBMIT_REVIEW_BTN, ST_IDX_REVIEW_MSG, ST_IDX_NEW_BLOCK_ROW, ST_IDX_TECH, ST_IDX_HISTORY, ST_IDX_SAVE_MSG, \
     ST_IDX_PUB_HEADER, \
     ST_IDX_BLOCK_TYPE, ST_IDX_OBJECT_REF_ID, \
-    ST_IDX_TABLE_TITLE, ST_IDX_TABLE_CAPTION, ST_IDX_TABLE_GRID, \
+    ST_IDX_TABLE_TITLE, ST_IDX_TABLE_CAPTION, ST_IDX_TABLE_GRID_VIEW, ST_IDX_TABLE_GRID_EDIT, \
     ST_IDX_FIGURE_PREVIEW, ST_IDX_FIGURE_CAPTION, ST_IDX_FIGURE_ALT, ST_IDX_FIGURE_REPLACE_ROW, \
     ST_IDX_SHARED_NOTICE, ST_IDX_NEW_TABLE_ROW, ST_IDX_NEW_FIGURE_ROW, \
-    ST_IDX_TABLE_ROWCOL_ROW = range(38)
+    ST_IDX_TABLE_ROWCOL_ROW, \
+    ST_IDX_SHARED_CONFIRMED, ST_IDX_SHARED_IMPACT_TOKEN, ST_IDX_REUSE_IMPACT, \
+    ST_IDX_UPDATE_EVERYWHERE_BTN, ST_IDX_FORK_LOCAL_BTN, \
+    ST_IDX_COMPARE_ROW, ST_IDX_DIFF_OUTPUT = range(46)
 
 def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # Standard-mode validation UX fix: a predictable, user-correctable input
@@ -1627,12 +1756,13 @@ def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # multi-output panel, would otherwise force a full _studio_full_bundle
     # re-render from the DB, silently discarding whatever the user had just
     # typed in a title/text/caption/grid field). gr.update() with no args,
-    # returned for every one of the 38 outputs, touches nothing: verified
+    # returned for every one of the 46 outputs, touches nothing: verified
     # against Gradio 6.5.1's own dispatch code (blocks.py) that a State
-    # output (st_kind/st_id/st_version/st_block_type/st_object_ref_id)
-    # receiving an update-dict with no "value" key is left at its previous
-    # value rather than being overwritten.
-    out = [gr.update() for _ in range(38)]
+    # output (st_kind/st_id/st_version/st_block_type/st_object_ref_id/
+    # st_shared_confirmed/st_shared_impact_token) receiving an update-dict
+    # with no "value" key is left at its previous value rather than being
+    # overwritten.
+    out = [gr.update() for _ in range(46)]
     out[ST_IDX_SAVE_MSG] = save_msg
     out[ST_IDX_REVIEW_MSG] = review_msg
     return tuple(out)
@@ -1811,7 +1941,7 @@ def studio_table_remove_col_ui(project_dir, kind, object_id, block_type, object_
 
 def studio_restore_draft_ui(project_dir, kind, object_id, block_type, object_ref_id):
     # Outputs: [st_title_input, st_text_input, st_table_title, st_table_caption,
-    #           st_table_grid, st_figure_caption, st_figure_alt,
+    #           st_table_grid_edit, st_figure_caption, st_figure_alt,
     #           st_restore_draft_btn, st_discard_draft_btn]
     draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
     hide2 = (gr.update(visible=False), gr.update(visible=False))
@@ -1860,7 +1990,8 @@ def studio_discard_edits_ui(project_dir, publication_id, kind, object_id, show_a
 
 def studio_save_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, expected_version,
                    title_val, text_val, table_title_val, table_caption_val, table_grid_val,
-                   figure_caption_val, figure_alt_val, actor, show_archived):
+                   figure_caption_val, figure_alt_val, actor, show_archived, shared_confirmed=False,
+                   shared_impact_token=None):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
     if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
@@ -1874,10 +2005,12 @@ def studio_save_ui(project_dir, publication_id, kind, object_id, block_type, obj
                 repo.close()
                 return _studio_noop_bundle(save_msg="Aggiungi almeno una colonna.")
             result = svc.save_table(object_ref_id, title=table_title_val, caption=table_caption_val,
-                                    columns=cols, rows=rows, expected_version=int(expected_version), actor=actor)
+                                    columns=cols, rows=rows, expected_version=int(expected_version), actor=actor,
+                                    confirm_shared=bool(shared_confirmed), expected_impact_token=shared_impact_token)
         elif block_type == "figure":
             result = svc.save_figure(object_ref_id, caption=figure_caption_val, alt_text=figure_alt_val,
-                                     expected_version=int(expected_version), actor=actor)
+                                     expected_version=int(expected_version), actor=actor,
+                                     confirm_shared=bool(shared_confirmed), expected_impact_token=shared_impact_token)
         else:
             result = svc.save_block(object_id, text=text_val, expected_version=int(expected_version), actor=actor)
         msg = f"✅ Salvato — versione {result['version']}."
@@ -2026,7 +2159,8 @@ def studio_new_figure_ui(project_dir, publication_id, kind, object_id, image_fil
     return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Figura aggiunta.")
 
 def studio_replace_figure_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id,
-                             expected_version, image_file, show_archived, actor):
+                             expected_version, image_file, show_archived, actor, shared_confirmed=False,
+                             shared_impact_token=None):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if kind != "block" or block_type != "figure" or not object_ref_id:
         return _studio_noop_bundle(save_msg="Apri prima una figura per sostituire l'immagine.")
@@ -2035,7 +2169,8 @@ def studio_replace_figure_ui(project_dir, publication_id, kind, object_id, block
     repo, svc = av.open_service(project_dir)
     try:
         result = svc.replace_figure_image(object_ref_id, source_file_path=image_file,
-                                          expected_version=int(expected_version), actor=actor)
+                                          expected_version=int(expected_version), actor=actor,
+                                          confirm_shared=bool(shared_confirmed), expected_impact_token=shared_impact_token)
         msg = f"✅ Immagine sostituita — versione {result['version']}."
     except VersionConflictError:
         repo.close()
@@ -2062,7 +2197,8 @@ def studio_submit_review_ui(project_dir, publication_id, kind, object_id, show_a
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=review_msg)
 
-def studio_revert_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, version, show_archived, actor):
+def studio_revert_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, version, show_archived,
+                     actor, shared_confirmed=False, shared_impact_token=None):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
     if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
@@ -2070,14 +2206,140 @@ def studio_revert_ui(project_dir, publication_id, kind, object_id, block_type, o
     repo, svc = av.open_service(project_dir)
     try:
         if kind == "topic": svc.revert_topic_to_version(object_id, int(version), actor=actor)
-        elif block_type == "table": svc.revert_table_to_version(object_ref_id, int(version), actor=actor)
-        elif block_type == "figure": svc.revert_figure_to_version(object_ref_id, int(version), actor=actor)
+        elif block_type == "table":
+            svc.revert_table_to_version(object_ref_id, int(version), actor=actor, confirm_shared=bool(shared_confirmed),
+                                        expected_impact_token=shared_impact_token)
+        elif block_type == "figure":
+            svc.revert_figure_to_version(object_ref_id, int(version), actor=actor, confirm_shared=bool(shared_confirmed),
+                                         expected_impact_token=shared_impact_token)
         else: svc.revert_block_to_version(object_id, int(version), actor=actor)
     except (KeyError, ValueError, ArchivedObjectError, SharedObjectError, MissingAssetError) as e:
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Versione ripristinata (creata una nuova versione corrente).")
+
+def studio_confirm_shared_update_ui(project_dir, publication_id, kind, object_id, show_archived):
+    # 4D "Aggiorna ovunque": records the user's explicit choice (as a
+    # transient UI State, never persisted) to edit a shared table/figure in
+    # place. Does NOT save anything by itself -- it only unlocks the
+    # editor fields (can_edit becomes True in _studio_full_bundle) so the
+    # normal Save button, now passing confirm_shared=True, performs the
+    # actual audited override of the fail-closed shared-object guard.
+    #
+    # 4D integrity gate: this is also the ONLY moment the impact snapshot
+    # token is captured -- right here, freshly re-read from the live DB,
+    # at the exact instant the user is shown (and implicitly confirms) the
+    # current reference set. Save/revert re-verify this token against a
+    # freshly re-read impact at write time (see _guard_table_or_figure_
+    # editable): if anything in that set changed in between -- one more
+    # block referencing the object, or one fewer -- the token no longer
+    # matches and the write fails closed, even though expected_version
+    # alone might still look unchanged.
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        detail = av.block_detail(svc, object_id) if kind == "block" else None
+        token = None
+        if detail is not None and detail["block_type"] in ("table", "figure"):
+            token = svc.get_reuse_impact(detail["block_type"], detail["object_ref_id"])["impact_token"]
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived,
+                               shared_confirmed=True, shared_impact_token=token)
+
+def studio_fork_local_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, version,
+                         show_archived, actor):
+    # 4D "Crea una copia locale": unlike "Aggiorna ovunque", this is not a
+    # two-step unlock -- the fork itself is the entire action, and it
+    # completes immediately (AuthoringService.fork_table_local/
+    # fork_figure_local is a single atomic transaction). After it returns,
+    # re-opening the SAME block (object_id is the wrapping content_blocks
+    # id, unchanged by a fork) picks up its new, now-independent
+    # object_ref_id automatically -- no special-case re-render needed.
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not kind or not object_id: return _studio_noop_bundle(save_msg="Seleziona prima un elemento.")
+    if not str(actor or "").strip(): return _studio_noop_bundle(save_msg="Inserisci il tuo nome per continuare.")
+    if block_type not in ("table", "figure") or not object_ref_id or version is None:
+        return _studio_noop_bundle(save_msg="Apri prima una tabella o una figura condivisa.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        if block_type == "table":
+            svc.fork_table_local(object_ref_id, block_id=object_id, expected_version=int(version), actor=actor)
+        else:
+            svc.fork_figure_local(object_ref_id, block_id=object_id, expected_version=int(version), actor=actor)
+    except (KeyError, ValueError, ArchivedObjectError, VersionConflictError) as e:
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+    finally:
+        repo.close()
+    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived,
+                               save_msg="✅ Copia locale creata — questo blocco ora usa una versione indipendente, "
+                                        "gli altri riferimenti restano invariati.")
+
+def _render_diff_text_markdown(diff: dict) -> str:
+    parts = []
+    for seg in diff.get("segments", []):
+        t = seg.get("text", "")
+        if not t:
+            continue
+        if seg["tag"] == "insert":
+            parts.append(f"**{t}**")
+        elif seg["tag"] == "delete":
+            parts.append(f"~~{t}~~")
+        else:
+            parts.append(t)
+    body = " ".join(parts)
+    return f"{diff['summary']}\n\n{body}" if body else diff["summary"]
+
+def studio_compare_ui(project_dir, kind, object_id, block_type, object_ref_id, version, compare_version):
+    # 4D revision compare: pure read, never mutates anything -- diffs the
+    # CURRENT live content against one historical version, using
+    # AuthoringService's new get_*_version() accessors and authoring_view's
+    # diff_text/diff_table/diff_figure. This same function backs both
+    # "Confronta con versione" (explicit version number) and "Confronta con
+    # versione precedente" (studio_compare_prev_ui below, which just
+    # supplies version-1) -- one comparison primitive, not two.
+    if not project_dir or not kind or not object_id:
+        return "Seleziona prima un elemento."
+    if compare_version is None:
+        return "Inserisci la versione con cui confrontare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        cv = int(compare_version)
+        if cv < 1:
+            return "⛔ La versione deve essere almeno 1."
+        if kind == "topic":
+            old = svc.get_topic_version(object_id, cv)
+            live = svc.load_topic_for_edit(object_id)
+            d = av.diff_text(old["body"], live["body"])
+            title_note = "" if old["title"] == live["title"] else " (titolo modificato)"
+            return f"**Confronto: versione {cv} → versione corrente ({live['version']}){title_note}**\n\n" + _render_diff_text_markdown(d)
+        if block_type == "table":
+            old = svc.get_table_version(object_ref_id, cv)
+            live = svc.load_table_for_edit(object_ref_id)
+            d = av.diff_table(old, live)
+            return f"**Confronto: versione {cv} → versione corrente ({live['version']})**\n\n{d['summary']}"
+        if block_type == "figure":
+            old = svc.get_figure_version(object_ref_id, cv)
+            live = svc.load_figure_for_edit(object_ref_id)
+            d = av.diff_figure(old, live)
+            return f"**Confronto: versione {cv} → versione corrente ({live['version']})**\n\n{d['summary']}"
+        old = svc.get_block_version(object_id, cv)
+        live = svc.load_block_for_edit(object_id)
+        d = av.diff_text(old["text"], live["text"])
+        return f"**Confronto: versione {cv} → versione corrente ({live['version']})**\n\n" + _render_diff_text_markdown(d)
+    except KeyError:
+        return f"⛔ Versione {compare_version} non trovata."
+    except Exception as e:
+        return f"⛔ {e}"
+    finally:
+        repo.close()
+
+def studio_compare_prev_ui(project_dir, kind, object_id, block_type, object_ref_id, version):
+    if version is None or not kind or not object_id:
+        return "Seleziona prima un elemento."
+    return studio_compare_ui(project_dir, kind, object_id, block_type, object_ref_id, version, int(version) - 1)
 
 def studio_search_ui(project_dir, publication_id, query):
     if not project_dir:
@@ -2987,6 +3249,20 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # figure_id (st_id stays the wrapping BLOCK's id, used by
             # Move/Archive/Restore exactly as for any other block).
             st_block_type = gr.State(None); st_object_ref_id = gr.State(None)
+            # 4D: transient, per-edit-session record of the "Aggiorna
+            # ovunque" decision on a shared table/figure -- never persisted
+            # (see studio_confirm_shared_update_ui), always reset to False
+            # by every navigation/save/revert/fork call path that does not
+            # explicitly set it.
+            st_shared_confirmed = gr.State(False)
+            # 4D integrity gate: the impact snapshot token captured at the
+            # exact moment "Aggiorna ovunque" was clicked (see studio_
+            # confirm_shared_update_ui) -- re-verified against a fresh
+            # get_reuse_impact() read at Save/Revert time, so a reference
+            # added or removed after the user's preview fails the write
+            # closed even when the object's own version hasn't changed.
+            # Same reset lifecycle as st_shared_confirmed.
+            st_shared_impact_token = gr.State(None)
             with gr.Row():
                 with gr.Column(scale=2):
                     # UX clarity fix: replaces the old technical Dataframe as
@@ -3053,9 +3329,26 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     # "let you cap size" use case, but the only mechanism
                     # this Gradio version actually honors to empty out the
                     # Dataframe's own unsafe right-click structural menu
-                    # (see _fixed_grid_update). Kept in sync on every push.
-                    st_table_grid = gr.Dataframe(interactive=True, type="pandas", visible=False, wrap=True,
-                                                 row_count=(1, "fixed"), column_count=(2, "fixed"))
+                    # (see _fixed_grid_update). Kept in sync on every push,
+                    # on BOTH components below.
+                    #
+                    # 4D Shared Table Unlock Editing Fix: TWO mutually
+                    # exclusive Dataframe components instead of one whose
+                    # `interactive` prop gets toggled dynamically. Root
+                    # cause: Gradio 6.5.1's virtualized Dataframe DOES
+                    # apply a live interactive=False->True change (verified
+                    # directly against the mounted component), but that is
+                    # exactly the kind of undocumented, third-party dynamic-
+                    # prop behavior this codebase's own discipline (see the
+                    # row/column context-menu bug just below) already
+                    # treats as too fragile to depend on. Each component's
+                    # own `interactive` is fixed for its entire lifetime;
+                    # only `visible=` ever toggles, the same proven pattern
+                    # already used for every other field in this panel.
+                    st_table_grid_view = gr.Dataframe(interactive=False, type="pandas", visible=False, wrap=True,
+                                                      row_count=(1, "fixed"), column_count=(2, "fixed"))
+                    st_table_grid_edit = gr.Dataframe(interactive=True, type="pandas", visible=False, wrap=True,
+                                                      row_count=(1, "fixed"), column_count=(2, "fixed"))
                     # The grid's own built-in right-click "Add row"/"Add
                     # column" context menu is a real, confirmed Gradio
                     # 6.5.1 reliability gap (see _table_rowcol_op above):
@@ -3083,6 +3376,18 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_figure_replace_btn = gr.Button("Sostituisci immagine", scale=1)
                     st_readonly_notice = gr.Markdown(visible=False)
                     st_shared_notice = gr.Markdown(visible=False)
+                    # 4D: the reuse-aware shared-object decision UX -- shown
+                    # only while a shared table/figure is open and the
+                    # decision has not yet been made this edit session
+                    # (st_shared_notice above already carries the fixed
+                    # header text; this list is the "readable usage list").
+                    # "Aggiorna ovunque" unlocks in-place editing (Save then
+                    # performs the audited override); "Crea una copia
+                    # locale" acts immediately, forking just this block.
+                    st_reuse_impact_md = gr.Markdown(visible=False)
+                    with gr.Row():
+                        st_update_everywhere_btn = gr.Button("Aggiorna ovunque", visible=False)
+                        st_fork_local_btn = gr.Button("Crea una copia locale", visible=False)
                     st_restore_draft_btn = gr.Button("Ripristina bozza", visible=False)
                     st_discard_draft_btn = gr.Button("Scarta bozza", visible=False)
                     with gr.Row():
@@ -3105,6 +3410,17 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_outline_table = gr.Dataframe(interactive=False, wrap=True, max_height=360)
                         gr.Markdown("**Storico versioni**")
                         st_history_table = gr.Dataframe(interactive=False, max_height=240)
+                        # 4D: revision compare -- read-only, never mutates
+                        # anything (see studio_compare_ui). "Confronta con
+                        # versione precedente" is the always-available
+                        # one-click case (diffs against version-1, doubling
+                        # as the pre-revert preview); the number field lets
+                        # you compare against any other historical version.
+                        with gr.Row(visible=False) as st_compare_row:
+                            st_compare_version = gr.Number(label="Confronta con versione", precision=0)
+                            st_compare_btn = gr.Button("Confronta")
+                            st_compare_prev_btn = gr.Button("Confronta con versione precedente")
+                        st_diff_output = gr.Markdown()
                         with gr.Row():
                             st_revert_version = gr.Number(label="Versione da ripristinare", precision=0)
                             st_revert_btn = gr.Button("Ripristina questa versione")
@@ -3144,9 +3460,11 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                           st_archive_btn, st_restore_btn, st_submit_review_btn, st_review_msg, st_new_block_row,
                           st_tech_html, st_history_table, st_save_msg, st_pub_header,
                           st_block_type, st_object_ref_id,
-                          st_table_title, st_table_caption, st_table_grid,
+                          st_table_title, st_table_caption, st_table_grid_view, st_table_grid_edit,
                           st_figure_preview, st_figure_caption, st_figure_alt, st_figure_replace_row,
-                          st_shared_notice, st_new_table_row, st_new_figure_row, st_table_rowcol_row]
+                          st_shared_notice, st_new_table_row, st_new_figure_row, st_table_rowcol_row,
+                          st_shared_confirmed, st_shared_impact_token, st_reuse_impact_md, st_update_everywhere_btn, st_fork_local_btn,
+                          st_compare_row, st_diff_output]
             authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL)
             st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
@@ -3158,7 +3476,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # (kind/block_type -> table_id/figure_id when applicable, see
             # _studio_draft_target()), never creating a CCMS version.
             _ST_DRAFT_INPUTS = [project_state, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
-                                st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
+                                st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
                                 st_figure_caption, st_figure_alt, actor_state]
             st_title_input.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
             st_text_input.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
@@ -3170,31 +3488,44 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # grid-population push was silently writing a spurious draft
             # via .change()). .input() fires ONLY on a real user edit, the
             # same guarantee .blur() already gives every other draft-saved
-            # field here.
-            st_table_grid.input(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
+            # field here. Bound to st_table_grid_edit only -- st_table_
+            # grid_view is permanently interactive=False, so it never fires
+            # .input() at all.
+            st_table_grid_edit.input(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
             st_figure_caption.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
             st_figure_alt.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
 
             # Add/remove row/column -- see _table_rowcol_op: replaces
             # reliance on the Dataframe's own native right-click menu,
-            # which does not reliably sync to what Save submits.
+            # which does not reliably sync to what Save submits. Only ever
+            # relevant while st_table_grid_edit is the visible one (these
+            # buttons are only shown when can_edit is True).
             _TABLE_ROWCOL_INPUTS = [project_state, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
-                                    st_table_title, st_table_caption, st_table_grid, actor_state]
-            st_table_add_row_btn.click(studio_table_add_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
-            st_table_remove_row_btn.click(studio_table_remove_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
-            st_table_add_col_btn.click(studio_table_add_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
-            st_table_remove_col_btn.click(studio_table_remove_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid, st_save_msg])
+                                    st_table_title, st_table_caption, st_table_grid_edit, actor_state]
+            st_table_add_row_btn.click(studio_table_add_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid_edit, st_save_msg])
+            st_table_remove_row_btn.click(studio_table_remove_row_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid_edit, st_save_msg])
+            st_table_add_col_btn.click(studio_table_add_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid_edit, st_save_msg])
+            st_table_remove_col_btn.click(studio_table_remove_col_ui, _TABLE_ROWCOL_INPUTS, [st_table_grid_edit, st_save_msg])
 
             st_restore_draft_btn.click(studio_restore_draft_ui, [project_state, st_kind, st_id, st_block_type, st_object_ref_id],
-                                       [st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
+                                       [st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
                                         st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn])
             st_discard_draft_btn.click(studio_discard_draft_ui,
                                        [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL)
             st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_save_btn.click(studio_save_ui,
                               [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
-                               st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid,
-                               st_figure_caption, st_figure_alt, actor_state, st_show_archived], ST_OUT_FULL)
+                               st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
+                               st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
+                               st_shared_impact_token], ST_OUT_FULL)
+
+            # 4D reuse-aware shared-object decision -- see
+            # studio_confirm_shared_update_ui/studio_fork_local_ui.
+            st_update_everywhere_btn.click(studio_confirm_shared_update_ui,
+                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_fork_local_btn.click(studio_fork_local_ui,
+                                    [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
+                                     st_version, st_show_archived, actor_state], ST_OUT_FULL)
 
             st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
                                  [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
@@ -3215,11 +3546,22 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                      st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL)
             st_figure_replace_btn.click(studio_replace_figure_ui,
                                         [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
-                                         st_version, st_figure_replace_file, st_show_archived, actor_state], ST_OUT_FULL)
+                                         st_version, st_figure_replace_file, st_show_archived, actor_state,
+                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL)
             st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
             st_revert_btn.click(studio_revert_ui,
                                 [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
-                                 st_revert_version, st_show_archived, actor_state], ST_OUT_FULL)
+                                 st_revert_version, st_show_archived, actor_state, st_shared_confirmed,
+                                 st_shared_impact_token], ST_OUT_FULL)
+
+            # 4D revision compare -- read-only, no ST_OUT_FULL re-render
+            # (see studio_compare_ui): only st_diff_output changes.
+            st_compare_btn.click(studio_compare_ui,
+                                 [project_state, st_kind, st_id, st_block_type, st_object_ref_id,
+                                  st_version, st_compare_version], [st_diff_output])
+            st_compare_prev_btn.click(studio_compare_prev_ui,
+                                      [project_state, st_kind, st_id, st_block_type, st_object_ref_id, st_version],
+                                      [st_diff_output])
 
             st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
             st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL)

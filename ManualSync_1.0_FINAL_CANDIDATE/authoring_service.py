@@ -50,6 +50,7 @@ executescript(), so nothing here can trip that landmine on itself.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -60,7 +61,7 @@ from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
 
-AUTHORING_SERVICE_BUILD = "0.3.0-authoring-tables-figures-4c-20260903"
+AUTHORING_SERVICE_BUILD = "0.4.0-authoring-reuse-revision-4d-20260903"
 
 # 4C: draft recovery now also covers table/figure editing -- no schema
 # change needed (authoring_drafts.kind has no CHECK constraint), just
@@ -135,10 +136,13 @@ class ArchivedObjectError(Exception):
 
 class SharedObjectError(Exception):
     """4C: raised when a save/revert targets a table or figure referenced
-    by more than one content_blocks row. Reuse-aware editing (fork a local
-    copy vs. update every occurrence, with an impact-map UX) is explicitly
-    4D scope -- until then, a shared object is fail-closed: never silently
-    saved as a global edit no one asked for."""
+    by more than one content_blocks row, and the caller has not passed
+    confirm_shared=True. 4D: this is no longer a dead end -- the caller has
+    two ways past it, both explicit and audited: retry with
+    confirm_shared=True ('Aggiorna ovunque', see _guard_table_or_figure_
+    editable) or fork_table_local()/fork_figure_local() ('Crea una copia
+    locale'). Until one of those is chosen, fail-closed: never silently
+    save a global edit no one asked for."""
 
 
 class MissingAssetError(Exception):
@@ -149,8 +153,19 @@ class MissingAssetError(Exception):
 
 
 _SHARED_OBJECT_MESSAGE = (
-    "Questo elemento è riutilizzato in più punti. La modifica condivisa sarà gestita nella fase "
-    "Reuse-aware authoring."
+    "Questo elemento è utilizzato in più punti. Scegli come procedere: «Aggiorna ovunque» oppure "
+    "«Crea una copia locale»."
+)
+
+# 4D integrity gate: a save/revert confirmed via 'Aggiorna ovunque' is only
+# ever safe if the reference SET it is about to apply to is exactly the one
+# the user actually previewed -- expected_version alone does not catch a
+# block being added to or removed from that set between the preview and
+# the Save click (the object's own version can stay identical while its
+# reference set changes). See get_reuse_impact()'s "impact_token" and
+# _guard_table_or_figure_editable()'s confirm_shared branch.
+_IMPACT_DRIFT_MESSAGE = (
+    "Gli utilizzi di questo elemento sono cambiati dopo l'anteprima. Riapri il confronto prima di salvare."
 )
 
 
@@ -1013,6 +1028,34 @@ class AuthoringService:
             })
         return out
 
+    def get_topic_version(self, topic_id: str, version: int) -> dict[str, Any]:
+        """4D: full historical content of one topic version (title/body),
+        needed to actually compute a diff between two versions --
+        topic_history() above only returns summary fields for the history
+        list, by design."""
+        row = self.conn.execute(
+            "SELECT * FROM topic_versions WHERE topic_id=? AND version=?", (topic_id, int(version))
+        ).fetchone()
+        if not row:
+            raise KeyError((topic_id, version))
+        return {
+            "topic_id": topic_id, "version": int(row["version"]), "title": row["title"], "body": row["body"],
+            "status": row["status"], "created_at": row["created_at"],
+        }
+
+    def get_block_version(self, block_id: str, version: int) -> dict[str, Any]:
+        """4D: full historical content of one text-block version (see
+        get_topic_version for the identical rationale)."""
+        row = self.conn.execute(
+            "SELECT * FROM block_versions WHERE block_id=? AND version=?", (block_id, int(version))
+        ).fetchone()
+        if not row:
+            raise KeyError((block_id, version))
+        return {
+            "block_id": block_id, "version": int(row["version"]), "text": row["text_content"],
+            "block_type": row["block_type"], "status": row["status"], "created_at": row["created_at"],
+        }
+
     def _actor_for_version(self, object_type: str, object_id: str, version: int) -> str:
         for row in self.conn.execute(
             """SELECT actor, detail_json FROM audit_events
@@ -1071,7 +1114,100 @@ class AuthoringService:
         ).fetchone()
         return int(row["c"])
 
-    def _guard_table_or_figure_editable(self, object_type: str, object_id: str) -> None:
+    def get_reuse_impact(self, object_type: str, object_id: str) -> dict[str, Any]:
+        """4D: block-level-precise reuse impact for the shared-object
+        decision UX -- distinct from repo.impact_map_industrial(), which is
+        topic/publication-ROW granularity and advisory-only (the advanced-
+        mode 'where is this reused' listing). This is the primitive that
+        actually decides is_shared / drives the 'Aggiorna ovunque' vs
+        'Crea una copia locale' choice, so it must count the real
+        content_blocks references (the same fact _reference_count already
+        computes for the fail-closed guard), never the over-counted
+        topic/publication rows a topic assembled into two publications
+        would otherwise produce.
+
+        4D Integrity Gate (component scope decision, Option 1): also
+        accepts object_type="component" -- component/component_ref is
+        genuinely modeled and versioned (ContentRepository.create_
+        component, components/component_versions), so its reuse CAN be
+        reported precisely, block-level, exactly like table/figure. This
+        is read-only reporting only: there is no save_component()/
+        _guard_table_or_figure_editable() path for components (no Studio
+        editor exists to apply 'Aggiorna ovunque'/'Crea una copia locale'
+        to), so is_shared here only ever drives a read-only notice, never
+        a write guard. Scope boundary, documented rather than silently
+        gapped: this counts block-level component_ref references only --
+        a component embedded via an inline {{component:ID}} token directly
+        in a topic body (a distinct, text-substitution reuse mechanism,
+        see resolve_components()/repo.impact_map_industrial(kind=
+        "component")) is NOT counted here, since folding two different
+        reuse mechanisms into one block-reference count would misrepresent
+        both. Inline-token usage stays visible only through the existing
+        advanced-mode impact_summary()."""
+        bt = {"table": "table", "figure": "figure", "component": "component_ref"}[object_type]
+        blocks = self.conn.execute(
+            "SELECT block_id,topic_id,archived_at FROM content_blocks WHERE block_type=? AND object_ref_id=? ORDER BY block_id",
+            (bt, object_id),
+        ).fetchall()
+        block_refs: list[dict[str, Any]] = []
+        topic_ids_seen: list[str] = []
+        archived_reference_count = 0
+        for b in blocks:
+            topic = self.conn.execute("SELECT title FROM topics WHERE topic_id=?", (b["topic_id"],)).fetchone()
+            topic_title = topic["title"] if topic else b["topic_id"]
+            archived = bool(b["archived_at"])
+            if archived:
+                archived_reference_count += 1
+            block_refs.append({
+                "block_id": b["block_id"], "topic_id": b["topic_id"], "topic_title": topic_title,
+                "archived": archived,
+            })
+            if b["topic_id"] not in topic_ids_seen:
+                topic_ids_seen.append(b["topic_id"])
+        topic_title_by_id = {br["topic_id"]: br["topic_title"] for br in block_refs}
+        topics = [{"topic_id": tid, "title": topic_title_by_id.get(tid, tid)} for tid in topic_ids_seen]
+        publications: list[dict[str, str]] = []
+        seen_pubs: set[str] = set()
+        for tid in topic_ids_seen:
+            for p in self.conn.execute(
+                """SELECT p.publication_id,p.title FROM publication_topics pt
+                   JOIN publications p ON p.publication_id=pt.publication_id WHERE pt.topic_id=?""",
+                (tid,),
+            ):
+                if p["publication_id"] not in seen_pubs:
+                    seen_pubs.add(p["publication_id"])
+                    publications.append({"publication_id": p["publication_id"], "title": p["title"]})
+        table_or_figure = {"table": "structured_tables", "figure": "figures", "component": "components"}[object_type]
+        id_col = {"table": "table_id", "figure": "figure_id", "component": "component_id"}[object_type]
+        obj_row = self.conn.execute(
+            f"SELECT source_refs_json,version FROM {table_or_figure} WHERE {id_col}=?", (object_id,)
+        ).fetchone()
+        source_refs = _load_json(obj_row["source_refs_json"], []) if obj_row else []
+        version = int(obj_row["version"]) if obj_row else None
+        reference_count = len(block_refs)
+        # Deterministic snapshot of exactly what the user is about to see:
+        # object version + the EXACT sorted set of referencing block_ids
+        # (archived ones included -- _reference_count already counts them
+        # too, so the token must track the same population it gates).
+        # Session-only, never persisted: recomputed fresh on every guard
+        # check against live DB state, so a stale token can never match
+        # once anything in this snapshot has actually changed.
+        token_payload = _json({
+            "object_type": object_type, "object_id": object_id, "version": version,
+            "block_ids": sorted(br["block_id"] for br in block_refs),
+        })
+        impact_token = hashlib.sha256(token_payload.encode("utf-8")).hexdigest()
+        return {
+            "object_type": object_type, "object_id": object_id, "version": version,
+            "reference_count": reference_count,
+            "is_shared": reference_count > 1, "block_refs": block_refs, "topics": topics,
+            "publications": publications, "archived_reference_count": archived_reference_count,
+            "source_refs": source_refs, "impact_token": impact_token,
+        }
+
+    def _guard_table_or_figure_editable(self, object_type: str, object_id: str, *,
+                                        confirm_shared: bool = False,
+                                        expected_impact_token: str | None = None) -> None:
         """Shared by save/revert: archived-referencing-block check first
         (an archived object being edited at all is the more surprising/
         dangerous case), then the shared-object guard. Called from inside
@@ -1079,15 +1215,42 @@ class AuthoringService:
         to that block's own `except Exception: self.conn.rollback(); raise`
         -- the same pattern every early-exit check elsewhere in this file
         already relies on (a rollback() with no active transaction is a
-        proven-safe no-op here, not a second, redundant one)."""
+        proven-safe no-op here, not a second, redundant one).
+
+        4D: confirm_shared=True is the ONLY way past the shared-object
+        guard -- it is how 'Aggiorna ovunque' becomes an explicit,
+        deliberate, audited override rather than a removal of the fail-
+        closed gate. The caller (save_table/save_figure/revert_*) is
+        responsible for recording that decision in the audit trail; this
+        guard only decides whether to raise.
+
+        4D integrity gate: confirm_shared=True is NOT itself sufficient --
+        expected_impact_token must also match get_reuse_impact()'s CURRENT
+        token (object version + exact sorted reference-block-id set),
+        re-read live inside this same guard call. This closes a real gap
+        expected_version alone missed: the object's own version can stay
+        identical while a block is added to or removed from its reference
+        set between the user's preview and the Save click, which would
+        otherwise silently apply a global edit to more (or fewer) points
+        than the user actually saw and decided on. Any drift -> fail
+        closed, same SharedObjectError channel, no partial write."""
         block = self._referencing_block(object_type, object_id)
         if block is not None and block["archived_at"]:
             label = "tabella" if object_type == "table" else "figura"
             raise ArchivedObjectError(
                 f"Questa {label} è collegata a un blocco archiviato: ripristina il blocco prima di modificarla."
             )
-        if self._reference_count(object_type, object_id) > 1:
+        if self._reference_count(object_type, object_id) > 1 and not confirm_shared:
             raise SharedObjectError(_SHARED_OBJECT_MESSAGE)
+        if confirm_shared:
+            if not expected_impact_token:
+                raise ValueError(
+                    "confirm_shared=True richiede expected_impact_token: rileggi get_reuse_impact() "
+                    "prima di salvare (non è mai sicuro presumere che l'impatto non sia cambiato)."
+                )
+            current_token = self.get_reuse_impact(object_type, object_id)["impact_token"]
+            if expected_impact_token != current_token:
+                raise SharedObjectError(_IMPACT_DRIFT_MESSAGE)
 
     def _project_dir(self) -> Path:
         return Path(self.repo.path).parent
@@ -1117,7 +1280,8 @@ class AuthoringService:
 
     def save_table(self, table_id: str, *, title: str | None = None, caption: str | None = None,
                    columns: list[str] | None = None, rows: list[list[Any]] | None = None,
-                   header_rows: int | None = None, expected_version: int, actor: str) -> dict[str, Any]:
+                   header_rows: int | None = None, expected_version: int, actor: str,
+                   confirm_shared: bool = False, expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per salvare una tabella.")
@@ -1130,7 +1294,9 @@ class AuthoringService:
             if not row:
                 self.conn.rollback()
                 raise KeyError(table_id)
-            self._guard_table_or_figure_editable("table", table_id)
+            self._guard_table_or_figure_editable("table", table_id, confirm_shared=confirm_shared,
+                                                 expected_impact_token=expected_impact_token)
+            reference_count = self._reference_count("table", table_id)
             new_title = row["title"] if title is None else title.strip()
             new_caption = row["caption"] if caption is None else caption.strip()
             new_columns = _load_json(row["columns_json"], []) if columns is None else [str(c) for c in columns]
@@ -1159,9 +1325,12 @@ class AuthoringService:
                  new_header_rows, new_status, condition, source_refs, now),
             )
             invalidated = self._invalidate_open_review_if_edited("table", table_id, previous_status, new_status, actor)
-            self.repo.audit_event("table", table_id, "AUTHORING_SAVE", actor,
-                                  {"from_version": int(expected_version), "to_version": new_version,
-                                   "previous_status": previous_status, "new_status": new_status})
+            save_detail = {"from_version": int(expected_version), "to_version": new_version,
+                           "previous_status": previous_status, "new_status": new_status}
+            if reference_count > 1:
+                save_detail["decision"] = "shared_update"
+                save_detail["impact_count"] = reference_count
+            self.repo.audit_event("table", table_id, "AUTHORING_SAVE", actor, save_detail)
             self._delete_draft("table", table_id)
             self.conn.commit()
         except Exception:
@@ -1224,7 +1393,9 @@ class AuthoringService:
             raise
         return {"table_id": table_id, "block_id": block_id, "topic_id": topic_id, "position": position}
 
-    def revert_table_to_version(self, table_id: str, version: int, *, actor: str) -> dict[str, Any]:
+    def revert_table_to_version(self, table_id: str, version: int, *, actor: str,
+                                confirm_shared: bool = False,
+                                expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per un revert.")
@@ -1235,7 +1406,9 @@ class AuthoringService:
             if not live:
                 self.conn.rollback()
                 raise KeyError(table_id)
-            self._guard_table_or_figure_editable("table", table_id)
+            self._guard_table_or_figure_editable("table", table_id, confirm_shared=confirm_shared,
+                                                 expected_impact_token=expected_impact_token)
+            reference_count = self._reference_count("table", table_id)
             hist = self.conn.execute(
                 "SELECT * FROM structured_table_versions WHERE table_id=? AND version=?", (table_id, int(version))
             ).fetchone()
@@ -1262,9 +1435,12 @@ class AuthoringService:
                  hist["header_rows"], new_status, hist["condition_json"], hist["source_refs_json"], now),
             )
             self._invalidate_open_review_if_edited("table", table_id, previous_status, new_status, actor)
-            self.repo.audit_event("table", table_id, "REVERT_TO_VERSION", actor,
-                                  {"reverted_from_version": int(live["version"]),
-                                   "reverted_to_content_of_version": int(version), "new_version": new_version})
+            revert_detail = {"reverted_from_version": int(live["version"]),
+                             "reverted_to_content_of_version": int(version), "new_version": new_version}
+            if reference_count > 1:
+                revert_detail["decision"] = "shared_update"
+                revert_detail["impact_count"] = reference_count
+            self.repo.audit_event("table", table_id, "REVERT_TO_VERSION", actor, revert_detail)
             self._delete_draft("table", table_id)
             self.conn.commit()
         except Exception:
@@ -1286,11 +1462,125 @@ class AuthoringService:
             })
         return out
 
+    def get_table_version(self, table_id: str, version: int) -> dict[str, Any]:
+        """4D: full historical content of one table version (columns/rows/
+        header_rows), needed to actually compute a diff between two
+        versions -- table_history() above only returns summary fields
+        (title/caption/status/created_at) for the history list, by
+        design."""
+        row = self.conn.execute(
+            "SELECT * FROM structured_table_versions WHERE table_id=? AND version=?", (table_id, int(version))
+        ).fetchone()
+        if not row:
+            raise KeyError((table_id, version))
+        return {
+            "table_id": table_id, "version": int(row["version"]), "title": row["title"], "caption": row["caption"],
+            "columns": _load_json(row["columns_json"], []), "rows": _load_json(row["rows_json"], []),
+            "header_rows": int(row["header_rows"]), "status": row["status"], "created_at": row["created_at"],
+        }
+
+    def fork_table_local(self, table_id: str, *, block_id: str, expected_version: int, actor: str) -> dict[str, Any]:
+        """4D 'Crea una copia locale': atomically replaces ONE block's
+        reference to a shared table with a brand-new, independent table
+        that starts as a copy of the shared table's current content. Only
+        the given block is rewired -- every other block still referencing
+        the original table is completely untouched, which is the entire
+        point of this decision (as opposed to 'Aggiorna ovunque').
+
+        True atomicity (single BEGIN IMMEDIATE, raw INSERTs) is required
+        here, unlike create_table_in_topic()'s accepted two-phase pattern:
+        repo.create_table() commits internally, which would break this
+        operation's "completes as one logical operation" requirement, so
+        it is deliberately NOT used here.
+
+        Fails closed (VersionConflictError, with an explicit Italian
+        message) if the table's live version no longer matches
+        expected_version at fork time -- never fork a version different
+        from the one the user actually previewed the impact of."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare una copia locale.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = self.conn.execute("SELECT * FROM structured_tables WHERE table_id=?", (table_id,)).fetchone()
+            if not live:
+                self.conn.rollback()
+                raise KeyError(table_id)
+            if int(live["version"]) != int(expected_version):
+                self.conn.rollback()
+                raise VersionConflictError(
+                    table_id, expected_version,
+                    detail="L'elemento è cambiato dopo l'anteprima dell'impatto. Riapri il confronto prima di creare la copia locale.",
+                )
+            block = self.conn.execute("SELECT * FROM content_blocks WHERE block_id=?", (block_id,)).fetchone()
+            if not block:
+                self.conn.rollback()
+                raise KeyError(block_id)
+            if block["block_type"] != "table" or block["object_ref_id"] != table_id:
+                self.conn.rollback()
+                raise ValueError(f"Il blocco {block_id} non referenzia la tabella {table_id}.")
+            if block["archived_at"]:
+                self.conn.rollback()
+                raise ArchivedObjectError(
+                    f"Il blocco {block_id} è archiviato: ripristinalo prima di creare una copia locale."
+                )
+
+            new_table_id = f"TBL-{uuid4().hex[:10].upper()}"
+            while self.conn.execute("SELECT 1 FROM structured_tables WHERE table_id=?", (new_table_id,)).fetchone():
+                new_table_id = f"TBL-{uuid4().hex[:10].upper()}"
+            self.conn.execute(
+                """INSERT INTO structured_tables(table_id,title,caption,columns_json,rows_json,header_rows,
+                   status,version,condition_json,source_refs_json,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,'Draft',1,?,?,?,?)""",
+                (new_table_id, live["title"], live["caption"], live["columns_json"], live["rows_json"],
+                 live["header_rows"], live["condition_json"], live["source_refs_json"], now, now),
+            )
+            self.conn.execute(
+                """INSERT INTO structured_table_versions(table_id,version,title,caption,columns_json,rows_json,
+                   header_rows,status,condition_json,source_refs_json,created_at)
+                   VALUES(?,1,?,?,?,?,?,'Draft',?,?,?)""",
+                (new_table_id, live["title"], live["caption"], live["columns_json"], live["rows_json"],
+                 live["header_rows"], live["condition_json"], live["source_refs_json"], now),
+            )
+            new_block_version = int(block["version"]) + 1
+            cur = self.conn.execute(
+                "UPDATE content_blocks SET object_ref_id=?,version=?,updated_at=? WHERE block_id=? AND version=?",
+                (new_table_id, new_block_version, now, block_id, int(block["version"])),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(block_id, block["version"])
+            self.conn.execute(
+                """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,
+                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (block_id, new_block_version, block["topic_id"], block["block_type"], int(block["position"]),
+                 block["text_content"], new_table_id, block["status"], block["condition_json"],
+                 block["source_refs_json"], block["evidence_status"], now),
+            )
+            self.repo.audit_event("table", new_table_id, "AUTHORING_FORK_CREATED", actor,
+                                  {"forked_from_object_id": table_id, "forked_from_version": int(live["version"]),
+                                   "source_block_id": block_id})
+            self.repo.audit_event("table", table_id, "AUTHORING_FORKED", actor,
+                                  {"new_object_id": new_table_id, "source_block_id": block_id})
+            self.repo.audit_event("block", block_id, "REWIRED_TO_LOCAL_FORK", actor,
+                                  {"from_object_id": table_id, "to_object_id": new_table_id})
+            self._delete_draft("table", table_id)
+            self._delete_draft("block", block_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"table_id": new_table_id, "block_id": block_id, "forked_from_object_id": table_id,
+                "forked_from_version": int(expected_version)}
+
     # ---- figure save/create/replace ----
 
     def save_figure(self, figure_id: str, *, title: str | None = None, caption: str | None = None,
                     alt_text: str | None = None, file_path: str | None = None,
-                    expected_version: int, actor: str) -> dict[str, Any]:
+                    expected_version: int, actor: str, confirm_shared: bool = False,
+                    expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per salvare una figura.")
@@ -1301,7 +1591,9 @@ class AuthoringService:
             if not row:
                 self.conn.rollback()
                 raise KeyError(figure_id)
-            self._guard_table_or_figure_editable("figure", figure_id)
+            self._guard_table_or_figure_editable("figure", figure_id, confirm_shared=confirm_shared,
+                                                 expected_impact_token=expected_impact_token)
+            reference_count = self._reference_count("figure", figure_id)
             new_title = row["title"] if title is None else title.strip()
             new_caption = row["caption"] if caption is None else caption.strip()
             new_alt = row["alt_text"] if alt_text is None else alt_text.strip()
@@ -1326,10 +1618,13 @@ class AuthoringService:
                 (figure_id, new_version, new_title, new_caption, new_path, new_alt, new_status, condition, source_refs, now),
             )
             invalidated = self._invalidate_open_review_if_edited("figure", figure_id, previous_status, new_status, actor)
-            self.repo.audit_event("figure", figure_id, "AUTHORING_SAVE", actor,
-                                  {"from_version": int(expected_version), "to_version": new_version,
-                                   "previous_status": previous_status, "new_status": new_status,
-                                   "file_path_changed": file_path is not None})
+            save_detail = {"from_version": int(expected_version), "to_version": new_version,
+                           "previous_status": previous_status, "new_status": new_status,
+                           "file_path_changed": file_path is not None}
+            if reference_count > 1:
+                save_detail["decision"] = "shared_update"
+                save_detail["impact_count"] = reference_count
+            self.repo.audit_event("figure", figure_id, "AUTHORING_SAVE", actor, save_detail)
             self._delete_draft("figure", figure_id)
             self.conn.commit()
         except Exception:
@@ -1339,7 +1634,8 @@ class AuthoringService:
                 "previous_status": previous_status, "review_tasks_invalidated": invalidated}
 
     def replace_figure_image(self, figure_id: str, *, source_file_path: str | Path,
-                             expected_version: int, actor: str) -> dict[str, Any]:
+                             expected_version: int, actor: str, confirm_shared: bool = False,
+                             expected_impact_token: str | None = None) -> dict[str, Any]:
         """Materializes the new file FIRST (fail-closed: if the copy itself
         fails, nothing about the figure has changed at all), then does a
         normal CAS save_figure() with only file_path set -- caption/alt/
@@ -1348,7 +1644,13 @@ class AuthoringService:
         shared/missing), the live figure row is guaranteed untouched
         (save_figure() rolled back its own transaction before raising) --
         the only remaining cleanup is the orphaned copy on disk, deleted
-        here so no unclassified asset is left behind."""
+        here so no unclassified asset is left behind.
+
+        confirm_shared/expected_impact_token forward straight through to
+        save_figure() -- image replacement is exactly the kind of shared-
+        object mutation 'Aggiorna ovunque' must be able to authorize, and
+        it is subject to the identical impact-drift check as a caption/
+        alt-text edit (see save_figure/_guard_table_or_figure_editable)."""
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per sostituire un'immagine.")
@@ -1357,7 +1659,8 @@ class AuthoringService:
         materialized_path = self._materialize_uploaded_asset(source_file_path)
         try:
             result = self.save_figure(figure_id, file_path=str(materialized_path),
-                                      expected_version=expected_version, actor=actor)
+                                      expected_version=expected_version, actor=actor,
+                                      confirm_shared=confirm_shared, expected_impact_token=expected_impact_token)
         except Exception:
             materialized_path.unlink(missing_ok=True)
             raise
@@ -1423,7 +1726,9 @@ class AuthoringService:
         return {"figure_id": figure_id, "block_id": block_id, "topic_id": topic_id, "position": position,
                 "file_path": str(materialized_path)}
 
-    def revert_figure_to_version(self, figure_id: str, version: int, *, actor: str) -> dict[str, Any]:
+    def revert_figure_to_version(self, figure_id: str, version: int, *, actor: str,
+                                 confirm_shared: bool = False,
+                                 expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per un revert.")
@@ -1434,7 +1739,9 @@ class AuthoringService:
             if not live:
                 self.conn.rollback()
                 raise KeyError(figure_id)
-            self._guard_table_or_figure_editable("figure", figure_id)
+            self._guard_table_or_figure_editable("figure", figure_id, confirm_shared=confirm_shared,
+                                                 expected_impact_token=expected_impact_token)
+            reference_count = self._reference_count("figure", figure_id)
             hist = self.conn.execute(
                 "SELECT * FROM figure_versions WHERE figure_id=? AND version=?", (figure_id, int(version))
             ).fetchone()
@@ -1468,9 +1775,12 @@ class AuthoringService:
                  new_status, hist["condition_json"], hist["source_refs_json"], now),
             )
             self._invalidate_open_review_if_edited("figure", figure_id, previous_status, new_status, actor)
-            self.repo.audit_event("figure", figure_id, "REVERT_TO_VERSION", actor,
-                                  {"reverted_from_version": int(live["version"]),
-                                   "reverted_to_content_of_version": int(version), "new_version": new_version})
+            revert_detail = {"reverted_from_version": int(live["version"]),
+                             "reverted_to_content_of_version": int(version), "new_version": new_version}
+            if reference_count > 1:
+                revert_detail["decision"] = "shared_update"
+                revert_detail["impact_count"] = reference_count
+            self.repo.audit_event("figure", figure_id, "REVERT_TO_VERSION", actor, revert_detail)
             self._delete_draft("figure", figure_id)
             self.conn.commit()
         except Exception:
@@ -1492,3 +1802,104 @@ class AuthoringService:
                 "actor": self._actor_for_version("figure", figure_id, int(r["version"])),
             })
         return out
+
+    def get_figure_version(self, figure_id: str, version: int) -> dict[str, Any]:
+        """4D: full historical content of one figure version, needed to
+        actually compute a diff between two versions (see get_table_version
+        for the identical rationale)."""
+        row = self.conn.execute(
+            "SELECT * FROM figure_versions WHERE figure_id=? AND version=?", (figure_id, int(version))
+        ).fetchone()
+        if not row:
+            raise KeyError((figure_id, version))
+        return {
+            "figure_id": figure_id, "version": int(row["version"]), "title": row["title"],
+            "caption": row["caption"], "file_path": row["file_path"], "alt_text": row["alt_text"],
+            "status": row["status"], "created_at": row["created_at"],
+        }
+
+    def fork_figure_local(self, figure_id: str, *, block_id: str, expected_version: int,
+                          actor: str) -> dict[str, Any]:
+        """4D 'Crea una copia locale' for a shared figure -- same atomicity/
+        TOCTOU/audit-trail shape as fork_table_local() above. Reuses the
+        SAME file_path string as the original (no byte copy): safe because
+        neither the original nor the fork ever mutates existing asset bytes
+        in place -- only replace_figure_image() (via
+        _materialize_uploaded_asset) ever creates a brand-new file on
+        disk."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare una copia locale.")
+        now = _now()
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = self.conn.execute("SELECT * FROM figures WHERE figure_id=?", (figure_id,)).fetchone()
+            if not live:
+                self.conn.rollback()
+                raise KeyError(figure_id)
+            if int(live["version"]) != int(expected_version):
+                self.conn.rollback()
+                raise VersionConflictError(
+                    figure_id, expected_version,
+                    detail="L'elemento è cambiato dopo l'anteprima dell'impatto. Riapri il confronto prima di creare la copia locale.",
+                )
+            block = self.conn.execute("SELECT * FROM content_blocks WHERE block_id=?", (block_id,)).fetchone()
+            if not block:
+                self.conn.rollback()
+                raise KeyError(block_id)
+            if block["block_type"] != "figure" or block["object_ref_id"] != figure_id:
+                self.conn.rollback()
+                raise ValueError(f"Il blocco {block_id} non referenzia la figura {figure_id}.")
+            if block["archived_at"]:
+                self.conn.rollback()
+                raise ArchivedObjectError(
+                    f"Il blocco {block_id} è archiviato: ripristinalo prima di creare una copia locale."
+                )
+
+            new_figure_id = f"FIG-{uuid4().hex[:10].upper()}"
+            while self.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (new_figure_id,)).fetchone():
+                new_figure_id = f"FIG-{uuid4().hex[:10].upper()}"
+            self.conn.execute(
+                """INSERT INTO figures(figure_id,title,caption,file_path,alt_text,status,version,
+                   condition_json,source_refs_json,created_at,updated_at)
+                   VALUES(?,?,?,?,?,'Draft',1,?,?,?,?)""",
+                (new_figure_id, live["title"], live["caption"], live["file_path"], live["alt_text"],
+                 live["condition_json"], live["source_refs_json"], now, now),
+            )
+            self.conn.execute(
+                """INSERT INTO figure_versions(figure_id,version,title,caption,file_path,alt_text,status,
+                   condition_json,source_refs_json,created_at) VALUES(?,1,?,?,?,?,'Draft',?,?,?)""",
+                (new_figure_id, live["title"], live["caption"], live["file_path"], live["alt_text"],
+                 live["condition_json"], live["source_refs_json"], now),
+            )
+            new_block_version = int(block["version"]) + 1
+            cur = self.conn.execute(
+                "UPDATE content_blocks SET object_ref_id=?,version=?,updated_at=? WHERE block_id=? AND version=?",
+                (new_figure_id, new_block_version, now, block_id, int(block["version"])),
+            )
+            if cur.rowcount == 0:
+                self.conn.rollback()
+                raise VersionConflictError(block_id, block["version"])
+            self.conn.execute(
+                """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,
+                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (block_id, new_block_version, block["topic_id"], block["block_type"], int(block["position"]),
+                 block["text_content"], new_figure_id, block["status"], block["condition_json"],
+                 block["source_refs_json"], block["evidence_status"], now),
+            )
+            self.repo.audit_event("figure", new_figure_id, "AUTHORING_FORK_CREATED", actor,
+                                  {"forked_from_object_id": figure_id, "forked_from_version": int(live["version"]),
+                                   "source_block_id": block_id})
+            self.repo.audit_event("figure", figure_id, "AUTHORING_FORKED", actor,
+                                  {"new_object_id": new_figure_id, "source_block_id": block_id})
+            self.repo.audit_event("block", block_id, "REWIRED_TO_LOCAL_FORK", actor,
+                                  {"from_object_id": figure_id, "to_object_id": new_figure_id})
+            self._delete_draft("figure", figure_id)
+            self._delete_draft("block", block_id)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return {"figure_id": new_figure_id, "block_id": block_id, "forked_from_object_id": figure_id,
+                "forked_from_version": int(expected_version)}

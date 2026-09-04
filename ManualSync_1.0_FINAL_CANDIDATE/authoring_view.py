@@ -14,6 +14,7 @@ into one screen's worth of data.
 """
 from __future__ import annotations
 
+import difflib
 import json
 from pathlib import Path
 from typing import Any
@@ -99,6 +100,20 @@ def _figure_preview(repo: IndustrialRepository, figure_id: str, *, width: int = 
     return _block_preview(label, width=width) if label else "(figura senza didascalia)"
 
 
+def _reuse_reference_count(repo: IndustrialRepository, block_type: str, object_ref_id: str) -> int:
+    """4D: same block-level-precise count as AuthoringService._reference_count
+    (duplicated here, not imported, because this is a read-only repo-level
+    query used purely for the outline's '· riutilizzata N volte' presentation
+    suffix -- authoring_view.py never imports AuthoringService's private
+    helpers, and the outline is built from `repo` alone, no open service
+    instance)."""
+    row = repo.conn.execute(
+        "SELECT COUNT(*) AS c FROM content_blocks WHERE block_type=? AND object_ref_id=?",
+        (block_type, object_ref_id),
+    ).fetchone()
+    return int(row["c"])
+
+
 def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:
     """Flat, ordered rows: one per active topic (or archived too, if
     requested), each immediately followed by its own blocks in the same
@@ -135,12 +150,50 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
             editable_text = bt in EDITABLE_TEXT_BLOCK_TYPES
             has_dedicated_editor = bt in DEDICATED_EDITOR_BLOCK_TYPES
             editable = editable_text or has_dedicated_editor
+            # 4D bug fix (found during browser stabilization): for a table/
+            # figure block, content_blocks.version is the WRAPPING block's
+            # own structural counter (bumped by e.g. fork_table_local's
+            # rewire) -- NOT the table/figure object's real content
+            # version that the editor header, table_history/figure_
+            # history, and revert all operate on. Showing the block's
+            # version here was silently misleading: right after a fork,
+            # a freshly-created (content version 1) table could show
+            # "Versione 2" in this outline merely because the wrapping
+            # block had been rewired once. Look up the OBJECT's own
+            # version for table/figure rows so this column always means
+            # the same thing everywhere in the UI.
+            display_version = int(b["version"])
             if bt == "table":
                 preview = _table_preview(repo, b["object_ref_id"])
+                rc = _reuse_reference_count(repo, "table", b["object_ref_id"])
+                if rc > 1:
+                    preview = f"{preview} · riutilizzata {rc} volte"
+                trow = repo.conn.execute("SELECT version FROM structured_tables WHERE table_id=?", (b["object_ref_id"],)).fetchone()
+                if trow is not None:
+                    display_version = int(trow["version"])
             elif bt == "figure":
                 preview = _figure_preview(repo, b["object_ref_id"])
+                rc = _reuse_reference_count(repo, "figure", b["object_ref_id"])
+                if rc > 1:
+                    preview = f"{preview} · riutilizzata {rc} volte"
+                frow = repo.conn.execute("SELECT version FROM figures WHERE figure_id=?", (b["object_ref_id"],)).fetchone()
+                if frow is not None:
+                    display_version = int(frow["version"])
             elif editable_text:
                 preview = _block_preview(b["text_content"])
+            elif bt == "component_ref":
+                # 4D Blocker B (component scope decision, Option 1): no
+                # Studio editor exists for components, so this NEVER
+                # becomes 'editable' -- the "modifica disponibile nel
+                # prossimo incremento" suffix stays. But the reuse count
+                # IS real and worth surfacing here exactly like table/
+                # figure, since it's just as easy for a writer to
+                # accidentally treat a shared component_ref as if it were
+                # private to one topic.
+                preview = block_type_label(bt, editable=False)
+                rc = _reuse_reference_count(repo, "component_ref", b["object_ref_id"])
+                if rc > 1:
+                    preview = f"{preview} · riutilizzata {rc} volte"
             else:
                 preview = block_type_label(bt, editable=False)
             rows.append({
@@ -148,7 +201,7 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
                 "object_ref_id": b["object_ref_id"],
                 "type_label": block_type_label(bt, editable=editable),
                 "preview": preview,
-                "status": b["status"], "status_label": status_label(b["status"]), "version": int(b["version"]),
+                "status": b["status"], "status_label": status_label(b["status"]), "version": display_version,
                 "archived": bool(b["archived_at"]), "editable": editable,
                 "has_dedicated_editor": has_dedicated_editor,
             })
@@ -246,6 +299,7 @@ def table_detail(service: AuthoringService, table_id: str) -> dict[str, Any]:
     data = service.load_table_for_edit(table_id)
     draft = data.get("draft")
     open_review = service.open_review_for("table", table_id)
+    impact = service.get_reuse_impact("table", table_id)
     return {
         **data,
         "status_label": status_label(data["status"]),
@@ -256,6 +310,8 @@ def table_detail(service: AuthoringService, table_id: str) -> dict[str, Any]:
         "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
         "is_shared": data["reference_count"] > 1,
         "shared_notice": (_SHARED_OBJECT_MESSAGE if data["reference_count"] > 1 else ""),
+        "reuse_impact": impact,
+        "reuse_impact_summary": reuse_impact_summary(impact),
     }
 
 
@@ -263,6 +319,7 @@ def figure_detail(service: AuthoringService, figure_id: str) -> dict[str, Any]:
     data = service.load_figure_for_edit(figure_id)
     draft = data.get("draft")
     open_review = service.open_review_for("figure", figure_id)
+    impact = service.get_reuse_impact("figure", figure_id)
     return {
         **data,
         "status_label": status_label(data["status"]),
@@ -273,6 +330,8 @@ def figure_detail(service: AuthoringService, figure_id: str) -> dict[str, Any]:
         "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
         "is_shared": data["reference_count"] > 1,
         "shared_notice": (_SHARED_OBJECT_MESSAGE if data["reference_count"] > 1 else ""),
+        "reuse_impact": impact,
+        "reuse_impact_summary": reuse_impact_summary(impact),
     }
 
 
@@ -318,6 +377,161 @@ def impact_summary(repo: IndustrialRepository, object_type: str, object_id: str)
         if v and v not in seen:
             seen.append(str(v))
     return seen
+
+
+def reuse_impact_summary(impact: dict[str, Any]) -> dict[str, Any]:
+    """4D: formats AuthoringService.get_reuse_impact()'s raw dict into the
+    exact panel text the shared-object decision UX needs -- a usage-count
+    line and a readable, deduplicated list of where the object is used.
+    Purely presentation over the service's own block-level-precise
+    primitive; never a second impact-tracing implementation."""
+    count = int(impact.get("reference_count") or 0)
+    topics = impact.get("topics") or []
+    topic_lines = [f"· {t['title']}" for t in topics]
+    archived = int(impact.get("archived_reference_count") or 0)
+    usage_line = "Utilizzato in 1 punto." if count == 1 else f"Utilizzato in {count} punti."
+    notes = []
+    if archived:
+        notes.append(
+            "1 di questi riferimenti si trova in un blocco archiviato." if archived == 1
+            else f"{archived} di questi riferimenti si trovano in blocchi archiviati."
+        )
+    return {
+        "is_shared": bool(impact.get("is_shared")),
+        "header": "Questo elemento è utilizzato in più punti." if impact.get("is_shared") else "",
+        "usage_line": usage_line,
+        "topic_lines": topic_lines,
+        "notes": notes,
+    }
+
+
+def diff_text(old: str | None, new: str | None) -> dict[str, Any]:
+    """Word-level diff for topic/text-block revision compare, using the
+    standard-library difflib.SequenceMatcher -- no new dependency. Returns
+    both a segment list (tagged equal/insert/delete, for a highlighted-diff
+    UI) and an Italian human-readable summary."""
+    old_words = (old or "").split()
+    new_words = (new or "").split()
+    sm = difflib.SequenceMatcher(a=old_words, b=new_words, autojunk=False)
+    added = removed = 0
+    segments: list[dict[str, str]] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            segments.append({"tag": "equal", "text": " ".join(new_words[j1:j2])})
+        elif tag == "insert":
+            segments.append({"tag": "insert", "text": " ".join(new_words[j1:j2])})
+            added += j2 - j1
+        elif tag == "delete":
+            segments.append({"tag": "delete", "text": " ".join(old_words[i1:i2])})
+            removed += i2 - i1
+        elif tag == "replace":
+            segments.append({"tag": "delete", "text": " ".join(old_words[i1:i2])})
+            segments.append({"tag": "insert", "text": " ".join(new_words[j1:j2])})
+            removed += i2 - i1
+            added += j2 - j1
+    if not added and not removed:
+        summary = "Nessuna modifica al testo."
+    else:
+        parts = []
+        if added:
+            parts.append(f"{added} parol{'a' if added == 1 else 'e'} aggiunt{'a' if added == 1 else 'e'}")
+        if removed:
+            parts.append(f"{removed} parol{'a' if removed == 1 else 'e'} rimoss{'a' if removed == 1 else 'e'}")
+        summary = (", ".join(parts) + ".")[0].upper() + (", ".join(parts) + ".")[1:]
+    return {"changed": bool(added or removed), "segments": segments, "words_added": added,
+            "words_removed": removed, "summary": summary}
+
+
+def diff_table(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic, list-order-preserving comparison of two table
+    versions (as returned by AuthoringService.get_table_version /
+    load_table_for_edit): columns added/removed, rows added/removed, and
+    how many individual cells changed between rows that align at the same
+    position in both versions."""
+    old_cols = list(old.get("columns") or [])
+    new_cols = list(new.get("columns") or [])
+    old_rows = list(old.get("rows") or [])
+    new_rows = list(new.get("rows") or [])
+
+    col_sm = difflib.SequenceMatcher(a=old_cols, b=new_cols, autojunk=False)
+    columns_added = columns_removed = 0
+    for tag, i1, i2, j1, j2 in col_sm.get_opcodes():
+        if tag in ("insert", "replace"):
+            columns_added += j2 - j1
+        if tag in ("delete", "replace"):
+            columns_removed += i2 - i1
+
+    old_keys = [json.dumps(r, sort_keys=True, ensure_ascii=False) for r in old_rows]
+    new_keys = [json.dumps(r, sort_keys=True, ensure_ascii=False) for r in new_rows]
+    row_sm = difflib.SequenceMatcher(a=old_keys, b=new_keys, autojunk=False)
+    rows_added = rows_removed = cells_changed = 0
+    for tag, i1, i2, j1, j2 in row_sm.get_opcodes():
+        if tag == "insert":
+            rows_added += j2 - j1
+        elif tag == "delete":
+            rows_removed += i2 - i1
+        elif tag == "replace":
+            n = min(i2 - i1, j2 - j1)
+            for k in range(n):
+                old_r, new_r = old_rows[i1 + k], new_rows[j1 + k]
+                for c in range(max(len(old_r), len(new_r))):
+                    ov = old_r[c] if c < len(old_r) else None
+                    nv = new_r[c] if c < len(new_r) else None
+                    if ov != nv:
+                        cells_changed += 1
+            rows_removed += (i2 - i1) - n
+            rows_added += (j2 - j1) - n
+
+    title_changed = (old.get("title") or "") != (new.get("title") or "")
+    caption_changed = (old.get("caption") or "") != (new.get("caption") or "")
+
+    parts = []
+    if columns_added:
+        parts.append(f"{columns_added} colonn{'a aggiunta' if columns_added == 1 else 'e aggiunte'}")
+    if columns_removed:
+        parts.append(f"{columns_removed} colonn{'a rimossa' if columns_removed == 1 else 'e rimosse'}")
+    if rows_added:
+        parts.append(f"{rows_added} rig{'a aggiunta' if rows_added == 1 else 'he aggiunte'}")
+    if rows_removed:
+        parts.append(f"{rows_removed} rig{'a rimossa' if rows_removed == 1 else 'he rimosse'}")
+    if cells_changed:
+        parts.append(f"{cells_changed} cell{'a modificata' if cells_changed == 1 else 'e modificate'}")
+    if title_changed and caption_changed:
+        parts.append("titolo e didascalia modificati")
+    elif title_changed:
+        parts.append("titolo modificato")
+    elif caption_changed:
+        parts.append("didascalia modificata")
+    changed = bool(parts)
+    summary = ((", ".join(parts) + ".")[0].upper() + (", ".join(parts) + ".")[1:]) if changed \
+        else "Nessuna modifica alla tabella."
+    return {"changed": changed, "columns_added": columns_added, "columns_removed": columns_removed,
+            "rows_added": rows_added, "rows_removed": rows_removed, "cells_changed": cells_changed,
+            "title_changed": title_changed, "caption_changed": caption_changed, "summary": summary}
+
+
+def diff_figure(old: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """Field-level comparison for a figure revision: 'Immagine sostituita'
+    is a far more useful signal for a technical writer than a raw
+    file_path string diff, plus title/caption/alt-text changes."""
+    image_changed = (old.get("file_path") or "") != (new.get("file_path") or "")
+    title_changed = (old.get("title") or "") != (new.get("title") or "")
+    caption_changed = (old.get("caption") or "") != (new.get("caption") or "")
+    alt_changed = (old.get("alt_text") or "") != (new.get("alt_text") or "")
+    parts = []
+    if image_changed:
+        parts.append("Immagine sostituita")
+    if title_changed:
+        parts.append("titolo modificato")
+    if caption_changed:
+        parts.append("didascalia modificata")
+    if alt_changed:
+        parts.append("testo alternativo modificato")
+    changed = bool(parts)
+    summary = ((", ".join(parts) + ".")[0].upper() + (", ".join(parts) + ".")[1:]) if changed \
+        else "Nessuna modifica alla figura."
+    return {"changed": changed, "image_changed": image_changed, "title_changed": title_changed,
+            "caption_changed": caption_changed, "alt_text_changed": alt_changed, "summary": summary}
 
 
 def topic_history_rows(service: AuthoringService, topic_id: str) -> list[dict[str, Any]]:
