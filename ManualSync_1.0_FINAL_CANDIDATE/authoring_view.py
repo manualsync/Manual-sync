@@ -49,6 +49,64 @@ def status_label(status: str) -> str:
     return STATUS_LABELS.get(status, status)
 
 
+def evaluate_summary_text(result: dict[str, Any]) -> str:
+    """Human-language rendering of AuthoringService.evaluate_element_with_
+    profile()'s result for the Studio's 'Valuta contenuto con questo
+    profilo' mini-tool. 4E.1 stabilization: the ORIGINAL wording here --
+    'Escluso: non soddisfa Mercato.' / 'Incluso (soddisfa Mercato).' --
+    was logically correct but read like an evaluator dump (bare dimension
+    names, no sense of the actual mismatch) rather than something a
+    normal technical author would write. This instead names the profile
+    and explains what the content is actually FOR, using result[
+    'condition_description'] (from AuthoringService.describe_condition(),
+    already resolved to human dimension/value NAMES -- never raw ids,
+    never JSON, never operator terminology) that evaluate_element_with_
+    profile() now carries alongside the match/fail/unresolved id lists."""
+    profile_name = result.get("profile_name") or result.get("profile_id") or "il profilo"
+    desc = result.get("condition_description") or {}
+    dims_by_id = {d["dimension_id"]: d for d in desc.get("dimensions", [])}
+
+    def _phrase(ids: list[str]) -> str:
+        parts = []
+        for i in ids:
+            d = dims_by_id.get(i)
+            if not d:
+                continue
+            labels = " o ".join(v["label"] for v in d.get("values", []))
+            parts.append(f"{d['name']} = {labels}")
+        return " · ".join(parts)
+
+    if result.get("unresolved_dimensions"):
+        return "⚠️ Non valutabile — la variante usa un criterio o valore non più disponibile."
+    if result["included"]:
+        matched = _phrase(result.get("matched_dimensions") or [])
+        base = f"✅ Incluso nel profilo «{profile_name}»"
+        return f"{base} — soddisfa {matched}." if matched else f"{base} — nessuna condizione impostata."
+    failed = _phrase(result.get("failed_dimensions") or [])
+    base = f"⛔ Non incluso nel profilo «{profile_name}»"
+    return f"{base} — questo contenuto è destinato a {failed}." if failed else f"{base}."
+
+
+def condition_summary_text(describe: dict[str, Any]) -> str:
+    """Human, non-technical summary from AuthoringService.describe_condition()
+    -- e.g. 'Visibile per: Mercato = EU o UK · Edizione = Service'. Standard
+    mode NEVER shows ids/JSON: only dimension/value NAMES, already resolved
+    by describe_condition(). A condition too complex for the simplified
+    editor to decompile gets an honest "avanzata" message instead of a
+    guessed/wrong summary (4E.1's UX acceptance criterion: never require
+    understanding syntax in standard mode)."""
+    if describe.get("too_complex"):
+        return "Condizione avanzata (non gestibile in modalità standard)."
+    parts = []
+    for dim in describe.get("dimensions", []):
+        labels = " o ".join(v["label"] for v in dim.get("values", []))
+        if labels:
+            parts.append(f"{dim['name']} = {labels}")
+    if not parts:
+        return "Sempre visibile (nessuna condizione)."
+    return "Visibile per: " + " · ".join(parts)
+
+
 def block_type_label(block_type: str, *, editable: bool) -> str:
     base = BLOCK_TYPE_LABELS.get(block_type, block_type)
     return base if editable else base + _NOT_YET_EDITABLE_SUFFIX
@@ -114,7 +172,47 @@ def _reuse_reference_count(repo: IndustrialRepository, block_type: str, object_r
     return int(row["c"])
 
 
-def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:
+_OUTLINE_SUFFIX_MAX_LEN = 40
+
+
+def _compact_condition_suffix(service: AuthoringService | None, condition_json: str | None) -> str:
+    """Compact, human, zero-training outline differentiator -- e.g.
+    ' · Mercato EU', ' · Mercato EU/UK', ' · Mercato EU · Edizione
+    Service'. Two neighboring rows conditioned on different values
+    (e.g. an EU paragraph and a US paragraph) used to both show the
+    exact same generic ' · variante' suffix, making them look identical
+    at a glance -- this shows the actual differentiator instead.
+
+    Falls back to ' · variante' when no service is available to resolve
+    dimension/value NAMES (never shows raw ids) or when the condition is
+    too complex for this simplified renderer to represent compactly, and
+    to a plain count (' · 2 condizioni') when it decompiles fine but has
+    more dimensions than fit on one outline row or would make the label
+    too long -- the full, unambiguous summary is always one click away
+    in the element's own Varianti panel, never lost, only compacted."""
+    if condition_json in (None, "", "{}"):
+        return ""
+    if service is None:
+        return " · variante"
+    try:
+        condition = json.loads(condition_json)
+    except (TypeError, ValueError):
+        return " · variante"
+    desc = service.describe_condition(condition)
+    dims = desc.get("dimensions", [])
+    if desc.get("too_complex") or not dims:
+        return " · variante"
+    if len(dims) > 2:
+        return f" · {len(dims)} condizioni"
+    parts = [f"{d['name']} {'/'.join(v['label'] for v in d['values'])}" for d in dims]
+    suffix = " · " + " · ".join(parts)
+    if len(suffix) > _OUTLINE_SUFFIX_MAX_LEN:
+        return f" · {len(dims)} condizioni"
+    return suffix
+
+
+def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_archived: bool = False,
+                 service: AuthoringService | None = None) -> list[dict[str, Any]]:
     """Flat, ordered rows: one per active topic (or archived too, if
     requested), each immediately followed by its own blocks in the same
     order assemble_structured_publication() would read them. This is the
@@ -140,6 +238,11 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
         rows.append({
             "kind": "topic", "id": tid, "topic_id": tid, "title": t["title"], "status": t["status"],
             "status_label": status_label(t["status"]), "version": int(t["version"]), "archived": archived,
+            # 4E.1: cheap string check (condition_json is canonical JSON, so
+            # "no condition" is always exactly "{}") -- avoids a JSON parse
+            # per outline row just to know whether ANY condition exists.
+            "has_condition": t["condition_json"] not in (None, "", "{}"),
+            "condition_suffix": _compact_condition_suffix(service, t["condition_json"]),
         })
         block_sql = "SELECT * FROM content_blocks WHERE topic_id=?"
         if not include_archived:
@@ -196,6 +299,8 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
                     preview = f"{preview} · riutilizzata {rc} volte"
             else:
                 preview = block_type_label(bt, editable=False)
+            has_condition = b["condition_json"] not in (None, "", "{}")
+            preview = f"{preview}{_compact_condition_suffix(service, b['condition_json'])}"
             rows.append({
                 "kind": "block", "id": b["block_id"], "topic_id": tid, "block_type": bt,
                 "object_ref_id": b["object_ref_id"],
@@ -204,6 +309,7 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
                 "status": b["status"], "status_label": status_label(b["status"]), "version": display_version,
                 "archived": bool(b["archived_at"]), "editable": editable,
                 "has_dedicated_editor": has_dedicated_editor,
+                "has_condition": has_condition,
             })
     return rows
 
@@ -213,8 +319,9 @@ def outline_table(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for r in rows:
         if r["kind"] == "topic":
+            label = r["title"] + r.get("condition_suffix", "")
             out.append({
-                "Elemento": r["title"], "Tipo": "Topic", "Stato": r["status_label"],
+                "Elemento": label, "Tipo": "Topic", "Stato": r["status_label"],
                 "Versione": r["version"], "Archiviato": "Sì" if r["archived"] else "No",
             })
         else:
@@ -238,7 +345,8 @@ def open_choices(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
         flag = " (archiviato)" if r["archived"] else ""
         status = f"  · {r['status_label']}" if r["status_label"] != "Bozza" else ""
         if r["kind"] == "topic":
-            out.append((f"{r['title']}{flag}{status}", f"topic:{r['id']}"))
+            variant = r.get("condition_suffix", "")
+            out.append((f"{r['title']}{variant}{flag}{status}", f"topic:{r['id']}"))
         else:
             out.append((f"    ↳ {r['type_label']}: {r['preview']}{flag}{status}", f"block:{r['id']}"))
     return out
@@ -266,6 +374,7 @@ def topic_detail(service: AuthoringService, topic_id: str) -> dict[str, Any]:
     data = service.load_topic_for_edit(topic_id)
     draft = data.get("draft")
     open_review = service.open_review_for("topic", topic_id)
+    condition_desc = service.describe_condition(data.get("condition"))
     return {
         **data,
         "status_label": status_label(data["status"]),
@@ -274,6 +383,9 @@ def topic_detail(service: AuthoringService, topic_id: str) -> dict[str, Any]:
         "can_submit_for_review": data["status"] == "Draft" and not data["archived"],
         "open_review": open_review,
         "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
+        "condition_summary": condition_summary_text(condition_desc),
+        "condition_dimensions": condition_desc.get("dimensions", []),
+        "condition_always_included": condition_desc.get("always_included", True),
     }
 
 
@@ -282,6 +394,7 @@ def block_detail(service: AuthoringService, block_id: str) -> dict[str, Any]:
     draft = data.get("draft")
     open_review = service.open_review_for("block", block_id)
     editable = data["block_type"] in EDITABLE_TEXT_BLOCK_TYPES
+    condition_desc = service.describe_condition(data.get("condition"))
     return {
         **data,
         "status_label": status_label(data["status"]),
@@ -292,6 +405,9 @@ def block_detail(service: AuthoringService, block_id: str) -> dict[str, Any]:
         "can_submit_for_review": editable and data["status"] == "Draft" and not data["archived"],
         "open_review": open_review,
         "open_review_notice": (f"Review #{open_review['review_id']} aperta, in attesa di decisione." if open_review else ""),
+        "condition_summary": condition_summary_text(condition_desc),
+        "condition_dimensions": condition_desc.get("dimensions", []),
+        "condition_always_included": condition_desc.get("always_included", True),
     }
 
 

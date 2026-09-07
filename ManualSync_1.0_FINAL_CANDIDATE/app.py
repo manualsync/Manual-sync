@@ -1502,7 +1502,11 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
                     False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output)
 
-        rows = av.outline_rows(repo, publication_id, include_archived=bool(show_archived))
+        # service= passed so the outline shows a compact, human condition
+        # differentiator (e.g. '· Mercato EU') instead of the generic
+        # '· variante' every conditioned row used to share -- see
+        # _compact_condition_suffix in authoring_view.py.
+        rows = av.outline_rows(repo, publication_id, include_archived=bool(show_archived), service=svc)
         table = pd.DataFrame(av.outline_table(rows)) if rows else pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
         picker_choices = av.open_choices(rows)
         picker_value = f"{kind}:{object_id}" if kind and object_id else None
@@ -2374,6 +2378,416 @@ def studio_next_prev_ui(project_dir, publication_id, kind, object_id, direction,
     if not target:
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
     return _studio_full_bundle(project_dir, publication_id, "topic", target, show_archived)
+
+
+# ----------------------------------------------------------------
+# 4E.1: Conditions & Variants -- Studio "Varianti" panel + minimal
+# dimension/value/profile management (Impostazioni > Varianti).
+#
+# Deliberately wired INDEPENDENTLY of _studio_full_bundle/ST_OUT_FULL
+# (the ~30-callsite shared bundle that drives the rest of the Studio
+# panel) rather than folded into it: st_id and st_version are already
+# outputs of every one of those callsites, so attaching this panel's own
+# refresh to st_id.change()/st_version.change() below picks up every
+# navigation and save path for free, without touching that already very
+# large, carefully-tuned tuple contract at all. Editing conditions here
+# always goes through AuthoringService.save_topic/save_block's own CAS,
+# reading the object's OWN current version fresh at save time rather
+# than trusting st_version as an input -- st_version's meaning for an
+# open table/figure BLOCK is the referenced table/figure's own version
+# (see _studio_full_bundle's version_for_save), not the wrapping block's
+# own content_blocks.version that a condition save actually CASes
+# against, so the two must never be confused.
+# ----------------------------------------------------------------
+
+_VARIANT_ROWS = 4
+_VARIANT_PANEL_OUT_COUNT = 2 + 2 * _VARIANT_ROWS + 2  # summary, panel visible, dim x N, val x N, profile dd, eval clear
+
+
+def _variant_dimension_choices(svc: AuthoringService) -> list[tuple[str, str]]:
+    return [("(nessuna)", "")] + [(d["name"], d["dimension_id"]) for d in svc.list_condition_dimensions(include_inactive=False)]
+
+
+def _variant_value_choices(svc: AuthoringService, dimension_id: str | None) -> list[tuple[str, str]]:
+    if not dimension_id:
+        return []
+    return [(v["label"], v["value_id"]) for v in svc.list_condition_values(dimension_id, include_inactive=False)]
+
+
+def _variant_profile_choices(svc: AuthoringService) -> list[tuple[str, str]]:
+    return [(p["name"], p["profile_id"]) for p in svc.list_variant_profiles(include_inactive=False)]
+
+
+def _variant_rows_from_condition(dimensions: list[dict]) -> list[tuple[str, list[str]]]:
+    """[(dimension_id, [value_id,...]), ...] padded/truncated to _VARIANT_ROWS."""
+    out = [(d["dimension_id"], [v["value_id"] for v in d["values"]]) for d in dimensions]
+    return out[:_VARIANT_ROWS] + [("", [])] * max(0, _VARIANT_ROWS - len(out))
+
+
+def _variant_panel_bundle(svc: AuthoringService, detail: dict[str, Any]) -> tuple:
+    dim_choices = _variant_dimension_choices(svc)
+    rows = _variant_rows_from_condition(detail.get("condition_dimensions", []))
+    dim_updates = []
+    val_updates = []
+    for dim_id, value_ids in rows:
+        dim_updates.append(gr.update(choices=dim_choices, value=(dim_id or None)))
+        val_updates.append(gr.update(choices=_variant_value_choices(svc, dim_id), value=value_ids))
+    profile_choices = _variant_profile_choices(svc)
+    return (detail.get("condition_summary", ""), gr.update(visible=True), *dim_updates, *val_updates,
+            gr.update(choices=profile_choices, value=None), "")
+
+
+def studio_variant_panel_ui(project_dir, kind, object_id):
+    """Refreshes the Studio 'Varianti' section: human summary, the
+    _VARIANT_ROWS dimension/value picker rows pre-filled from the
+    currently open topic/block's own condition, and the profile choices
+    for the mini-evaluator. Triggered by st_id.change()/st_version.change()
+    -- see the module note above for why."""
+    if not project_dir or kind not in ("topic", "block") or not object_id:
+        dim_updates = [gr.update(choices=[], value=None) for _ in range(_VARIANT_ROWS)]
+        val_updates = [gr.update(choices=[], value=[]) for _ in range(_VARIANT_ROWS)]
+        return ("", gr.update(visible=False), *dim_updates, *val_updates, gr.update(choices=[], value=None), "")
+    repo, svc = av.open_service(project_dir)
+    try:
+        detail = av.topic_detail(svc, object_id) if kind == "topic" else av.block_detail(svc, object_id)
+        return _variant_panel_bundle(svc, detail)
+    finally:
+        repo.close()
+
+
+def studio_variant_dimension_pick_ui(project_dir, kind, object_id, dimension_id):
+    """One dimension picker row's Criterio changed: repopulate that row's
+    own Valori picker with the choices for the NEWLY picked dimension.
+
+    Deliberately SELF-HEALING rather than a blind "always clear to []":
+    wired via .input() specifically so this should only ever fire on a
+    genuine user pick, never on the programmatic value pushes studio_
+    variant_panel_ui/studio_variant_save_ui make when pre-filling a row
+    from a just-opened/just-saved condition -- but a real-browser
+    regression (switching between two conditioned placements that happen
+    to share the same dimension, e.g. two 'Mercato' table placements)
+    found the Varianti summary updating correctly while the Valori picker
+    stayed on the PREVIOUSLY selected placement's value. The panel bundle
+    itself was verified byte-for-byte correct in that exact scenario (see
+    the 4E.1 report), so the only remaining explanation is this .input()
+    cascade firing after all and overwriting the just-applied value --
+    something this exact Gradio 6.5.1 build's .input() reliability was
+    never actually verified for on gr.Dropdown specifically (the
+    established local precedent, .input() vs .change() on gr.Textbox,
+    does NOT transfer automatically to a different component type).
+
+    Rather than depend on pinning down that exact frontend timing (not
+    verifiable without a browser this session), this is made incapable of
+    ever producing a WRONG answer regardless of when/why it fires: it now
+    re-reads the CURRENTLY selected element's own persisted condition and
+    returns whatever value is ALREADY stored for the picked dimension (or
+    an empty selection only if that dimension genuinely isn't part of the
+    current condition yet, e.g. the user is adding a brand new row). A
+    spurious re-fire during a navigation-triggered panel refresh can then
+    only ever reproduce the SAME correct value the fresh bundle already
+    set -- never clear it, never leave a stale value from a DIFFERENT,
+    previously selected element."""
+    if not project_dir or not dimension_id:
+        return gr.update(choices=[], value=[])
+    repo, svc = av.open_service(project_dir)
+    try:
+        choices = _variant_value_choices(svc, dimension_id)
+        current_values: list[str] = []
+        try:
+            if kind == "topic" and object_id:
+                condition = svc.load_topic_for_edit(object_id).get("condition") or {}
+            elif kind == "block" and object_id:
+                condition = svc.load_block_for_edit(object_id).get("condition") or {}
+            else:
+                condition = {}
+            for dim in svc.describe_condition(condition).get("dimensions", []):
+                if dim["dimension_id"] == dimension_id:
+                    current_values = [v["value_id"] for v in dim["values"]]
+                    break
+        except KeyError:
+            # Stale/no-longer-existing selection at cascade time -- a
+            # background repopulation, never user-facing enough to
+            # justify a gr.Error modal; fall back to an empty selection
+            # (the "adding a brand new condition" default) rather than
+            # crash this row's picker.
+            current_values = []
+        return gr.update(choices=choices, value=current_values)
+    finally:
+        repo.close()
+
+
+def studio_variant_save_ui(project_dir, kind, object_id, block_type, actor, *dim_and_val_values):
+    """Fail-visible by construction: EVERY failure path here raises
+    gr.Error(...) rather than quietly returning an unchanged bundle with
+    just a Markdown message. This app launches with show_error=False (an
+    existing, app-wide setting, deliberately left untouched), which
+    silently swallows an ordinary exception -- visible only in the server
+    terminal, never in the browser. gr.Error is the one exception type
+    Gradio ALWAYS surfaces to the user regardless of that flag (see
+    gradio.utils.error_payload: `show_error = show_error or isinstance
+    (error, AppError)`, and gr.Error IS an AppError).
+
+    Deliberately declares ONLY [st_variant_save_msg, st_version] as its
+    OWN Gradio outputs -- not the whole panel. A real-browser regression
+    found that when this function used to also declare the panel's 8
+    picker Dropdowns + visibility + eval-profile as outputs (to refresh
+    them inline on success), a missing-actor gr.Error flagged ALL of
+    those components with Gradio's frontend error-state indicator, even
+    though nothing about any of them was actually wrong -- the whole
+    panel looked broken from one small, expected validation failure. The
+    full panel refresh (summary, visibility, pickers, eval profile) is
+    instead chained via .then(*_VARIANT_THEN_ARGS) on the wiring below --
+    the SAME mechanism already used for every other Studio navigation
+    event -- which re-reads whatever is CURRENTLY persisted regardless of
+    whether this save just succeeded or failed, so a failed save leaves
+    the panel showing the unchanged prior state (never a "successful-
+    looking" stale display), and a successful one shows the new state,
+    through one single, already-proven code path -- not two."""
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if kind not in ("topic", "block") or not object_id:
+        raise gr.Error("Seleziona prima un elemento.")
+    if not str(actor or "").strip():
+        raise gr.Error("Inserisci il tuo nome (in alto, «La tua identità») per continuare.")
+    dim_values = dim_and_val_values[:_VARIANT_ROWS]
+    val_values = dim_and_val_values[_VARIANT_ROWS:]
+    condition: dict[str, list[str]] = {}
+    for dim_id, values in zip(dim_values, val_values):
+        if dim_id and values:
+            condition[dim_id] = list(values)
+    repo, svc = av.open_service(project_dir)
+    try:
+        if kind == "topic":
+            current_version = svc.load_topic_for_edit(object_id)["version"]
+            result = svc.save_topic(object_id, condition=condition, expected_version=current_version, actor=actor)
+            version_out = result["version"]
+        else:
+            current_version = svc.load_block_for_edit(object_id)["version"]
+            result = svc.save_block(object_id, condition=condition, expected_version=current_version, actor=actor)
+            # For a table/figure block, st_version tracks the REFERENCED
+            # table/figure's own version -- completely untouched by this
+            # save (only content_blocks.condition_json/version changed),
+            # so leave it alone. For any other block type, st_version IS
+            # this block's own version, kept in sync.
+            version_out = result["version"] if block_type not in ("table", "figure") else gr.update()
+    except VersionConflictError:
+        raise gr.Error(av.conflict_message())
+    except ArchivedObjectError as e:
+        raise gr.Error(str(e))
+    except (KeyError, ValueError) as e:
+        raise gr.Error(str(e))
+    except Exception as e:
+        # Catch-all: an unanticipated DB/service error must still surface
+        # visibly (see the docstring above) rather than vanish into the
+        # terminal-only log show_error=False produces for a bare exception.
+        raise gr.Error(f"Salvataggio varianti non riuscito: {e}")
+    finally:
+        repo.close()
+    return "✅ Varianti salvate.", version_out
+
+
+def studio_variant_evaluate_ui(project_dir, kind, object_id, profile_id):
+    if not project_dir or kind not in ("topic", "block") or not object_id:
+        return "Apri prima un topic o un blocco."
+    if not profile_id:
+        return "Seleziona un profilo da valutare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        result = svc.evaluate_element_with_profile(kind, object_id, profile_id)
+        return av.evaluate_summary_text(result)
+    except KeyError as e:
+        return f"⛔ {e}"
+    finally:
+        repo.close()
+
+
+# ---- Impostazioni > Varianti: minimal dimension/value/profile management ----
+
+def settings_variant_dimensions_table_ui(project_dir):
+    cols = ["Id", "Nome", "Attiva", "In uso"]
+    if not project_dir:
+        return pd.DataFrame(columns=cols)
+    repo, svc = av.open_service(project_dir)
+    try:
+        rows = svc.list_condition_dimensions()
+    finally:
+        repo.close()
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame([{"Id": r["dimension_id"], "Nome": r["name"], "Attiva": "Sì" if r["active"] else "No",
+                          "In uso": "Sì" if r["referenced"] else "No"} for r in rows])
+
+
+def settings_variant_create_dimension_ui(project_dir, dimension_id, name, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.create_condition_dimension(dimension_id, name, actor=actor)
+        msg = "✅ Dimensione creata."
+    except ValueError as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_dimensions_table_ui(project_dir), msg
+
+
+def settings_variant_rename_dimension_ui(project_dir, dimension_id, new_name, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.rename_condition_dimension(dimension_id, name=new_name, actor=actor)
+        msg = "✅ Dimensione rinominata."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_dimensions_table_ui(project_dir), msg
+
+
+def settings_variant_set_dimension_active_ui(project_dir, dimension_id, active, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.set_condition_dimension_active(dimension_id, bool(active), actor=actor)
+        msg = "✅ Dimensione aggiornata."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_dimensions_table_ui(project_dir), msg
+
+
+def settings_variant_values_table_ui(project_dir):
+    cols = ["Id", "Dimensione", "Etichetta", "Attivo", "In uso"]
+    if not project_dir:
+        return pd.DataFrame(columns=cols)
+    repo, svc = av.open_service(project_dir)
+    try:
+        rows = svc.list_condition_values()
+    finally:
+        repo.close()
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame([{"Id": r["value_id"], "Dimensione": r["dimension_id"], "Etichetta": r["label"],
+                          "Attivo": "Sì" if r["active"] else "No", "In uso": "Sì" if r["referenced"] else "No"} for r in rows])
+
+
+def settings_variant_create_value_ui(project_dir, dimension_id, value_id, label, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.create_condition_value(value_id, dimension_id, label, actor=actor)
+        msg = "✅ Valore creato."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_values_table_ui(project_dir), msg
+
+
+def settings_variant_rename_value_ui(project_dir, value_id, new_label, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.rename_condition_value(value_id, label=new_label, actor=actor)
+        msg = "✅ Valore rinominato."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_values_table_ui(project_dir), msg
+
+
+def settings_variant_set_value_active_ui(project_dir, value_id, active, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.set_condition_value_active(value_id, bool(active), actor=actor)
+        msg = "✅ Valore aggiornato."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_values_table_ui(project_dir), msg
+
+
+def _format_profile_config(dims: dict[str, str]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in sorted(dims.items())) or "(nessuna)"
+
+
+def settings_variant_profiles_table_ui(project_dir):
+    cols = ["Id", "Nome", "Configurazione", "Attivo"]
+    if not project_dir:
+        return pd.DataFrame(columns=cols)
+    repo, svc = av.open_service(project_dir)
+    try:
+        rows = svc.list_variant_profiles()
+    finally:
+        repo.close()
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame([{"Id": r["profile_id"], "Nome": r["name"], "Configurazione": _format_profile_config(r["dimensions"]),
+                          "Attivo": "Sì" if r["active"] else "No"} for r in rows])
+
+
+def _parse_profile_config(text: str) -> dict[str, str]:
+    """One 'dimension_id=value_id' pair per line -- the minimal, explicit
+    text form the ticket's 'minimal profile management UI' calls for,
+    validated server-side (unknown dimension/value -> ValueError, never
+    silently dropped) by AuthoringService.create_variant_profile itself."""
+    out: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip()
+        if k and v:
+            out[k] = v
+    return out
+
+
+def settings_variant_create_profile_ui(project_dir, profile_id, name, config_text, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    dims = _parse_profile_config(config_text)
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.create_variant_profile(profile_id, name, dims, actor=actor)
+        msg = "✅ Profilo creato."
+    except ValueError as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_profiles_table_ui(project_dir), msg
+
+
+def settings_variant_set_profile_active_ui(project_dir, profile_id, active, actor):
+    if not project_dir: raise gr.Error("Nessun progetto attivo.")
+    if not str(actor or "").strip():
+        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+    repo, svc = av.open_service(project_dir)
+    try:
+        svc.set_variant_profile_active(profile_id, bool(active), actor=actor)
+        msg = "✅ Profilo aggiornato."
+    except (KeyError, ValueError) as e:
+        msg = f"⛔ {e}"
+    finally:
+        repo.close()
+    return settings_variant_profiles_table_ui(project_dir), msg
+
 
 def _auto_project_legacy_tm(project_dir: str | Path) -> Path | None:
     """Build/reuse a project TM from the bilingual evidence already produced by Revision Analysis.
@@ -3375,6 +3789,52 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_figure_replace_file = gr.Image(label="Sostituisci immagine — carica un nuovo file", type="filepath", scale=2)
                         st_figure_replace_btn = gr.Button("Sostituisci immagine", scale=1)
                     st_readonly_notice = gr.Markdown(visible=False)
+
+                    # 4E.1: "Varianti" -- where this topic/block is visible.
+                    # Non-technical by design (ticket UX acceptance
+                    # criterion): only dimension/value NAMES ever appear
+                    # here, never ids/JSON/boolean syntax. Independently
+                    # wired (see the module note above studio_variant_
+                    # panel_ui) rather than folded into ST_OUT_FULL/
+                    # _studio_full_bundle.
+                    #
+                    # gr.Row(visible=...) toggled as a WHOLE, never
+                    # gr.Group -- this codebase's own documented Gradio
+                    # 6.5.1 finding is that a child's independent visible=
+                    # update is unreliable when nested inside a Group whose
+                    # OWN visibility stays static in that response; Row is
+                    # the pattern already proven safe here instead (see
+                    # st_new_table_row/st_new_figure_row/st_table_rowcol_row
+                    # above), and none of the children below ever get their
+                    # own separate visible= toggle -- only this Row's does.
+                    with gr.Row(visible=False) as st_variant_panel:
+                        with gr.Column():
+                            gr.HTML("<div class='ms-section-title'>Varianti — dove usare questo contenuto</div>"
+                                    "<div class='ms-section-sub'>Senza condizioni il contenuto è sempre visibile. "
+                                    "Puoi limitarlo a uno o più valori per una o più dimensioni (es. Mercato, Edizione).</div>")
+                            st_variant_summary = gr.Markdown()
+                            st_variant_dim_dd = []
+                            st_variant_val_dd = []
+                            for _vr in range(_VARIANT_ROWS):
+                                with gr.Row():
+                                    # 4E.1 stabilization (item 4.2): "Criterio"
+                                    # over "Dimensione" -- avoids any hint of
+                                    # technical/mathematical jargon for a
+                                    # first-time author; "Valori ammessi..."
+                                    # states the OR-multiselect behavior in
+                                    # plain language instead of the operator
+                                    # word "OPPURE".
+                                    st_variant_dim_dd.append(gr.Dropdown(choices=[], value=None, label="Criterio", scale=1))
+                                    st_variant_val_dd.append(gr.Dropdown(choices=[], value=[], multiselect=True,
+                                                                         label="Valori ammessi (puoi sceglierne più di uno)", scale=2))
+                            st_variant_save_btn = gr.Button("Salva varianti")
+                            st_variant_save_msg = gr.Markdown()
+                            gr.HTML("<div class='ms-section-sub'>Valuta con un profilo</div>")
+                            with gr.Row():
+                                st_variant_eval_profile = gr.Dropdown(choices=[], value=None, label="Profilo", scale=2)
+                                st_variant_eval_btn = gr.Button("Valuta contenuto con questo profilo", scale=1)
+                            st_variant_eval_result = gr.Markdown()
+
                     st_shared_notice = gr.Markdown(visible=False)
                     # 4D: the reuse-aware shared-object decision UX -- shown
                     # only while a shared table/figure is open and the
@@ -3391,7 +3851,16 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     st_restore_draft_btn = gr.Button("Ripristina bozza", visible=False)
                     st_discard_draft_btn = gr.Button("Scarta bozza", visible=False)
                     with gr.Row():
-                        st_save_btn = gr.Button("Salva", variant="primary", visible=False, interactive=False)
+                        # 4E.1 stabilization (item G): renamed from the bare
+                        # "Salva" -- once the Varianti panel's OWN "Salva
+                        # varianti" button existed right above this one in
+                        # the same panel, a user could reasonably assume one
+                        # depends on the other. "Salva contenuto" makes the
+                        # split unambiguous: this one persists title/text/
+                        # table/figure content; "Salva varianti" persists
+                        # only where the element is visible. Neither button
+                        # requires the other to be clicked.
+                        st_save_btn = gr.Button("Salva contenuto", variant="primary", visible=False, interactive=False)
                         st_discard_edits_btn = gr.Button("Scarta modifiche", visible=False, interactive=False)
                     st_save_msg = gr.Markdown()
                     with gr.Row():
@@ -3465,10 +3934,34 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                           st_shared_notice, st_new_table_row, st_new_figure_row, st_table_rowcol_row,
                           st_shared_confirmed, st_shared_impact_token, st_reuse_impact_md, st_update_everywhere_btn, st_fork_local_btn,
                           st_compare_row, st_diff_output]
-            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL)
-            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
-            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
-            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL)
+
+            # 4E.1 Varianti panel outputs. Root-caused live-browser bug fix:
+            # this used to be refreshed via st_id.change()/st_version.change()
+            # (a gr.State "changed as an output of another event" cascade).
+            # That cascade is real in the Gradio 6.5.1 Python backend (see
+            # Blocks.get_state_ids_to_track/"changed_state_ids" in
+            # gradio/blocks.py) but the resulting `changed_state_ids` list is
+            # ONLY ever produced server-side -- nothing in routes.py/
+            # queueing.py consumes it, so firing the cascade is entirely up
+            # to frontend JS reacting to that field. In a real browser this
+            # never actually made the panel visible: the Varianti section
+            # never appeared after selecting a topic, even though every
+            # ST_OUT_FULL-driven field right next to it (title, Save button,
+            # etc.) worked correctly. Fixed the guaranteed way already used
+            # everywhere else in this Studio panel: VARIANT_PANEL_OUT is now
+            # chained via `.then(...)` onto every event that already outputs
+            # ST_OUT_FULL below -- `.then()` runs unconditionally after its
+            # trigger in the same response cycle, no client-side value-diff
+            # detection involved, so the panel's visibility is guaranteed to
+            # be recomputed every time the rest of the panel is.
+            VARIANT_PANEL_OUT = [st_variant_summary, st_variant_panel, *st_variant_dim_dd, *st_variant_val_dd,
+                                 st_variant_eval_profile, st_variant_eval_result]
+            _VARIANT_THEN_ARGS = (studio_variant_panel_ui, [project_state, st_kind, st_id], VARIANT_PANEL_OUT)
+
+            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
 
             # 4C: draft recovery now also covers the table/figure editors --
             # any of these fields blurring/changing saves a draft the same
@@ -3511,48 +4004,48 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                        [st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
                                         st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn])
             st_discard_draft_btn.click(studio_discard_draft_ui,
-                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL)
-            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_save_btn.click(studio_save_ui,
                               [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
                                st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
                                st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
-                               st_shared_impact_token], ST_OUT_FULL)
+                               st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
 
             # 4D reuse-aware shared-object decision -- see
             # studio_confirm_shared_update_ui/studio_fork_local_ui.
             st_update_everywhere_btn.click(studio_confirm_shared_update_ui,
-                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_fork_local_btn.click(studio_fork_local_ui,
                                     [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
-                                     st_version, st_show_archived, actor_state], ST_OUT_FULL)
+                                     st_version, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
 
             st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
-                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_move_down_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "down", sa, ac),
-                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
-            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
-            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_prev_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "prev", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_next_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "next", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
 
-            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
-            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL)
-            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL)
+            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_new_figure_btn.click(studio_new_figure_ui,
                                     [project_state, c_pub, st_kind, st_id, st_new_figure_file, st_new_figure_caption,
-                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL)
+                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_figure_replace_btn.click(studio_replace_figure_ui,
                                         [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                          st_version, st_figure_replace_file, st_show_archived, actor_state,
-                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL)
-            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL)
+                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_revert_btn.click(studio_revert_ui,
                                 [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                  st_revert_version, st_show_archived, actor_state, st_shared_confirmed,
-                                 st_shared_impact_token], ST_OUT_FULL)
+                                 st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
 
             # 4D revision compare -- read-only, no ST_OUT_FULL re-render
             # (see studio_compare_ui): only st_diff_output changes.
@@ -3564,7 +4057,65 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                       [st_diff_output])
 
             st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
-            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL)
+            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+
+            # 4E.1 Varianti panel: per-row dimension picker cascade + the
+            # panel's own Save/Evaluate buttons. The panel's own visibility/
+            # summary refresh is chained via .then(*_VARIANT_THEN_ARGS) onto
+            # every ST_OUT_FULL-outputting event above (see VARIANT_PANEL_OUT/
+            # _VARIANT_THEN_ARGS just above ST_OUT_FULL's own wiring) rather
+            # than a separate state-change cascade -- see the comment there
+            # for why.
+            # st_kind/st_id are now also inputs here (not just project_state
+            # + the picked dimension) so this cascade is self-healing --
+            # see studio_variant_dimension_pick_ui's own docstring for why.
+            for _vi in range(_VARIANT_ROWS):
+                st_variant_dim_dd[_vi].input(studio_variant_dimension_pick_ui,
+                                             [project_state, st_kind, st_id, st_variant_dim_dd[_vi]],
+                                             [st_variant_val_dd[_vi]])
+            # Deliberately a SMALL, dedicated output list (just the save
+            # message + st_version), NOT VARIANT_PANEL_OUT -- see
+            # studio_variant_save_ui's own docstring for why (a missing-
+            # actor gr.Error used to flag all 8 picker Dropdowns + panel
+            # visibility + eval profile as "errored" in the browser, since
+            # every declared output of a raising function gets Gradio's
+            # frontend error-state indicator).
+            #
+            # TWO independent chains off the SAME click, not one:
+            #  - .then(*_VARIANT_THEN_ARGS): ALWAYS runs (success or
+            #    failure) -- refreshes just the Varianti panel itself
+            #    (summary/pickers/visibility) from whatever is currently
+            #    persisted, which is correct either way (unchanged on
+            #    failure, updated on success).
+            #  - .success(studio_refresh_ui, ..., ST_OUT_FULL): runs ONLY
+            #    if the save actually succeeded (Dependency.success() sets
+            #    trigger_only_on_success=True internally -- confirmed via
+            #    gradio/events.py) -- rebuilds the REST of the visible
+            #    Studio state a successful condition save also changes:
+            #    the selected-element header ("Bozza · versione N"), the
+            #    outline table/radio (so the just-saved condition's
+            #    compact suffix appears immediately), etc. A manual
+            #    acceptance run found these staying stale after a
+            #    successful "Salva varianti" -- the panel-only .then()
+            #    above was never wired to ALSO rebuild ST_OUT_FULL, so
+            #    nothing ever refreshed the header/outline on this path
+            #    (they were previously only ever rebuilt by navigation or
+            #    by the generic "Salva"/"Aggiorna struttura" -- neither of
+            #    which "Salva varianti" is required to also trigger). This
+            #    is exactly the same studio_refresh_ui call "Aggiorna
+            #    struttura" itself makes, just success-gated so a FAILED
+            #    save never re-renders (and can't reintroduce the earlier
+            #    cascading-Error problem, since it plainly doesn't run).
+            _variant_save_event = st_variant_save_btn.click(
+                studio_variant_save_ui,
+                [project_state, st_kind, st_id, st_block_type, actor_state,
+                 *st_variant_dim_dd, *st_variant_val_dd],
+                [st_variant_save_msg, st_version])
+            _variant_save_event.then(*_VARIANT_THEN_ARGS)
+            _variant_save_event.success(studio_refresh_ui,
+                                        [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            st_variant_eval_btn.click(studio_variant_evaluate_ui,
+                                      [project_state, st_kind, st_id, st_variant_eval_profile], [st_variant_eval_result])
 
         with gr.Tab("Compliance", id="compliance") as cp_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
@@ -3709,6 +4260,93 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             p_refresh.click(refresh_ui,[project_state],[project_card])
             p_health.click(diagnostics_ui,[project_state],[p_health_msg,p_health_table])
             p_support.click(support_bundle_ui,[project_state],[p_support_file,p_support_msg])
+
+            # 4E.1: minimal dimension/value/profile registry management.
+            # Deliberately explicit-button-refreshed (no live cascade),
+            # matching this tab's own existing style (p_refresh/p_health
+            # above) rather than the Studio panel's reactive wiring --
+            # simpler and lower-risk for an admin-style screen. Reuses
+            # actor_state (set once in "Redazione & contenuti") rather than
+            # asking for a name a second time in this tab.
+            gr.HTML("<div class='ms-section-title'>Varianti — dimensioni, valori e profili</div>"
+                    "<div class='ms-section-sub'>Dimensioni e valori (es. Mercato = EU/US) usati per condizionare "
+                    "topic e blocchi nell'editor «Redazione & contenuti»; i profili combinano un valore per "
+                    "dimensione per valutare o pubblicare una variante specifica.</div>")
+            with gr.Row():
+                with gr.Column(elem_classes=["ms-settings-card"]):
+                    gr.Markdown("**Dimensioni**")
+                    v_dim_table = gr.Dataframe(interactive=False, max_height=220)
+                    v_dim_refresh = gr.Button("Aggiorna elenco dimensioni")
+                    with gr.Row():
+                        v_dim_id = gr.Textbox(label="Id (es. market)")
+                        v_dim_name = gr.Textbox(label="Nome (es. Mercato)")
+                    v_dim_create_btn = gr.Button("+ Crea dimensione", variant="primary")
+                    with gr.Row():
+                        v_dim_target_id = gr.Textbox(label="Id dimensione esistente")
+                        v_dim_new_name = gr.Textbox(label="Nuovo nome")
+                    with gr.Row():
+                        v_dim_rename_btn = gr.Button("Rinomina")
+                        v_dim_deactivate_btn = gr.Button("Disattiva")
+                        v_dim_activate_btn = gr.Button("Riattiva")
+                    v_dim_msg = gr.Markdown()
+                with gr.Column(elem_classes=["ms-settings-card"]):
+                    gr.Markdown("**Valori**")
+                    v_val_table = gr.Dataframe(interactive=False, max_height=220)
+                    v_val_refresh = gr.Button("Aggiorna elenco valori")
+                    with gr.Row():
+                        v_val_dim_id = gr.Textbox(label="Id dimensione")
+                        v_val_id = gr.Textbox(label="Id valore (es. eu)")
+                        v_val_label = gr.Textbox(label="Etichetta (es. EU)")
+                    v_val_create_btn = gr.Button("+ Crea valore", variant="primary")
+                    with gr.Row():
+                        v_val_target_id = gr.Textbox(label="Id valore esistente")
+                        v_val_new_label = gr.Textbox(label="Nuova etichetta")
+                    with gr.Row():
+                        v_val_rename_btn = gr.Button("Rinomina")
+                        v_val_deactivate_btn = gr.Button("Disattiva")
+                        v_val_activate_btn = gr.Button("Riattiva")
+                    v_val_msg = gr.Markdown()
+            with gr.Row():
+                with gr.Column(elem_classes=["ms-settings-card"]):
+                    gr.Markdown("**Profili di variante**")
+                    v_prof_table = gr.Dataframe(interactive=False, max_height=220)
+                    v_prof_refresh = gr.Button("Aggiorna elenco profili")
+                    with gr.Row():
+                        v_prof_id = gr.Textbox(label="Id profilo")
+                        v_prof_name = gr.Textbox(label="Nome profilo")
+                    v_prof_config = gr.Textbox(label="Configurazione — una coppia dimensione=valore per riga",
+                                               lines=3, placeholder="market=eu\nedition=service")
+                    v_prof_create_btn = gr.Button("+ Crea profilo", variant="primary")
+                    with gr.Row():
+                        v_prof_target_id = gr.Textbox(label="Id profilo esistente")
+                        v_prof_deactivate_btn = gr.Button("Disattiva")
+                        v_prof_activate_btn = gr.Button("Riattiva")
+                    v_prof_msg = gr.Markdown()
+            v_dim_refresh.click(settings_variant_dimensions_table_ui, [project_state], [v_dim_table])
+            v_dim_create_btn.click(settings_variant_create_dimension_ui,
+                                   [project_state, v_dim_id, v_dim_name, actor_state], [v_dim_table, v_dim_msg])
+            v_dim_rename_btn.click(settings_variant_rename_dimension_ui,
+                                   [project_state, v_dim_target_id, v_dim_new_name, actor_state], [v_dim_table, v_dim_msg])
+            v_dim_deactivate_btn.click(lambda pd_, did, ac: settings_variant_set_dimension_active_ui(pd_, did, False, ac),
+                                       [project_state, v_dim_target_id, actor_state], [v_dim_table, v_dim_msg])
+            v_dim_activate_btn.click(lambda pd_, did, ac: settings_variant_set_dimension_active_ui(pd_, did, True, ac),
+                                     [project_state, v_dim_target_id, actor_state], [v_dim_table, v_dim_msg])
+            v_val_refresh.click(settings_variant_values_table_ui, [project_state], [v_val_table])
+            v_val_create_btn.click(settings_variant_create_value_ui,
+                                   [project_state, v_val_dim_id, v_val_id, v_val_label, actor_state], [v_val_table, v_val_msg])
+            v_val_rename_btn.click(settings_variant_rename_value_ui,
+                                   [project_state, v_val_target_id, v_val_new_label, actor_state], [v_val_table, v_val_msg])
+            v_val_deactivate_btn.click(lambda pd_, vid, ac: settings_variant_set_value_active_ui(pd_, vid, False, ac),
+                                       [project_state, v_val_target_id, actor_state], [v_val_table, v_val_msg])
+            v_val_activate_btn.click(lambda pd_, vid, ac: settings_variant_set_value_active_ui(pd_, vid, True, ac),
+                                     [project_state, v_val_target_id, actor_state], [v_val_table, v_val_msg])
+            v_prof_refresh.click(settings_variant_profiles_table_ui, [project_state], [v_prof_table])
+            v_prof_create_btn.click(settings_variant_create_profile_ui,
+                                    [project_state, v_prof_id, v_prof_name, v_prof_config, actor_state], [v_prof_table, v_prof_msg])
+            v_prof_deactivate_btn.click(lambda pd_, pid, ac: settings_variant_set_profile_active_ui(pd_, pid, False, ac),
+                                        [project_state, v_prof_target_id, actor_state], [v_prof_table, v_prof_msg])
+            v_prof_activate_btn.click(lambda pd_, pid, ac: settings_variant_set_profile_active_ui(pd_, pid, True, ac),
+                                      [project_state, v_prof_target_id, actor_state], [v_prof_table, v_prof_msg])
 
     _NAV_IDS=['home','revision','authoring','compliance','translations','jobs','release','settings']
     _NAV_BUTTONS=[nav_home,nav_revision,nav_authoring,nav_compliance,nav_translation,nav_jobs,nav_release,nav_settings]

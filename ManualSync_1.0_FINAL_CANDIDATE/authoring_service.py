@@ -245,6 +245,7 @@ class AuthoringService:
             "topic_id": topic_id, "title": row["title"], "body": row["body"], "status": row["status"],
             "version": int(row["version"]), "archived": bool(row["archived_at"]), "archived_at": row["archived_at"],
             "source_refs": _load_json(row["source_refs_json"], []),
+            "condition": _load_json(row["condition_json"], {}),
             "draft": self.load_draft("topic", topic_id),
         }
 
@@ -257,6 +258,7 @@ class AuthoringService:
             "position": int(row["position"]), "text": row["text_content"], "status": row["status"],
             "version": int(row["version"]), "archived": bool(row["archived_at"]), "archived_at": row["archived_at"],
             "source_refs": _load_json(row["source_refs_json"], []),
+            "condition": _load_json(row["condition_json"], {}),
             "object_ref_id": row["object_ref_id"],
             "draft": self.load_draft("block", block_id),
         }
@@ -327,7 +329,9 @@ class AuthoringService:
     # ================================================================
 
     def save_topic(self, topic_id: str, *, title: str | None = None, body: str | None = None,
-                   source_refs: Iterable[str] | None = None, expected_version: int, actor: str) -> dict[str, Any]:
+                   source_refs: Iterable[str] | None = None,
+                   condition: dict[str, Iterable[str]] | None = None,
+                   expected_version: int, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per salvare un topic.")
@@ -350,38 +354,54 @@ class AuthoringService:
             include = row["include_variants_json"]
             exclude = row["exclude_variants_json"]
             evidence = row["evidence_status"]
+            previous_condition_json = row["condition_json"]
+            if condition is None:
+                new_condition_json = previous_condition_json
+                condition_changed = False
+                compiled_condition: dict[str, Any] = {}
+            else:
+                compiled_condition, _normalized = self._compile_and_validate_condition(condition)
+                new_condition_json = _json(compiled_condition)
+                condition_changed = new_condition_json != previous_condition_json
 
             cur = self.conn.execute(
-                """UPDATE topics SET title=?,body=?,status=?,version=?,source_refs_json=?,updated_at=?
+                """UPDATE topics SET title=?,body=?,status=?,version=?,source_refs_json=?,condition_json=?,updated_at=?
                    WHERE topic_id=? AND version=?""",
-                (new_title, new_body, new_status, new_version, _json(new_refs), now, topic_id, int(expected_version)),
+                (new_title, new_body, new_status, new_version, _json(new_refs), new_condition_json, now,
+                 topic_id, int(expected_version)),
             )
             if cur.rowcount == 0:
                 self.conn.rollback()
                 raise VersionConflictError(topic_id, expected_version)
             self.conn.execute(
                 """INSERT INTO topic_versions(topic_id,version,title,body,status,include_variants_json,
-                   exclude_variants_json,source_refs_json,evidence_status,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                (topic_id, new_version, new_title, new_body, new_status, include, exclude, _json(new_refs), evidence, now),
+                   exclude_variants_json,source_refs_json,condition_json,evidence_status,created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (topic_id, new_version, new_title, new_body, new_status, include, exclude, _json(new_refs),
+                 new_condition_json, evidence, now),
             )
             invalidated = self._invalidate_open_review_if_edited("topic", topic_id, previous_status, new_status, actor)
             self.repo.audit_event("topic", topic_id, "AUTHORING_SAVE", actor,
                                   {"from_version": int(expected_version), "to_version": new_version,
                                    "previous_status": previous_status, "new_status": new_status})
+            if condition_changed:
+                self.repo.audit_event("topic", topic_id, "AUTHORING_CONDITIONS_UPDATED", actor,
+                                      {"version": new_version, "condition": compiled_condition})
             self._delete_draft("topic", topic_id)
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
         return {"topic_id": topic_id, "version": new_version, "status": new_status,
-                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated,
+                "condition_changed": condition_changed}
 
     # ================================================================
     # Atomic save (compare-and-swap) -- block
     # ================================================================
 
     def save_block(self, block_id: str, *, text: str | None = None, source_refs: Iterable[str] | None = None,
+                   condition: dict[str, Iterable[str]] | None = None,
                    expected_version: int, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
@@ -407,14 +427,30 @@ class AuthoringService:
             previous_status = row["status"]
             new_status = self._status_after_edit(previous_status)
             new_version = int(expected_version) + 1
-            condition = row["condition_json"]
             evidence = row["evidence_status"]
             object_ref_id = row["object_ref_id"]
+            previous_condition_json = row["condition_json"]
+            if condition is None:
+                new_condition_json = previous_condition_json
+                condition_changed = False
+                compiled_condition: dict[str, Any] = {}
+            else:
+                # NOTE: this ALWAYS targets this block's own condition_json,
+                # never a referenced table/figure's -- 4E.1's reuse rule:
+                # conditions belong to the block PLACEMENT, not the shared
+                # object (structured_tables/figures keep their own
+                # condition_json column untouched by this method, so a
+                # table shared by two blocks can carry two different
+                # placement conditions without the shared table itself
+                # ever being written to here).
+                compiled_condition, _normalized = self._compile_and_validate_condition(condition)
+                new_condition_json = _json(compiled_condition)
+                condition_changed = new_condition_json != previous_condition_json
 
             cur = self.conn.execute(
-                """UPDATE content_blocks SET text_content=?,status=?,version=?,source_refs_json=?,updated_at=?
+                """UPDATE content_blocks SET text_content=?,status=?,version=?,source_refs_json=?,condition_json=?,updated_at=?
                    WHERE block_id=? AND version=?""",
-                (new_text, new_status, new_version, _json(new_refs), now, block_id, int(expected_version)),
+                (new_text, new_status, new_version, _json(new_refs), new_condition_json, now, block_id, int(expected_version)),
             )
             if cur.rowcount == 0:
                 self.conn.rollback()
@@ -424,19 +460,566 @@ class AuthoringService:
                    object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (block_id, new_version, row["topic_id"], row["block_type"], int(row["position"]), new_text,
-                 object_ref_id, new_status, condition, _json(new_refs), evidence, now),
+                 object_ref_id, new_status, new_condition_json, _json(new_refs), evidence, now),
             )
             invalidated = self._invalidate_open_review_if_edited("block", block_id, previous_status, new_status, actor)
             self.repo.audit_event("block", block_id, "AUTHORING_SAVE", actor,
                                   {"from_version": int(expected_version), "to_version": new_version,
                                    "previous_status": previous_status, "new_status": new_status})
+            if condition_changed:
+                self.repo.audit_event("block", block_id, "AUTHORING_CONDITIONS_UPDATED", actor,
+                                      {"version": new_version, "condition": compiled_condition})
             self._delete_draft("block", block_id)
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
         return {"block_id": block_id, "version": new_version, "status": new_status,
-                "previous_status": previous_status, "review_tasks_invalidated": invalidated}
+                "previous_status": previous_status, "review_tasks_invalidated": invalidated,
+                "condition_changed": condition_changed}
+
+    # ================================================================
+    # Conditions & Variants -- 4E.1 foundation.
+    #
+    # Deliberately NOT a new evaluation engine: IndustrialRepository.
+    # condition_matches() (ccms_industrial.py) already implements a fully
+    # general boolean-tree evaluator (all/any/not + eq/neq/in/not_in/
+    # contains/contains_any/exists) and is already wired into
+    # assemble_structured_publication() for both topics and blocks. The
+    # 4E.1 ticket explicitly forbids exposing that generality to authors
+    # (no NOT, no nesting, no DSL) -- so this layer only ever produces and
+    # understands a restricted compiled SHAPE of that same JSON:
+    #   {}                                            -- no restriction
+    #   {"field": dim, "op": "in", "value": [v, ...]}  -- one dimension
+    #   {"all": [<leaf>, <leaf>, ...]}                 -- 2+ dimensions (AND)
+    # Multiple values within one leaf's "value" list are OR'd by "in";
+    # multiple leaves inside "all" are AND'd -- exactly "same dimension =
+    # OR, different dimensions = AND" from the ticket. This requires zero
+    # change to condition_matches() or to publication assembly: both
+    # already evaluate this shape correctly today.
+    #
+    # Registry (condition_dimensions / condition_values, ccms_industrial.
+    # py's _schema()) makes every dimension_id/value_id a real, checkable
+    # identifier instead of free-text that could silently typo into
+    # matching nothing. Human labels are display-only and can be renamed
+    # without touching any already-authored condition_json, since only
+    # the stable id is ever stored there.
+    # ================================================================
+
+    @staticmethod
+    def _compile_condition(dimension_values: dict[str, Iterable[str]]) -> dict[str, Any]:
+        """dimension_id -> allowed value_ids (OR within the dimension) =>
+        the boolean-tree shape condition_matches() understands (AND across
+        dimensions). Empty/blank dimensions are dropped; no restriction at
+        all compiles to {}."""
+        leaves = []
+        for dim_id in sorted(str(d) for d in (dimension_values or {})):
+            values = sorted({str(v).strip() for v in (dimension_values.get(dim_id) or []) if str(v).strip()})
+            if not values:
+                continue
+            leaves.append({"field": dim_id, "op": "in", "value": values})
+        if not leaves:
+            return {}
+        if len(leaves) == 1:
+            return leaves[0]
+        return {"all": leaves}
+
+    @staticmethod
+    def _decompile_condition(condition: dict[str, Any] | None) -> dict[str, list[str]] | None:
+        """Inverse of _compile_condition, for the restricted 4E.1 shape
+        only. Returns None if `condition` uses richer boolean-tree features
+        (any/not/nested/other operators) this simplified editor cannot
+        represent -- callers MUST treat None as "too complex to edit here",
+        never silently approximate it."""
+        cond = condition or {}
+        if not cond:
+            return {}
+        if "any" in cond or "not" in cond:
+            return None
+        leaves = cond["all"] if ("all" in cond and isinstance(cond.get("all"), list)) else [cond]
+        result: dict[str, list[str]] = {}
+        for leaf in leaves:
+            if not isinstance(leaf, dict) or (set(leaf.keys()) - {"field", "op", "value"}):
+                return None
+            if leaf.get("op") != "in":
+                return None
+            field = str(leaf.get("field", "")).strip()
+            values = leaf.get("value")
+            if not field or not isinstance(values, list):
+                return None
+            result[field] = [str(v) for v in values]
+        return result
+
+    @staticmethod
+    def _condition_field_refs(condition: dict[str, Any] | None) -> list[tuple[str, list[str]]]:
+        """Best-effort (field, values) extraction from ANY condition_json
+        shape, including richer trees this layer never authors itself but
+        might still need to report on (e.g. is_dimension_referenced against
+        data written before 4E.1 or via direct import). Informational only
+        -- never used for evaluation."""
+        cond = condition or {}
+        if not isinstance(cond, dict) or not cond:
+            return []
+        if isinstance(cond.get("all"), list):
+            out = []
+            for c in cond["all"]:
+                out.extend(AuthoringService._condition_field_refs(c))
+            return out
+        if isinstance(cond.get("any"), list):
+            out = []
+            for c in cond["any"]:
+                out.extend(AuthoringService._condition_field_refs(c))
+            return out
+        if "not" in cond:
+            return AuthoringService._condition_field_refs(cond.get("not"))
+        field = cond.get("field")
+        if not field:
+            return []
+        value = cond.get("value")
+        values = value if isinstance(value, list) else ([value] if value is not None else [])
+        return [(str(field), [str(v) for v in values])]
+
+    def _compile_and_validate_condition(self, dimension_values: dict[str, Iterable[str]]) -> tuple[dict[str, Any], dict[str, list[str]]]:
+        """Validates every dimension_id/value_id in `dimension_values`
+        against the registry -- unknown id raises ValueError, never
+        silently accepted -- then compiles to the boolean-tree storage
+        shape. Returns (compiled_json, normalized) so callers can also
+        report/audit the readable normalized form."""
+        normalized: dict[str, list[str]] = {}
+        for dim_id, values in (dimension_values or {}).items():
+            dim_id = str(dim_id).strip()
+            if not dim_id:
+                continue
+            if not self.conn.execute(
+                "SELECT 1 FROM condition_dimensions WHERE dimension_id=?", (dim_id,)
+            ).fetchone():
+                raise ValueError(f"Dimensione sconosciuta: {dim_id!r}.")
+            vals = sorted({str(v).strip() for v in (values or []) if str(v).strip()})
+            for v in vals:
+                if not self.conn.execute(
+                    "SELECT 1 FROM condition_values WHERE value_id=? AND dimension_id=?", (v, dim_id)
+                ).fetchone():
+                    raise ValueError(f"Valore sconosciuto per la dimensione {dim_id!r}: {v!r}.")
+            if vals:
+                normalized[dim_id] = vals
+        return self._compile_condition(normalized), normalized
+
+    # ---- dimension / value registry ----
+
+    def create_condition_dimension(self, dimension_id: str, name: str, *, description: str = "",
+                                   actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare una dimensione.")
+        dimension_id = str(dimension_id or "").strip()
+        name = str(name or "").strip()
+        if not dimension_id or not re.fullmatch(r"[a-z0-9_]+", dimension_id):
+            raise ValueError("L'id della dimensione deve essere in minuscolo, con lettere/numeri/underscore.")
+        if not name:
+            raise ValueError("La dimensione deve avere un nome leggibile.")
+        if self.conn.execute("SELECT 1 FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone():
+            raise ValueError(f"Esiste già una dimensione con id {dimension_id!r}.")
+        now = _now()
+        description = str(description or "").strip()
+        self.conn.execute(
+            "INSERT INTO condition_dimensions(dimension_id,name,description,active,created_at,updated_at) "
+            "VALUES(?,?,?,1,?,?)",
+            (dimension_id, name, description, now, now),
+        )
+        self.repo.audit_event("condition_dimension", dimension_id, "CONDITION_DIMENSION_CREATED", actor,
+                              {"name": name, "description": description})
+        self.conn.commit()
+        return {"dimension_id": dimension_id, "name": name, "description": description, "active": True}
+
+    def rename_condition_dimension(self, dimension_id: str, *, name: str | None = None,
+                                   description: str | None = None, actor: str) -> dict[str, Any]:
+        """Label-only edit: dimension_id (the stable identifier stored in
+        every authored condition_json) never changes."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per rinominare una dimensione.")
+        row = self.conn.execute("SELECT * FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone()
+        if not row:
+            raise KeyError(dimension_id)
+        new_name = row["name"] if name is None else str(name).strip()
+        new_desc = row["description"] if description is None else str(description).strip()
+        if not new_name:
+            raise ValueError("La dimensione deve avere un nome leggibile.")
+        now = _now()
+        self.conn.execute(
+            "UPDATE condition_dimensions SET name=?,description=?,updated_at=? WHERE dimension_id=?",
+            (new_name, new_desc, now, dimension_id),
+        )
+        self.repo.audit_event("condition_dimension", dimension_id, "CONDITION_DIMENSION_RENAMED", actor,
+                              {"from_name": row["name"], "to_name": new_name})
+        self.conn.commit()
+        return {"dimension_id": dimension_id, "name": new_name, "description": new_desc}
+
+    def set_condition_dimension_active(self, dimension_id: str, active: bool, *, actor: str) -> dict[str, Any]:
+        """Reversible archive/reactivate -- never a destructive delete, per
+        the ticket's explicit 'no destructive deletion if referenced' rule.
+        Deactivating does NOT touch any already-authored condition_json
+        that references this dimension (existing conditions keep working
+        exactly as before); it only removes the dimension from the picker
+        for NEW conditions in the Studio UI."""
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio.")
+        row = self.conn.execute("SELECT * FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone()
+        if not row:
+            raise KeyError(dimension_id)
+        now = _now()
+        self.conn.execute(
+            "UPDATE condition_dimensions SET active=?,updated_at=? WHERE dimension_id=?",
+            (1 if active else 0, now, dimension_id),
+        )
+        self.repo.audit_event("condition_dimension", dimension_id,
+                              "CONDITION_DIMENSION_ACTIVATED" if active else "CONDITION_DIMENSION_DEACTIVATED",
+                              actor, {})
+        self.conn.commit()
+        return {"dimension_id": dimension_id, "active": bool(active)}
+
+    def list_condition_dimensions(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM condition_dimensions ORDER BY name COLLATE NOCASE").fetchall()
+        out = []
+        for r in rows:
+            if not include_inactive and not r["active"]:
+                continue
+            out.append({
+                "dimension_id": r["dimension_id"], "name": r["name"], "description": r["description"],
+                "active": bool(r["active"]), "referenced": self.is_dimension_referenced(r["dimension_id"]),
+            })
+        return out
+
+    def create_condition_value(self, value_id: str, dimension_id: str, label: str, *, description: str = "",
+                               actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare un valore.")
+        value_id = str(value_id or "").strip()
+        label = str(label or "").strip()
+        if not value_id or not re.fullmatch(r"[a-z0-9_]+", value_id):
+            raise ValueError("L'id del valore deve essere in minuscolo, con lettere/numeri/underscore.")
+        if not label:
+            raise ValueError("Il valore deve avere un'etichetta leggibile.")
+        if not self.conn.execute("SELECT 1 FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone():
+            raise KeyError(dimension_id)
+        if self.conn.execute("SELECT 1 FROM condition_values WHERE value_id=?", (value_id,)).fetchone():
+            raise ValueError(f"Esiste già un valore con id {value_id!r}.")
+        now = _now()
+        description = str(description or "").strip()
+        self.conn.execute(
+            "INSERT INTO condition_values(value_id,dimension_id,label,description,active,created_at,updated_at) "
+            "VALUES(?,?,?,?,1,?,?)",
+            (value_id, dimension_id, label, description, now, now),
+        )
+        self.repo.audit_event("condition_value", value_id, "CONDITION_VALUE_CREATED", actor,
+                              {"dimension_id": dimension_id, "label": label})
+        self.conn.commit()
+        return {"value_id": value_id, "dimension_id": dimension_id, "label": label,
+                "description": description, "active": True}
+
+    def rename_condition_value(self, value_id: str, *, label: str | None = None, description: str | None = None,
+                               actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio.")
+        row = self.conn.execute("SELECT * FROM condition_values WHERE value_id=?", (value_id,)).fetchone()
+        if not row:
+            raise KeyError(value_id)
+        new_label = row["label"] if label is None else str(label).strip()
+        new_desc = row["description"] if description is None else str(description).strip()
+        if not new_label:
+            raise ValueError("Il valore deve avere un'etichetta leggibile.")
+        now = _now()
+        self.conn.execute(
+            "UPDATE condition_values SET label=?,description=?,updated_at=? WHERE value_id=?",
+            (new_label, new_desc, now, value_id),
+        )
+        self.repo.audit_event("condition_value", value_id, "CONDITION_VALUE_RENAMED", actor,
+                              {"from_label": row["label"], "to_label": new_label})
+        self.conn.commit()
+        return {"value_id": value_id, "label": new_label, "description": new_desc}
+
+    def set_condition_value_active(self, value_id: str, active: bool, *, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio.")
+        row = self.conn.execute("SELECT * FROM condition_values WHERE value_id=?", (value_id,)).fetchone()
+        if not row:
+            raise KeyError(value_id)
+        now = _now()
+        self.conn.execute(
+            "UPDATE condition_values SET active=?,updated_at=? WHERE value_id=?",
+            (1 if active else 0, now, value_id),
+        )
+        self.repo.audit_event("condition_value", value_id,
+                              "CONDITION_VALUE_ACTIVATED" if active else "CONDITION_VALUE_DEACTIVATED", actor, {})
+        self.conn.commit()
+        return {"value_id": value_id, "active": bool(active)}
+
+    def list_condition_values(self, dimension_id: str | None = None, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+        if dimension_id:
+            rows = self.conn.execute(
+                "SELECT * FROM condition_values WHERE dimension_id=? ORDER BY label COLLATE NOCASE", (dimension_id,)
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM condition_values ORDER BY dimension_id,label COLLATE NOCASE"
+            ).fetchall()
+        out = []
+        for r in rows:
+            if not include_inactive and not r["active"]:
+                continue
+            out.append({
+                "value_id": r["value_id"], "dimension_id": r["dimension_id"], "label": r["label"],
+                "description": r["description"], "active": bool(r["active"]),
+                "referenced": self.is_value_referenced(r["value_id"]),
+            })
+        return out
+
+    def _all_condition_jsons(self) -> list[dict[str, Any]]:
+        """Every condition_json currently stored anywhere -- topics,
+        blocks, and the vestigial table/figure object-level column (kept
+        for schema symmetry, never written to by this service -- see the
+        save_block reuse note above). Informational only, used by the
+        is_*_referenced 'already used' checks below."""
+        out = []
+        for table in ("topics", "content_blocks", "structured_tables", "figures"):
+            for row in self.conn.execute(f"SELECT condition_json FROM {table}"):
+                out.append(_load_json(row["condition_json"], {}))
+        return out
+
+    def is_dimension_referenced(self, dimension_id: str) -> bool:
+        for cond in self._all_condition_jsons():
+            if any(field == dimension_id for field, _values in self._condition_field_refs(cond)):
+                return True
+        for row in self.conn.execute("SELECT dimensions_json FROM profiles"):
+            if dimension_id in _load_json(row["dimensions_json"], {}):
+                return True
+        return False
+
+    def is_value_referenced(self, value_id: str) -> bool:
+        for cond in self._all_condition_jsons():
+            if any(value_id in values for _field, values in self._condition_field_refs(cond)):
+                return True
+        for row in self.conn.execute("SELECT dimensions_json FROM profiles"):
+            if value_id in _load_json(row["dimensions_json"], {}).values():
+                return True
+        return False
+
+    # ---- variant profiles ----
+
+    def _validate_profile_dimensions(self, dimension_values: dict[str, str]) -> dict[str, str]:
+        """Fail-closed: every dimension_id/value_id in a profile must
+        exist in the registry, and the value must belong to the stated
+        dimension -- a profile is the 'active configuration' every
+        evaluate/assembly trusts, so it must never silently reference
+        something that does not exist."""
+        out: dict[str, str] = {}
+        for dim_id, value_id in (dimension_values or {}).items():
+            dim_id = str(dim_id).strip()
+            value_id = str(value_id).strip()
+            if not dim_id or not value_id:
+                continue
+            if not self.conn.execute("SELECT 1 FROM condition_dimensions WHERE dimension_id=?", (dim_id,)).fetchone():
+                raise ValueError(f"Dimensione sconosciuta nel profilo: {dim_id!r}.")
+            if not self.conn.execute(
+                "SELECT 1 FROM condition_values WHERE value_id=? AND dimension_id=?", (value_id, dim_id)
+            ).fetchone():
+                raise ValueError(f"Valore sconosciuto nel profilo per la dimensione {dim_id!r}: {value_id!r}.")
+            out[dim_id] = value_id
+        return out
+
+    def create_variant_profile(self, profile_id: str, name: str, dimension_values: dict[str, str], *,
+                               actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per creare un profilo.")
+        profile_id = str(profile_id or "").strip()
+        name = str(name or "").strip()
+        if not profile_id:
+            raise ValueError("Il profilo deve avere un id.")
+        if not name:
+            raise ValueError("Il profilo deve avere un nome.")
+        if self.conn.execute("SELECT 1 FROM profiles WHERE profile_id=?", (profile_id,)).fetchone():
+            raise ValueError(f"Esiste già un profilo con id {profile_id!r}.")
+        validated = self._validate_profile_dimensions(dimension_values)
+        self.repo.create_profile(profile_id, name, validated)
+        self.repo.audit_event("profile", profile_id, "VARIANT_PROFILE_CREATED", actor,
+                              {"name": name, "dimensions": validated})
+        self.conn.commit()
+        return {"profile_id": profile_id, "name": name, "dimensions": validated, "active": True}
+
+    def update_variant_profile(self, profile_id: str, *, name: str | None = None,
+                               dimension_values: dict[str, str] | None = None, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio per modificare un profilo.")
+        row = self.conn.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+        if not row:
+            raise KeyError(profile_id)
+        new_name = row["title"] if name is None else str(name).strip()
+        if not new_name:
+            raise ValueError("Il profilo deve avere un nome.")
+        validated = _load_json(row["dimensions_json"], {}) if dimension_values is None \
+            else self._validate_profile_dimensions(dimension_values)
+        self.repo.update_profile(profile_id, validated, title=new_name)
+        self.repo.audit_event("profile", profile_id, "VARIANT_PROFILE_UPDATED", actor,
+                              {"name": new_name, "dimensions": validated})
+        self.conn.commit()
+        return {"profile_id": profile_id, "name": new_name, "dimensions": validated, "active": bool(row["active"])}
+
+    def set_variant_profile_active(self, profile_id: str, active: bool, *, actor: str) -> dict[str, Any]:
+        actor = str(actor or "").strip()
+        if not actor:
+            raise ValueError("actor è obbligatorio.")
+        row = self.conn.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+        if not row:
+            raise KeyError(profile_id)
+        now = _now()
+        self.conn.execute("UPDATE profiles SET active=?,updated_at=? WHERE profile_id=?",
+                          (1 if active else 0, now, profile_id))
+        self.repo.audit_event("profile", profile_id,
+                              "VARIANT_PROFILE_ACTIVATED" if active else "VARIANT_PROFILE_DEACTIVATED", actor, {})
+        self.conn.commit()
+        return {"profile_id": profile_id, "active": bool(active)}
+
+    def get_variant_profile(self, profile_id: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
+        if not row:
+            raise KeyError(profile_id)
+        return {"profile_id": profile_id, "name": row["title"], "dimensions": _load_json(row["dimensions_json"], {}),
+                "active": bool(row["active"])}
+
+    def list_variant_profiles(self, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT * FROM profiles ORDER BY title COLLATE NOCASE").fetchall()
+        out = []
+        for r in rows:
+            if not include_inactive and not r["active"]:
+                continue
+            out.append({"profile_id": r["profile_id"], "name": r["title"],
+                        "dimensions": _load_json(r["dimensions_json"], {}), "active": bool(r["active"])})
+        return out
+
+    # ---- evaluator ----
+
+    def evaluate_conditions(self, condition: dict[str, Any] | None, profile_dimensions: dict[str, str]) -> dict[str, Any]:
+        """Rich, explainable evaluation of one condition against one
+        resolved profile (dimension_id -> single selected value_id) --
+        what the Studio's 'Valuta contenuto con questo profilo' surfaces to
+        a writer. Distinct from IndustrialRepository.condition_matches() (a
+        plain bool used by publication assembly): this explains WHY.
+
+        Fail-closed: a dimension_id/value_id referenced by `condition` (or
+        by the profile's own selection) that does not exist AT ALL in the
+        registry makes the result unresolved -- NEVER included by default.
+        An existing-but-INACTIVE dimension/value is not unresolved: it is a
+        normal, resolvable (if unmatched) state. 4E.1's fail-closed rule is
+        specifically about references to something that does not exist,
+        not about something merely archived."""
+        parsed = self._decompile_condition(condition)
+        if parsed is None:
+            return {"included": False,
+                    "reason": "Condizione troppo complessa per questa valutazione semplificata.",
+                    "matched_dimensions": [], "failed_dimensions": [], "unresolved_dimensions": []}
+        if not parsed:
+            return {"included": True, "reason": "Nessuna condizione: contenuto sempre incluso.",
+                    "matched_dimensions": [], "failed_dimensions": [], "unresolved_dimensions": []}
+
+        matched: list[str] = []
+        failed: list[str] = []
+        unresolved: list[str] = []
+        for dim_id, allowed_values in parsed.items():
+            if not self.conn.execute("SELECT 1 FROM condition_dimensions WHERE dimension_id=?", (dim_id,)).fetchone():
+                unresolved.append(dim_id)
+                continue
+            unknown_values = [v for v in allowed_values if not self.conn.execute(
+                "SELECT 1 FROM condition_values WHERE value_id=? AND dimension_id=?", (v, dim_id)).fetchone()]
+            if unknown_values:
+                unresolved.append(dim_id)
+                continue
+            profile_value = profile_dimensions.get(dim_id)
+            if profile_value is None:
+                failed.append(dim_id)
+                continue
+            if not self.conn.execute(
+                "SELECT 1 FROM condition_values WHERE value_id=? AND dimension_id=?", (profile_value, dim_id)
+            ).fetchone():
+                unresolved.append(dim_id)
+                continue
+            if profile_value in allowed_values:
+                matched.append(dim_id)
+            else:
+                failed.append(dim_id)
+
+        if unresolved:
+            reason = "Condizione non risolvibile per: " + ", ".join(sorted(unresolved)) + "."
+            included = False
+        elif failed:
+            reason = "Escluso: non soddisfa " + ", ".join(sorted(failed)) + "."
+            included = False
+        else:
+            reason = "Incluso: soddisfa " + ", ".join(sorted(matched)) + "." if matched else \
+                "Incluso: nessuna dimensione richiesta."
+            included = True
+        return {"included": included, "reason": reason, "matched_dimensions": matched,
+                "failed_dimensions": failed, "unresolved_dimensions": unresolved}
+
+    def evaluate_element_with_profile(self, kind: str, object_id: str, profile_id: str) -> dict[str, Any]:
+        """Convenience wrapper for the Studio's 'Valuta contenuto con
+        questo profilo' mini-evaluator: loads the element's OWN
+        condition_json (topic or block -- a table/figure block is
+        evaluated via ITS block, per the reuse rule that conditions live
+        on the placement, not the shared object) plus the profile's
+        dimensions, then delegates to evaluate_conditions()."""
+        if kind == "topic":
+            row = self.conn.execute("SELECT condition_json FROM topics WHERE topic_id=?", (object_id,)).fetchone()
+        elif kind == "block":
+            row = self.conn.execute("SELECT condition_json FROM content_blocks WHERE block_id=?", (object_id,)).fetchone()
+        else:
+            raise ValueError("kind deve essere 'topic' o 'block'.")
+        if not row:
+            raise KeyError(object_id)
+        profile = self.get_variant_profile(profile_id)
+        condition = _load_json(row["condition_json"], {})
+        result = self.evaluate_conditions(condition, profile["dimensions"])
+        result["profile_id"] = profile_id
+        result["profile_name"] = profile["name"]
+        result["profile_active"] = profile["active"]
+        # 4E.1 stabilization: carries resolved dimension/value NAMES for
+        # this element's OWN condition, so the view layer's human-facing
+        # message (authoring_view.evaluate_summary_text) never needs a
+        # second DB round-trip or its own registry lookups just to word
+        # "this content is for Mercato = US" -- the labels are already
+        # here, matching the exact terms describe_condition() uses
+        # everywhere else in the standard-mode UI (never raw ids).
+        result["condition_description"] = self.describe_condition(condition)
+        return result
+
+    def describe_condition(self, condition: dict[str, Any] | None) -> dict[str, Any]:
+        """Resolves a compiled condition_json into human-readable labels
+        (never raw ids), for authoring_view.py's standard-mode summary
+        formatter -- the view layer has no DB access, so label resolution
+        happens here. always_included=True with an empty dimensions list
+        covers both {} (genuinely no condition) and a condition too
+        complex for this simplified editor to decompile (too_complex=True
+        distinguishes the two; standard mode must never guess a summary
+        for something it can't faithfully represent)."""
+        parsed = self._decompile_condition(condition)
+        if not parsed:
+            return {"always_included": True, "too_complex": parsed is None, "dimensions": []}
+        dims = []
+        for dim_id, value_ids in parsed.items():
+            dim_row = self.conn.execute("SELECT name FROM condition_dimensions WHERE dimension_id=?", (dim_id,)).fetchone()
+            dim_name = dim_row["name"] if dim_row else dim_id
+            values = []
+            for v in value_ids:
+                v_row = self.conn.execute("SELECT label FROM condition_values WHERE value_id=?", (v,)).fetchone()
+                values.append({"value_id": v, "label": v_row["label"] if v_row else v})
+            dims.append({"dimension_id": dim_id, "name": dim_name, "values": values})
+        dims.sort(key=lambda d: d["name"].lower())
+        return {"always_included": False, "too_complex": False, "dimensions": dims}
 
     # ================================================================
     # Reorder

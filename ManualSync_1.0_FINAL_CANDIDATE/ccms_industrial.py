@@ -208,6 +208,35 @@ class IndustrialRepository(ContentRepository):
                 updated_at TEXT NOT NULL
             );
 
+            -- 4E.1: condition dimension/value registry. profiles.dimensions_json
+            -- and every condition_json already accepted a bare {field: value}
+            -- dict with NO validation that `field`/`value` mean anything real --
+            -- this registry is what makes an authored condition/profile
+            -- checkable against real, stable ids rather than free-text that
+            -- could typo itself into silently matching nothing. dimension_id/
+            -- value_id are the stable identifiers stored in condition_json and
+            -- profiles.dimensions_json; label/name are display-only and can be
+            -- renamed freely without touching any already-authored condition.
+            CREATE TABLE IF NOT EXISTS condition_dimensions (
+                dimension_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS condition_values (
+                value_id TEXT PRIMARY KEY,
+                dimension_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(dimension_id) REFERENCES condition_dimensions(dimension_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_condition_values_dim ON condition_values(dimension_id);
+
             CREATE TABLE IF NOT EXISTS review_tasks (
                 review_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 object_type TEXT NOT NULL,
@@ -251,6 +280,13 @@ class IndustrialRepository(ContentRepository):
         block_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(content_blocks)")}
         if "archived_at" not in block_cols:
             self.conn.execute("ALTER TABLE content_blocks ADD COLUMN archived_at TEXT")
+        # 4E.1 schema migration: profiles gain `active`, same reversible
+        # archive/deactivate axis as every other 4E.1 registry row (never a
+        # destructive delete) -- DEFAULT 1 keeps every pre-existing profile
+        # active exactly as before this column existed.
+        profile_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(profiles)")}
+        if "active" not in profile_cols:
+            self.conn.execute("ALTER TABLE profiles ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
 
     # ---------- Conditions / profiles ----------
@@ -632,6 +668,17 @@ class IndustrialRepository(ContentRepository):
                 excluded += 1
                 continue
             if not self._topic_allowed_with_profile(topic, dims):
+                excluded += 1
+                continue
+            # 4E.1: additive check alongside the legacy product-only allow/
+            # deny list above -- a topic must satisfy BOTH the legacy check
+            # (untouched, still governs old include/exclude_variants_json
+            # content) and any new dimension-based condition_json assigned
+            # through the Studio's "Varianti" panel. Every pre-existing
+            # topic's condition_json defaults to '{}', which condition_matches
+            # treats as "no condition -> always included", so this is a
+            # strict no-op for any topic never touched by 4E.1 authoring.
+            if not self.condition_matches(_load_json(topic["condition_json"], {}), dims):
                 excluded += 1
                 continue
 

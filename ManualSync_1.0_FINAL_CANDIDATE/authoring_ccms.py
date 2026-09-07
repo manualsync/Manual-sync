@@ -149,6 +149,24 @@ class ContentRepository:
         topic_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(topics)")}
         if "archived_at" not in topic_cols:
             self.conn.execute("ALTER TABLE topics ADD COLUMN archived_at TEXT")
+        # 4E.1 schema migration: topics gain condition_json, the same
+        # column table/figure/block already carry (structured_tables/
+        # figures/content_blocks) and the same boolean-tree shape
+        # IndustrialRepository.condition_matches() already evaluates in
+        # assemble_structured_publication() -- topics previously had ONLY
+        # the older, simpler include_variants_json/exclude_variants_json
+        # (a flat "product" allow/deny list), which stays exactly as-is
+        # for backward compatibility. condition_json is the new,
+        # multi-dimension mechanism 4E.1 authors through; DEFAULT '{}'
+        # means "no condition assigned" == always included, identical to
+        # every pre-existing topic and to how table/figure/block already
+        # default. Idempotent, additive, no data loss, matches the exact
+        # ALTER TABLE ... ADD COLUMN pattern used for archived_at above.
+        if "condition_json" not in topic_cols:
+            self.conn.execute("ALTER TABLE topics ADD COLUMN condition_json TEXT NOT NULL DEFAULT '{}'")
+        topic_version_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(topic_versions)")}
+        if "condition_json" not in topic_version_cols:
+            self.conn.execute("ALTER TABLE topic_versions ADD COLUMN condition_json TEXT NOT NULL DEFAULT '{}'")
         self.conn.commit()
 
     def close(self) -> None:
