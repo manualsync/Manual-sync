@@ -20,6 +20,7 @@ import legacy_family_inference as legacy_family
 from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
 from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError, SharedObjectError, MissingAssetError
 import authoring_view as av
+import publishing_preview as pp
 from translation_work_package import generate_translation_work_packages
 from cat_tm import TranslationMemory, source_target_safe
 from workflow_management import WorkflowManager
@@ -178,6 +179,31 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    a plain form error, never a global gr.Error popup. */
 .ms-field-invalid textarea,.ms-field-invalid input{border-color:var(--ui-red)!important;box-shadow:0 0 0 1px var(--ui-red) inset!important}
 .ms-inline-error{color:var(--ui-red);font-size:11.5px;font-weight:650;margin:2px 2px 8px}
+/* 4E.2: Publishing Preview -- read-only rendering, deliberately visually
+   distinct (soft border, no editable-looking chrome) from the Studio
+   editor panels right next to it. */
+.ms-pp-summary{background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.7;margin:10px 0}
+.ms-pp-warning{background:var(--ui-amber-soft);border:1px solid #fde68a;color:#93450a;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.7;margin:10px 0}
+.ms-pp-note-line{color:var(--ui-muted);font-size:11.5px;margin:2px 2px 10px}
+.ms-pp-topic{border:1px solid var(--ui-line);border-radius:14px;padding:14px 16px;margin:12px 0;background:#fff}
+.ms-pp-topic h2{font-size:16px;margin:0 0 8px;font-weight:800}
+.ms-pp-topic.ms-pp-excluded{background:var(--ui-surface-2);opacity:.85}
+.ms-pp-block{border-top:1px solid #f2f4f7;padding:10px 2px}
+.ms-pp-block:first-of-type{border-top:0}
+.ms-pp-block-head{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#98a2b3;font-weight:750;margin-bottom:4px}
+.ms-pp-block p{margin:2px 0;font-size:13px;line-height:1.6}
+.ms-pp-badge{display:inline-block;background:var(--ui-primary-soft);color:#175cd3;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:700;margin-left:6px}
+.ms-pp-badge-warn{display:inline-block;background:var(--ui-amber-soft);color:#93450a;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:700;margin-left:6px}
+.ms-pp-status{display:inline-block;color:#98a2b3;font-size:10px;font-weight:700;margin-left:6px}
+.ms-pp-reason{color:#93450a;font-size:12px;background:var(--ui-amber-soft);border-radius:8px;padding:6px 9px;margin-top:4px}
+.ms-pp-note{color:var(--ui-muted);font-size:12px;font-style:italic}
+.ms-pp-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+.ms-pp-table th,.ms-pp-table td{border:1px solid var(--ui-line);padding:6px 9px;text-align:left}
+.ms-pp-table th{background:var(--ui-surface-2);font-weight:750}
+.ms-pp-table-title{font-weight:750;font-size:13px;margin-top:4px}
+.ms-pp-table-caption{color:var(--ui-muted);font-size:11.5px;margin-bottom:2px}
+.ms-pp-figure{max-width:100%;border-radius:8px;margin-top:6px;display:block}
+.ms-pp-figure-caption{color:var(--ui-muted);font-size:11.5px;margin-top:4px}
 """
 
 def _ccms_db(project_dir: str | Path) -> Path:
@@ -2600,6 +2626,60 @@ def studio_variant_evaluate_ui(project_dir, kind, object_id, profile_id):
         repo.close()
 
 
+# ----------------------------------------------------------------
+# 4E.2 Publishing Preview -- read-only, variant-aware preview of what a
+# publication would contain for a selected profile. All actual model-
+# building/rendering logic lives in publishing_preview.py (zero gradio
+# imports, testable standalone); these two functions are thin Gradio
+# wiring only, matching the app.py = "thin wiring, zero business logic"
+# contract already established for the rest of the Studio.
+# ----------------------------------------------------------------
+
+def studio_preview_profile_choices_ui(project_dir):
+    """(label, profile_id) choices for the Publishing Preview's own
+    profile picker -- ACTIVE profiles only (an inactive one is never
+    offered as a NEW selection, matching the Varianti panel's own
+    profile dropdown), human names only, never raw ids. Wired to fire on
+    project load/switch so no stale profile list from a previous project
+    can ever survive -- value is always reset to None on refresh, which
+    also correctly clears any stale SELECTION from a previous project."""
+    if not project_dir:
+        return gr.update(choices=[], value=None)
+    repo, svc = av.open_service(project_dir)
+    try:
+        choices = [(p["name"], p["profile_id"]) for p in svc.list_variant_profiles(include_inactive=False)]
+    finally:
+        repo.close()
+    return gr.update(choices=choices, value=None)
+
+
+def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excluded):
+    """Builds and renders the preview -- a pure read path (publishing_
+    preview.build_preview_model() never issues a write), so this callback
+    itself never mutates authoring data, never bumps a version, never
+    writes an audit event. A missing publication/profile (e.g. the
+    selected profile was deactivated/renamed away mid-session) fails
+    VISIBLY via gr.Error rather than silently showing a stale or
+    misleading preview -- the ticket's own 'fail visibly and require
+    refresh' requirement for a profile that disappears during the
+    session."""
+    if not project_dir:
+        raise gr.Error("Nessun progetto attivo.")
+    if not profile_id:
+        return "<div class='ms-pp-note-line'>Seleziona un profilo per vedere quali contenuti verranno inclusi.</div>"
+    repo, svc = av.open_service(project_dir)
+    try:
+        model = pp.build_preview_model(repo, svc, (publication_id or "").strip() or "PUB-MAIN", profile_id)
+        return pp.render_preview_html(model, show_excluded=bool(show_excluded))
+    except KeyError:
+        raise gr.Error("Impossibile generare l'anteprima: la publication o il profilo selezionato non sono "
+                       "più disponibili. Aggiorna la struttura o l'elenco profili e riprova.")
+    except Exception as e:
+        raise gr.Error(f"Anteprima non generabile: {e}")
+    finally:
+        repo.close()
+
+
 # ---- Impostazioni > Varianti: minimal dimension/value/profile management ----
 
 def settings_variant_dimensions_table_ui(project_dir):
@@ -3894,6 +3974,23 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                             st_revert_version = gr.Number(label="Versione da ripristinare", precision=0)
                             st_revert_btn = gr.Button("Ripristina questa versione")
 
+            # ----------------------------------------------------------------
+            # Milestone 4E.2: Publishing Preview -- deliberately a standard-
+            # mode section right here (never inside "Dettagli tecnici"): the
+            # ticket is explicit that this is normal workflow, not an
+            # expert-only feature. Read-only by construction -- no save/
+            # edit control anywhere in this block; all rendering comes from
+            # publishing_preview.py's pure model+HTML functions.
+            # ----------------------------------------------------------------
+            gr.HTML("<div class='ms-section-title'>Anteprima pubblicazione</div>"
+                    "<div class='ms-section-sub'>Scegli un profilo per vedere quali contenuti verrebbero "
+                    "inclusi — senza generare alcun file e senza modificare nulla.</div>")
+            with gr.Row():
+                pv_profile = gr.Dropdown(choices=[], value=None, label="Profilo", scale=2)
+                pv_refresh_btn = gr.Button("Aggiorna anteprima", scale=1)
+                pv_show_excluded = gr.Checkbox(label="Mostra contenuti esclusi", value=False, scale=1)
+            pv_output = gr.HTML("<div class='ms-pp-note-line'>Seleziona un profilo per vedere quali contenuti verranno inclusi.</div>")
+
             with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
                 with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
                 c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
@@ -4116,6 +4213,23 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                         [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_variant_eval_btn.click(studio_variant_evaluate_ui,
                                       [project_state, st_kind, st_id, st_variant_eval_profile], [st_variant_eval_result])
+
+            # 4E.2 Publishing Preview wiring. Profile choices reload on
+            # every project load/switch (authoring_tab.select fires on tab
+            # entry; project_state.change fires on an actual project
+            # switch -- the same proven trigger already used for
+            # onboarding_choice_panel's own visibility) so no profile list
+            # -- and no stale SELECTION -- from a previous project can
+            # survive. Preview itself refreshes on its own button, on a
+            # profile pick, and on toggling "Mostra contenuti esclusi";
+            # each is independently wired directly to studio_preview_
+            # refresh_ui with no shared mutable state, matching the read-
+            # only, side-effect-free nature of the whole feature.
+            authoring_tab.select(studio_preview_profile_choices_ui, [project_state], [pv_profile])
+            project_state.change(studio_preview_profile_choices_ui, [project_state], [pv_profile])
+            pv_refresh_btn.click(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            pv_profile.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            pv_show_excluded.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
 
         with gr.Tab("Compliance", id="compliance") as cp_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
