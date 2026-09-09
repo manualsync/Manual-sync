@@ -1131,9 +1131,11 @@ check("sync1 (structural): the Varianti panel refresh chain runs regardless of o
       _panel_chain is not None and _panel_chain.get("trigger_only_on_success", False) is False and
       _panel_chain.get("trigger_only_on_failure", False) is False, _panel_chain)
 check("sync2 (structural, item 7 of the diagnosis list -- IS ST_OUT_FULL refreshed after a successful "
-      "variant save?): a studio_refresh_ui chain producing the FULL ST_OUT_FULL bundle (46 outputs) is "
-      "chained onto the same save click, gated to run ONLY on success (trigger_only_on_success=True)",
-      _refresh_chain is not None and len(_refresh_chain.get("outputs", [])) == 46 and
+      "variant save?): a studio_refresh_ui chain producing the FULL ST_OUT_FULL bundle (49 outputs -- 46 "
+      "at 4E.1 time, +2 in 4E.3 for st_rich_toolbar_row/st_rich_editable, +1 in the Save Architecture "
+      "Replacement for st_rich_save_status, same bundle, same invariant) is chained onto the same save "
+      "click, gated to run ONLY on success (trigger_only_on_success=True)",
+      _refresh_chain is not None and len(_refresh_chain.get("outputs", [])) == 49 and
       _refresh_chain.get("trigger_only_on_success") is True and _refresh_chain.get("trigger_only_on_failure", False) is False,
       _refresh_chain)
 

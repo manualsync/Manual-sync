@@ -15,8 +15,21 @@ from ccms_industrial import IndustrialRepository
 from impact_economics import word_count
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import is_nontranslatable_text
+import rich_text
 
 TRANSLATION_IMPACT_BUILD = "0.22.1-repeat-nontranslatable-intelligence-20260820"
+
+# 4E.3 final translation blocker: a stable, code-matchable marker
+# (never shown verbatim to a human) appended to a SourceUnit.source_ref
+# whenever that unit's text is a rich block's VISIBLE-TEXT projection
+# rather than its literal stored content -- i.e. whenever formatting was
+# stripped rather than preserved. translation_work_package.py's
+# fail-closed pre-flight check greps for this exact marker to decide
+# whether to REFUSE creating a translation work package at all; kept
+# separate from the human-readable phrase appended alongside it in
+# _block_text_source_unit() so that wording can be edited freely without
+# ever touching the detection logic.
+RICH_FORMAT_UNSAFE_MARKER = "#rich-format-unsafe"
 
 
 @dataclass(frozen=True)
@@ -187,6 +200,49 @@ def _component_units(repo: IndustrialRepository, component_id: str, *, prefix: s
     return units
 
 
+def _block_text_source_unit(block_row: Any, *, unit_id: str) -> "SourceUnit | None":
+    """4E.3 stabilization (Blocker 4): the ONE place a text-kind block's
+    content becomes a translation SourceUnit -- used by both the
+    'publication'/'block'-kind branch and the 'topic'-kind branch below
+    (previously two independent copies of the same three lines).
+
+    A 'rich' block's raw text_content can contain this milestone's
+    canonical markup ('**', '_', '`', '[]()' -- possibly backslash-
+    escaped literals too) -- none of that may ever reach CAT/TM
+    segmentation or a translator's screen as ordinary source text; a
+    translator has no way to know '**' is formatting syntax rather than
+    two literal asterisks, and round-tripping it back through
+    _append_text_with_inline's OWN unrelated inline-placeholder
+    tokenizer would silently swallow it as an opaque protected code,
+    not a semantic mark. A rich block with genuine formatting
+    (rich_text.has_rich_structure) is extracted here using its
+    VISIBLE-TEXT projection instead (rich_text.plain_text() -- marks/
+    URLs stripped) and its source_ref carries RICH_FORMAT_UNSAFE_MARKER
+    -- this function itself stays a pure, read-only ANALYSIS/PREVIEW
+    helper (used e.g. by impact-analysis reporting) and never authorizes
+    anything by itself. The actual FAIL-CLOSED enforcement -- refusing
+    to create a translation work package at all when this marker is
+    present -- lives one layer up, in translation_work_package.
+    generate_translation_work_packages()'s own pre-flight check, which
+    runs and can raise BEFORE this function (or any file/directory) is
+    ever touched for that operation. A 'plain' block (the vast majority,
+    and every block with no genuine marks even if flagged 'rich') is
+    extracted completely unchanged from pre-4E.3 behavior."""
+    raw_text = str(block_row["text_content"] or "").strip()
+    if not raw_text:
+        return None
+    text_format = block_row["text_format"] if "text_format" in block_row.keys() else "plain"
+    version_ref = f"v{block_row['version']}"
+    if text_format == "rich" and rich_text.has_rich_structure(raw_text):
+        visible = rich_text.plain_text(raw_text, text_format)
+        if not visible:
+            return None
+        return SourceUnit(unit_id, "block", unit_id, visible,
+                          f"{unit_id}#{version_ref}{RICH_FORMAT_UNSAFE_MARKER} — formattazione rich non riportata: "
+                          "verificare/riformattare dopo la traduzione")
+    return SourceUnit(unit_id, "block", unit_id, raw_text, f"{unit_id}#{version_ref}")
+
+
 def extract_source_units(repo: IndustrialRepository, changed_id: str, *, kind: str) -> tuple[list[SourceUnit], dict[str, Any]]:
     """Extract current approved source content at the smallest practical unit.
 
@@ -215,9 +271,9 @@ def extract_source_units(repo: IndustrialRepository, changed_id: str, *, kind: s
         elif bt == "component_ref":
             units.extend(_component_units(repo, str(r["object_ref_id"]), prefix=changed_id))
         else:
-            text = str(r["text_content"] or "").strip()
-            if text:
-                units.append(SourceUnit(changed_id, "block", changed_id, text, f"{changed_id}#v{r['version']}"))
+            unit = _block_text_source_unit(r, unit_id=changed_id)
+            if unit is not None:
+                units.append(unit)
 
     elif kind == "topic":
         title = str(meta.get("title") or "").strip()
@@ -235,9 +291,9 @@ def extract_source_units(repo: IndustrialRepository, changed_id: str, *, kind: s
                 elif bt == "component_ref":
                     units.extend(_component_units(repo, str(b["object_ref_id"]), prefix=bid))
                 else:
-                    text = str(b["text_content"] or "").strip()
-                    if text:
-                        units.append(SourceUnit(bid, "block", bid, text, f"{bid}#v{b['version']}"))
+                    unit = _block_text_source_unit(b, unit_id=bid)
+                    if unit is not None:
+                        units.append(unit)
         else:
             text = str(meta.get("body") or "").strip()
             if text:

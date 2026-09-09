@@ -21,6 +21,7 @@ from typing import Any
 
 from ccms_industrial import IndustrialRepository
 from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES, _SHARED_OBJECT_MESSAGE
+import rich_text as _rich_text
 
 STATUS_LABELS = {"Draft": "Bozza", "In Review": "In revisione", "Approved": "Approvato",
                  "Migrated": "Importato", "Published": "Pubblicato"}
@@ -283,7 +284,11 @@ def outline_rows(repo: IndustrialRepository, publication_id: str, *, include_arc
                 if frow is not None:
                     display_version = int(frow["version"])
             elif editable_text:
-                preview = _block_preview(b["text_content"])
+                # 4E.3: outline preview shows VISIBLE text only -- a
+                # 'rich' block's raw marks/list markers never leak into
+                # this standard-mode list (plain_text() is a no-op for
+                # 'plain' blocks, so legacy previews are unaffected).
+                preview = _block_preview(_rich_text.plain_text(b["text_content"] or "", b["text_format"] or "plain"))
             elif bt == "component_ref":
                 # 4D Blocker B (component scope decision, Option 1): no
                 # Studio editor exists for components, so this NEVER
@@ -667,7 +672,7 @@ def block_history_rows(service: AuthoringService, block_id: str) -> list[dict[st
         out.append({
             "Versione": h["version"], "Quando": (h["created_at"] or "")[:16].replace("T", " "),
             "Stato al salvataggio": status_label(h["status"]), "Autore": h["actor"] or "—",
-            "Anteprima testo": _block_preview(h["text"], width=50),
+            "Anteprima testo": _block_preview(_rich_text.plain_text(h["text"] or "", h.get("text_format") or "plain"), width=50),
         })
     return out
 
@@ -711,7 +716,7 @@ def search(repo: IndustrialRepository, publication_id: str, query: str) -> list[
     # Block text is searched against the live, untruncated text_content
     # (not outline_rows()'s already-truncated preview) so a match past the
     # preview boundary is never missed.
-    block_sql = """SELECT b.block_id,b.topic_id,b.block_type,b.text_content,b.object_ref_id,b.status,t.title AS topic_title
+    block_sql = """SELECT b.block_id,b.topic_id,b.block_type,b.text_content,b.text_format,b.object_ref_id,b.status,t.title AS topic_title
                    FROM content_blocks b JOIN topics t ON t.topic_id=b.topic_id
                    WHERE b.topic_id IN (SELECT pt.topic_id FROM publication_topics pt JOIN topics tt ON tt.topic_id=pt.topic_id
                                         WHERE pt.publication_id=? AND tt.archived_at IS NULL)
@@ -719,7 +724,14 @@ def search(repo: IndustrialRepository, publication_id: str, query: str) -> list[
     for b in repo.conn.execute(block_sql, (publication_id,)):
         bt = b["block_type"]
         if bt in EDITABLE_TEXT_BLOCK_TYPES:
-            text = b["text_content"] or ""
+            # 4E.3: search/preview both use the VISIBLE-TEXT projection,
+            # never the raw stored string -- a 'rich' block's marks/list
+            # markers/link URLs must never leak into a search match test
+            # or into the result label ("no JSON/source fragments in
+            # search results"). For 'plain' blocks this is a no-op
+            # (plain_text() returns the string unchanged), so legacy
+            # search behavior is completely unaffected.
+            text = _rich_text.plain_text(b["text_content"] or "", b["text_format"] or "plain")
             if q in text.lower():
                 out.append({"kind": "block", "id": b["block_id"], "topic_id": b["topic_id"],
                             "label": f"{b['topic_title']} — {_block_preview(text)}",

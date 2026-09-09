@@ -36,6 +36,7 @@ from typing import Any
 from ccms_industrial import IndustrialRepository
 from authoring_service import AuthoringService
 import authoring_view as av
+import rich_text
 
 # Block kinds this preview can safely render read-only. Anything else
 # fails visibly (a per-item placeholder) rather than raising -- one
@@ -205,7 +206,14 @@ def _resolve_block_content(repo: IndustrialRepository, block_row: Any,
     budget on behalf of an image nobody will ever see."""
     bt = block_row["block_type"]
     if bt in _TEXT_BLOCK_KINDS:
-        return {"kind": bt, "text": block_row["text_content"] or ""}
+        # 4E.3: text_format travels alongside the raw text -- the render
+        # branch (_render_block_html) is the single place that turns this
+        # into safe HTML via rich_text.render_html(), the SAME function
+        # the live Studio editor preview uses. 'plain' (every legacy
+        # block, and any block never re-saved through the rich-aware
+        # editor) renders byte-for-byte identical to pre-4E.3 output.
+        return {"kind": bt, "text": block_row["text_content"] or "",
+                "text_format": block_row["text_format"] or "plain"}
     if bt == "table":
         trow = repo.conn.execute(
             "SELECT * FROM structured_tables WHERE table_id=?", (block_row["object_ref_id"],)
@@ -443,7 +451,12 @@ def _render_block_html(block: dict[str, Any], *, show_excluded: bool) -> str:
     if content.get("error") or content.get("unavailable") or content.get("unsupported"):
         body = f"<div class='ms-pp-note'>{_html.escape(content.get('note', 'Contenuto non disponibile.'))}</div>"
     elif content["kind"] in _TEXT_BLOCK_KINDS:
-        body = f"<p>{_html.escape(content['text'])}</p>"
+        # 4E.3: the SAME rich_text.render_html() the live Studio editor
+        # preview uses -- single source of truth for "what does this
+        # text look like rendered", never a second copy of the markup
+        # rules. 'plain' format falls straight through to the exact
+        # pre-4E.3 <p>{escape(text)}</p> this line used to hardcode.
+        body = rich_text.render_html(content["text"], content.get("text_format", "plain"))
     elif content["kind"] == "table":
         cols = content["columns"] or []
         rows = content["rows"] or []

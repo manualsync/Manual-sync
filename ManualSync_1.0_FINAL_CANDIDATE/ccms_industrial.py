@@ -287,6 +287,29 @@ class IndustrialRepository(ContentRepository):
         profile_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(profiles)")}
         if "active" not in profile_cols:
             self.conn.execute("ALTER TABLE profiles ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        # 4E.3 schema migration: content_blocks/block_versions gain
+        # text_format ('plain' | 'rich'). DEFAULT 'plain' is the load-
+        # bearing safety property this whole milestone's backward-
+        # compatibility guarantee rests on: every row that existed before
+        # this column did is retroactively 'plain' with zero data touched,
+        # meaning rich_text.render_html() never runs its markup-
+        # interpreting parser over pre-existing text (which could contain
+        # incidental '*'/'_'/'`'/'[]()' characters never meant as markup,
+        # e.g. "M8*1.25", "MAX_PRESSURE", footnote-style "[1]") -- it falls
+        # straight to the literal-escape path, byte-for-byte identical to
+        # this app's rendering before 4E.3 existed. A block only ever
+        # becomes 'rich' the moment a human explicitly re-saves it through
+        # the (now rich-aware) Studio text editor -- see AuthoringService.
+        # save_block's new `text_format` parameter -- which is an
+        # intentional, visible action (the writer is looking at the same
+        # box's live preview at that exact moment), never a silent
+        # background reinterpretation.
+        block_cols2 = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(content_blocks)")}
+        if "text_format" not in block_cols2:
+            self.conn.execute("ALTER TABLE content_blocks ADD COLUMN text_format TEXT NOT NULL DEFAULT 'plain'")
+        block_version_cols = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(block_versions)")}
+        if "text_format" not in block_version_cols:
+            self.conn.execute("ALTER TABLE block_versions ADD COLUMN text_format TEXT NOT NULL DEFAULT 'plain'")
         self.conn.commit()
 
     # ---------- Conditions / profiles ----------
@@ -492,7 +515,7 @@ class IndustrialRepository(ContentRepository):
     def add_block(self, block_id: str, topic_id: str, block_type: str, *, position: int,
                   text: str = "", object_ref_id: str = "", status: str = "Draft",
                   condition: dict[str, Any] | None = None, source_refs: Iterable[str] | None = None,
-                  evidence_status: str = "SOURCE_GROUNDED") -> str:
+                  evidence_status: str = "SOURCE_GROUNDED", text_format: str = "plain") -> str:
         if not self.conn.execute("SELECT 1 FROM topics WHERE topic_id=?", (topic_id,)).fetchone():
             raise KeyError(topic_id)
         bt = block_type.strip().lower()
@@ -504,18 +527,27 @@ class IndustrialRepository(ContentRepository):
             raise KeyError(object_ref_id)
         if bt == "component_ref" and not self.conn.execute("SELECT 1 FROM components WHERE component_id=?", (object_ref_id,)).fetchone():
             raise KeyError(object_ref_id)
+        # 4E.3: every NEW block starts 'plain' by default (text_format
+        # param exists mainly for the manual-fixture builder / tests that
+        # want to seed a block already in 'rich' form) -- the normal
+        # Studio "create block" path never passes it, matching
+        # create_block_in_topic's own "format flips to rich only on an
+        # explicit rich-aware save" rule.
+        tf = (text_format or "plain").strip().lower()
+        if tf not in ("plain", "rich"):
+            tf = "plain"
         refs = _norm_set(source_refs)
         now = _now()
         values = (block_id.strip(), topic_id, bt, int(position), text.strip(), object_ref_id.strip(), status, 1,
-                  _json(condition or {}), _json(refs), evidence_status, now, now)
+                  _json(condition or {}), _json(refs), evidence_status, now, now, tf)
         self.conn.execute(
-            """INSERT INTO content_blocks(block_id,topic_id,block_type,position,text_content,object_ref_id,status,version,condition_json,source_refs_json,evidence_status,created_at,updated_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
+            """INSERT INTO content_blocks(block_id,topic_id,block_type,position,text_content,object_ref_id,status,version,condition_json,source_refs_json,evidence_status,created_at,updated_at,text_format)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", values)
         self.conn.execute(
-            """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
-               VALUES(?,1,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at,text_format)
+               VALUES(?,1,?,?,?,?,?,?,?,?,?,?,?)""",
             (block_id.strip(), topic_id, bt, int(position), text.strip(), object_ref_id.strip(), status,
-             _json(condition or {}), _json(refs), evidence_status, now),
+             _json(condition or {}), _json(refs), evidence_status, now, tf),
         )
         self.conn.commit()
         return block_id

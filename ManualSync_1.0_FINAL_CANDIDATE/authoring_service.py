@@ -60,6 +60,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from ccms_industrial import IndustrialRepository
+import rich_text
 
 AUTHORING_SERVICE_BUILD = "0.4.0-authoring-reuse-revision-4d-20260903"
 
@@ -260,6 +261,7 @@ class AuthoringService:
             "source_refs": _load_json(row["source_refs_json"], []),
             "condition": _load_json(row["condition_json"], {}),
             "object_ref_id": row["object_ref_id"],
+            "text_format": row["text_format"],
             "draft": self.load_draft("block", block_id),
         }
 
@@ -401,7 +403,7 @@ class AuthoringService:
     # ================================================================
 
     def save_block(self, block_id: str, *, text: str | None = None, source_refs: Iterable[str] | None = None,
-                   condition: dict[str, Iterable[str]] | None = None,
+                   condition: dict[str, Iterable[str]] | None = None, text_format: str | None = None,
                    expected_version: int, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
@@ -423,6 +425,41 @@ class AuthoringService:
                     "in questo incremento (tabelle/figure/componenti riusabili non vanno corrotti da una textarea)."
                 )
             new_text = row["text_content"] if text is None else text.strip()
+            # 4E.3: text_format=None means "leave this block's stored
+            # format exactly as it already is" -- every pre-4E.3 caller
+            # (this whole codebase's other suites included) omits it and
+            # is completely unaffected.
+            #
+            # text_format="auto" is the STABILIZATION fix for Blocker 2
+            # (a plain paragraph must not be silently promoted just
+            # because the save came through the rich-aware editor): an
+            # already-'rich' block stays 'rich' unconditionally (no
+            # silent demotion either); a 'plain' block is promoted ONLY
+            # if the saved text genuinely introduces rich structure
+            # (rich_text.has_rich_structure() -- a real mark, a link, or
+            # a list; plain multi-line text alone never counts). When it
+            # is NOT promoted, the text actually stored is the UNESCAPED
+            # form: the client-side DOM->canonical serializer always
+            # backslash-escapes literal markup-like characters (see
+            # rich_text.py's module docstring), but 'plain' format never
+            # runs the parser/unescaper on read -- so if this save stays
+            # 'plain', the escape must be undone HERE, once, at write
+            # time, or a legacy-format reader would show a literal
+            # stray backslash the writer never typed.
+            if text_format is None:
+                new_text_format = row["text_format"]
+            elif str(text_format).strip().lower() == "auto":
+                if row["text_format"] == "rich":
+                    new_text_format = "rich"
+                elif text is not None and rich_text.has_rich_structure(new_text):
+                    new_text_format = "rich"
+                else:
+                    new_text_format = "plain"
+                    if text is not None:
+                        new_text = rich_text.unescape_literal(new_text)
+            else:
+                tf = str(text_format).strip().lower()
+                new_text_format = tf if tf in ("plain", "rich") else row["text_format"]
             new_refs = _load_json(row["source_refs_json"], []) if source_refs is None else _norm_set(source_refs)
             previous_status = row["status"]
             new_status = self._status_after_edit(previous_status)
@@ -448,19 +485,19 @@ class AuthoringService:
                 condition_changed = new_condition_json != previous_condition_json
 
             cur = self.conn.execute(
-                """UPDATE content_blocks SET text_content=?,status=?,version=?,source_refs_json=?,condition_json=?,updated_at=?
+                """UPDATE content_blocks SET text_content=?,status=?,version=?,source_refs_json=?,condition_json=?,updated_at=?,text_format=?
                    WHERE block_id=? AND version=?""",
-                (new_text, new_status, new_version, _json(new_refs), new_condition_json, now, block_id, int(expected_version)),
+                (new_text, new_status, new_version, _json(new_refs), new_condition_json, now, new_text_format, block_id, int(expected_version)),
             )
             if cur.rowcount == 0:
                 self.conn.rollback()
                 raise VersionConflictError(block_id, expected_version)
             self.conn.execute(
                 """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,
-                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at,text_format)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (block_id, new_version, row["topic_id"], row["block_type"], int(row["position"]), new_text,
-                 object_ref_id, new_status, new_condition_json, _json(new_refs), evidence, now),
+                 object_ref_id, new_status, new_condition_json, _json(new_refs), evidence, now, new_text_format),
             )
             invalidated = self._invalidate_open_review_if_edited("block", block_id, previous_status, new_status, actor)
             self.repo.audit_event("block", block_id, "AUTHORING_SAVE", actor,
@@ -1373,22 +1410,32 @@ class AuthoringService:
             previous_status = live["status"]
             new_status = self._status_after_edit(previous_status)
             new_version = int(live["version"]) + 1
+            # 4E.3: text_format is part of what a revert restores, exactly
+            # like text_content itself -- reverting to a version that
+            # predates this milestone (or was saved before ever being
+            # touched by the rich-aware editor) correctly restores 'plain'
+            # rather than leaving whatever format the CURRENT row happens
+            # to carry. `hist["text_format"]` is safe even for a
+            # block_versions row written before this column existed,
+            # since the additive migration's DEFAULT 'plain' applies
+            # retroactively to it too.
+            hist_text_format = hist["text_format"] if "text_format" in hist.keys() else "plain"
             cur = self.conn.execute(
                 """UPDATE content_blocks SET text_content=?,status=?,version=?,condition_json=?,
-                   source_refs_json=?,evidence_status=?,updated_at=? WHERE block_id=? AND version=?""",
+                   source_refs_json=?,evidence_status=?,updated_at=?,text_format=? WHERE block_id=? AND version=?""",
                 (hist["text_content"], new_status, new_version, hist["condition_json"], hist["source_refs_json"],
-                 hist["evidence_status"], now, block_id, int(live["version"])),
+                 hist["evidence_status"], now, hist_text_format, block_id, int(live["version"])),
             )
             if cur.rowcount == 0:
                 self.conn.rollback()
                 raise VersionConflictError(block_id, live["version"])
             self.conn.execute(
                 """INSERT INTO block_versions(block_id,version,topic_id,block_type,position,text_content,
-                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   object_ref_id,status,condition_json,source_refs_json,evidence_status,created_at,text_format)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (block_id, new_version, live["topic_id"], live["block_type"], int(live["position"]),
                  hist["text_content"], live["object_ref_id"], new_status, hist["condition_json"],
-                 hist["source_refs_json"], hist["evidence_status"], now),
+                 hist["source_refs_json"], hist["evidence_status"], now, hist_text_format),
             )
             self._invalidate_open_review_if_edited("block", block_id, previous_status, new_status, actor)
             self.repo.audit_event("block", block_id, "REVERT_TO_VERSION", actor,
@@ -1526,7 +1573,7 @@ class AuthoringService:
         return {"topic_id": topic_id, "publication_id": publication_id, "position": position}
 
     def create_block_in_topic(self, topic_id: str, block_type: str, *, actor: str, text: str = "",
-                              after_block_id: str | None = None) -> dict[str, Any]:
+                              after_block_id: str | None = None, text_format: str = "plain") -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per creare un blocco.")
@@ -1546,7 +1593,8 @@ class AuthoringService:
         # int works here since add_block()'s own commit is immediately
         # followed by the renumbering step before anyone else observes it
         # through the outline/assembly (both order by position,block_id).
-        self.repo.add_block(block_id, topic_id, bt, position=1_000_000, text=text, status="Draft")
+        self.repo.add_block(block_id, topic_id, bt, position=1_000_000, text=text, status="Draft",
+                           text_format=text_format)
         self.repo.audit_event("block", block_id, "AUTHORING_CREATE", actor, {"block_type": bt, "topic_id": topic_id})
         self.conn.commit()
 
@@ -1600,13 +1648,13 @@ class AuthoringService:
 
     def block_history(self, block_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT version,text_content,status,created_at FROM block_versions WHERE block_id=? ORDER BY version DESC",
+            "SELECT version,text_content,text_format,status,created_at FROM block_versions WHERE block_id=? ORDER BY version DESC",
             (block_id,),
         ).fetchall()
         out = []
         for r in rows:
             out.append({
-                "version": int(r["version"]), "text": r["text_content"], "status": r["status"],
+                "version": int(r["version"]), "text": r["text_content"], "text_format": r["text_format"], "status": r["status"],
                 "created_at": r["created_at"], "actor": self._actor_for_version("block", block_id, int(r["version"])),
             })
         return out
@@ -1637,6 +1685,7 @@ class AuthoringService:
         return {
             "block_id": block_id, "version": int(row["version"]), "text": row["text_content"],
             "block_type": row["block_type"], "status": row["status"], "created_at": row["created_at"],
+            "text_format": row["text_format"],
         }
 
     def _actor_for_version(self, object_type: str, object_id: str, version: int) -> str:

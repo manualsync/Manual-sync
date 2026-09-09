@@ -648,9 +648,18 @@ bundle30_block = app.studio_new_block_ui(str(p30), "PUB-30", "topic", "SEED-TOPI
 # this one). That rendering defect is only observable in a real browser --
 # it is what the browser smoke test below re-verifies against the actual
 # DOM, not this backend check.
-check("g30.8: the bundle for a newly opened BLOCK correctly marks 'Testo' visible and 'Titolo' hidden",
-      bundle30_block[app.ST_IDX_TITLE]["visible"] is False and bundle30_block[app.ST_IDX_TEXT]["visible"] is True,
+check("g30.8: the bundle for a newly opened BLOCK correctly hides 'Titolo' and keeps the hidden canonical "
+      "'Testo' Textbox hidden -- 4E.3 stabilization (Blocker 1) makes st_text_input a PERMANENTLY hidden "
+      "canonical-text carrier; the standard editor surface the writer actually sees/edits is now "
+      "st_rich_editable (a contenteditable div), which the next check confirms becomes visible instead",
+      bundle30_block[app.ST_IDX_TITLE]["visible"] is False and bundle30_block[app.ST_IDX_TEXT]["visible"] is False,
       (bundle30_block[app.ST_IDX_TITLE], bundle30_block[app.ST_IDX_TEXT]))
+check("g30.8b (4E.3): opening an editable BLOCK makes the standard contenteditable editor surface visible "
+      "(st_rich_editable/st_rich_toolbar_row) -- the actual writer-facing surface, replacing the old raw "
+      "Textbox as the standard editing UI",
+      bundle30_block[app.ST_IDX_RICH_EDITABLE]["visible"] is True and
+      bundle30_block[app.ST_IDX_RICH_TOOLBAR_ROW]["visible"] is True,
+      (bundle30_block[app.ST_IDX_RICH_EDITABLE], bundle30_block[app.ST_IDX_RICH_TOOLBAR_ROW]))
 
 # 9) actor session persistence across navigation: nothing in the entire
 #    wired app ever writes a value INTO c_actor -- so no server response

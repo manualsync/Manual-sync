@@ -21,7 +21,8 @@ from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_block
 from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError, SharedObjectError, MissingAssetError
 import authoring_view as av
 import publishing_preview as pp
-from translation_work_package import generate_translation_work_packages
+import rich_text
+from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
 from cat_tm import TranslationMemory, source_target_safe
 from workflow_management import WorkflowManager
 from release_readiness import assess_release_readiness, export_readiness_report
@@ -116,6 +117,232 @@ def _load_active_project() -> str:
 
 INITIAL_PROJECT = _load_active_project()
 
+# ----------------------------------------------------------------------
+# 4E.3 stabilization (Blocker 1): the standard-mode rich-text editor's
+# client-side sync/paste-safety script, passed as `js_on_load` to the
+# st_rich_editable gr.HTML component (see its declaration for the full
+# architecture rationale). `js_on_load` runs whenever this HTML element
+# (re)loads -- the same mechanism Gradio's OWN default HTML click-
+# forwarding behavior relies on to survive value updates, per gradio's
+# own documented default: "element.addEventListener('click', function()
+# { trigger('click') });" -- `element` and `trigger` are free variables
+# Gradio provides in this exact scope; this script deliberately does not
+# call `trigger(...)` at all (no click on the editable area should ever
+# fire a Python callback -- normal editing needs no server round trip).
+#
+# What it does:
+#  1. Finds the real contenteditable div (#ms-rich-editable-inner) and
+#     the hidden canonical-text carrier (#ms-rich-text-input textarea).
+#  2. serializeRoot(): walks the (already-constrained) DOM -- only
+#     B/STRONG, I/EM, CODE, A, BR, UL>LI, OL>LI, and plain text ever
+#     appear there (server-rendered content, toolbar-driven execCommand
+#     edits, or plain typing -- see paste handling below) -- and
+#     produces the canonical markdown-like string, escaping every
+#     literal occurrence of the grammar's own delimiter characters
+#     (escapeLiteral mirrors rich_text.py's escape_literal() exactly:
+#     backslash, *, _, `, [, ] ) so a writer's literal "M8*1.25" or
+#     "MAX_PRESSURE_LIMIT" survives round-trip exactly, never
+#     reinterpreted as formatting (Blocker 3). An unrecognized element
+#     (should not normally occur) is flattened to its text content only
+#     -- fail-safe, never a raw stray tag reaching canonical storage.
+#  3. On 'input': pushes the freshly serialized canonical text into the
+#     hidden textarea's value and dispatches a REAL 'input' DOM event on
+#     it (bubbles:true) -- the exact mechanism already proven for the
+#     toolbar buttons below: Gradio's frontend listens for genuine DOM
+#     events on a component's own element, synthetic or not, and syncs
+#     its tracked value accordingly.
+#  4. On 'blur': re-syncs (belt and braces) and forwards a synthetic
+#     'blur' event to the hidden textarea too, so the EXISTING
+#     st_text_input.blur(studio_save_draft_ui, ...) draft-autosave
+#     wiring keeps working completely unchanged in Python -- the
+#     contenteditable losing focus now stands in for the old textarea
+#     losing focus.
+#  5. On 'paste' (Blocker 5): preventDefault()'s the native paste
+#     entirely and inserts ONLY the clipboard's PLAIN-TEXT payload via
+#     execCommand('insertText', ...) -- meaning pasted HTML from Word/a
+#     browser/anywhere NEVER touches the DOM at all: no <span>/<div>/
+#     <script>/style/class/browser metadata can ever appear, because no
+#     HTML from the clipboard is ever read in the first place. This is
+#     the simplest possible safe normalization layer the ticket asks
+#     for -- unsupported formatting is, by construction, always
+#     flattened to visible text, and nothing executable is ever
+#     inserted.
+#  6. One-time (per load) execCommand('defaultParagraphSeparator','br')
+#     so pressing Enter inserts a flat <br> instead of the browser's
+#     default nested <div>-wrapping behavior, keeping the DOM shape the
+#     serializer expects to see.
+# ----------------------------------------------------------------------
+# 4E.3 Save Architecture Replacement.
+#
+# The previous "Save/Version Regression Fix" made Save a two-step
+# Gradio chain: step 1 (fn=None, js=...) re-serialized the live DOM into
+# the HIDDEN st_text_input Textbox's OWN output slot, step 2 (.then(...))
+# read that Textbox as studio_save_ui's actual text input. That failed
+# real-browser acceptance twice -- clicking "Salva contenuto" gave no
+# reliable, visible confirmation and the version did not reliably
+# advance. Per the ticket: stop patching that timing, remove the hidden-
+# carrier architecture as Save's source of truth entirely.
+#
+# New architecture: st_rich_editable (this SAME gr.HTML component) is
+# now the DIRECT Gradio input st_save_btn.click(studio_save_ui, ...)
+# reads -- see its wiring below, a single ordinary dependency, no
+# .then(), no second component, no synthetic event standing in for a
+# real one. What makes that reliable is what THIS script does: it keeps
+# st_rich_editable's own tracked `value` (via `props.value = ...`,
+# Gradio's own documented "the value and other props can be edited
+# through `props`" mechanism for gr.HTML's js_on_load) equal to the
+# live contenteditable DOM's CURRENT outerHTML-equivalent wrapper --
+# deliberately HTML, not the canonical markdown-like text, and
+# deliberately only at discrete moments (toolbar click, paste, blur,
+# and -- the one that makes Save correct regardless of whether any of
+# the others already ran -- a DOCUMENT-level CAPTURE-PHASE click
+# listener on the Save button itself). Two reasons value stays HTML
+# here rather than canonical text:
+#   1. gr.HTML's own html_template ("${value}" by default) can
+#      re-substitute `value` into the live DOM's innerHTML on a value
+#      change; if `value` were raw canonical text ("**bold**"), a
+#      resubstitution would flash literal markup into the visible
+#      editor -- exactly Blocker 1 (raw markup exposed) reintroduced,
+#      every time a toolbar button or paste fired. HTML that already
+#      matches what's displayed makes any such resubstitution a no-op
+#      visually, whichever way Gradio 6.5.1 actually behaves here --
+#      not verifiable without a real browser (see the ticket's own
+#      report requirements), so the design does not depend on either
+#      answer being true.
+#   2. Capture-phase, not `.then()`: a browser's own event-dispatch
+#      order (capture always precedes target/bubble for the SAME
+#      event, a DOM spec guarantee, not a Gradio promise-chain the
+#      real browser has now broken twice) is what guarantees this
+#      write completes before Gradio's own bubble-phase click handler
+#      gathers st_rich_editable's value for studio_save_ui's inputs --
+#      no setTimeout, no second click, no blur requirement.
+#
+# rich_text.html_to_canonical() (Python, server-side) is the actual
+# HTML->canonical-text conversion now -- the inverse of
+# render_editable_html(), reusing escape_literal() directly (no second,
+# JS-side copy of the escapable-character table to keep in parity
+# anymore for the SAVE path). This script's job is therefore only ever
+# "report the live DOM as HTML", never "compute canonical text" for
+# Save purposes.
+#
+# msRichTextGetCanonical (canonical TEXT, not HTML) is kept, UNCHANGED,
+# for exactly one remaining purpose out of this ticket's scope: the
+# existing draft-autosave-on-blur path (_ST_DRAFT_INPUTS' st_text_input,
+# saved via studio_save_draft_ui, restored via studio_restore_draft_ui)
+# -- a single, synchronous, real 'blur' DOM event, not a cross-click
+# race, so it was never the failure mode being replaced here, and
+# leaving it untouched keeps its own already-validated restore/discard
+# round-trip (draftfix1-7) exactly as proven.
+_MS_RICH_EDITABLE_JS_ON_LOAD = r"""
+window.msRichTextGetCanonical = function () {
+  const root = document.querySelector('#ms-rich-editable-inner');
+  if (!root) { return null; }
+  const ESCAPABLE = ['\\', '*', '_', '`', '[', ']'];
+  function escapeLiteral(s) {
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      out += (ESCAPABLE.indexOf(ch) !== -1) ? ('\\' + ch) : ch;
+    }
+    return out;
+  }
+  function serializeChildren(el) {
+    let out = '';
+    el.childNodes.forEach(function (child) {
+      if (child.nodeType === 3) {
+        out += escapeLiteral(child.textContent || '');
+      } else if (child.nodeType === 1) {
+        const tag = child.tagName;
+        if (tag === 'BR') { out += '\n'; }
+        else if (tag === 'B' || tag === 'STRONG') { out += '**' + serializeChildren(child) + '**'; }
+        else if (tag === 'I' || tag === 'EM') { out += '_' + serializeChildren(child) + '_'; }
+        else if (tag === 'CODE') { out += '`' + escapeLiteral(child.textContent || '') + '`'; }
+        else if (tag === 'A') { out += '[' + escapeLiteral(child.textContent || '') + '](' + (child.getAttribute('href') || '') + ')'; }
+        else if (tag === 'DIV' || tag === 'P') { out += serializeChildren(child) + '\n'; }
+        else { out += escapeLiteral(child.textContent || ''); }
+      }
+    });
+    return out;
+  }
+  function serializeRoot() {
+    const lists = root.querySelectorAll(':scope > ul, :scope > ol');
+    if (lists.length === 1 && root.children.length === 1) {
+      const list = lists[0];
+      const ordered = list.tagName === 'OL';
+      const liItems = Array.prototype.slice.call(list.querySelectorAll(':scope > li'));
+      const items = liItems.map(function (li, i) {
+        const itemText = serializeChildren(li).replace(/\n/g, ' ');
+        return (ordered ? (i + 1) + '. ' : '- ') + itemText;
+      });
+      return items.join('\n');
+    }
+    return serializeChildren(root).replace(/\n+$/, '');
+  }
+  return serializeRoot();
+};
+
+// 4E.3 Save Architecture Replacement: st_rich_editable's OWN authoritative
+// value sync. Redefined every time this js_on_load runs (mount or any
+// later re-run Gradio's frontend performs) so it always closes over the
+// CURRENT `props` reference for this component instance -- if js_on_load
+// only ever runs once (mount), this still stays correct for the whole
+// session; if it ever runs again, the redefinition simply replaces the
+// prior closure, never leaving two stale copies competing.
+window.__msRichEditableSaveSyncer = function () {
+  const root = document.querySelector('#ms-rich-editable-inner');
+  if (!root) { return; }
+  props.value = "<div id='ms-rich-editable-inner' contenteditable='true' class='ms-rich-editable-surface'>"
+    + root.innerHTML + "</div>";
+};
+
+// Installed ONCE (module-global guard -- this js_on_load can legitimately
+// run more than once, but the app has exactly one st_rich_editable, so a
+// second document-level listener would be a harmless but pointless
+// duplicate, not a correctness bug -- guarded anyway for cleanliness).
+// Capture phase is what makes this reliable: per the DOM event spec, a
+// capture-phase listener on `document` always finishes running BEFORE
+// the SAME click event reaches its target and bubbles into Gradio's own
+// (bubble-phase, default) click handler on the Save button -- a hard
+// ordering guarantee from the browser itself, not from Gradio's own
+// `.then()` promise-chaining, which is exactly the mechanism that failed
+// real-browser acceptance twice per this ticket.
+if (!window.__msSaveSyncInstalled) {
+  window.__msSaveSyncInstalled = true;
+  document.addEventListener('click', function (ev) {
+    const btn = (ev.target && ev.target.closest) ? ev.target.closest('#ms-save-btn') : null;
+    if (btn && window.__msRichEditableSaveSyncer) { window.__msRichEditableSaveSyncer(); }
+  }, true);
+}
+
+const root = element.querySelector('#ms-rich-editable-inner');
+if (!root) { }
+else {
+  const hiddenWrap = document.querySelector('#ms-rich-text-input');
+  const hidden = hiddenWrap ? hiddenWrap.querySelector('textarea') : null;
+  function pushCanonical() {
+    if (!hidden) { return; }
+    const canonical = window.msRichTextGetCanonical();
+    if (canonical === null || hidden.value === canonical) { return; }
+    hidden.value = canonical;
+    hidden.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  root.oninput = pushCanonical;
+  root.onblur = function () {
+    pushCanonical();
+    if (window.__msRichEditableSaveSyncer) { window.__msRichEditableSaveSyncer(); }
+    if (hidden) { hidden.dispatchEvent(new Event('blur', { bubbles: true })); }
+  };
+  root.onpaste = function (e) {
+    e.preventDefault();
+    const cd = e.clipboardData || window.clipboardData;
+    const text = cd ? cd.getData('text/plain') : '';
+    document.execCommand('insertText', false, text);
+    if (window.__msRichEditableSaveSyncer) { window.__msRichEditableSaveSyncer(); }
+  };
+  try { document.execCommand('defaultParagraphSeparator', false, 'br'); } catch (e) { }
+}
+"""
+
 CSS = """
 :root {
   --ui-bg:#f5f7fb; --ui-surface:#ffffff; --ui-surface-2:#f9fafb;
@@ -204,6 +431,35 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-pp-table-caption{color:var(--ui-muted);font-size:11.5px;margin-bottom:2px}
 .ms-pp-figure{max-width:100%;border-radius:8px;margin-top:6px;display:block}
 .ms-pp-figure-caption{color:var(--ui-muted);font-size:11.5px;margin-top:4px}
+/* 4E.3: rich-text marks, shared look between the standard editor's own
+   contenteditable surface (.ms-rich-editable-surface) and Publishing
+   Preview (.ms-pp-block) -- deliberately understated (no arbitrary
+   colors/fonts per the ticket's own non-goals), just enough contrast to
+   read as "formatted", not "raw markup". */
+.ms-pp-block code,.ms-rich-editable-surface code{background:var(--ui-surface-2);border:1px solid var(--ui-line);
+  border-radius:5px;padding:1px 5px;font-size:12px;font-family:ui-monospace,Consolas,monospace}
+.ms-pp-block ul,.ms-pp-block ol,.ms-rich-editable-surface ul,.ms-rich-editable-surface ol{margin:4px 0;padding-left:22px}
+.ms-pp-block li,.ms-rich-editable-surface li{font-size:13px;line-height:1.6;margin:2px 0}
+.ms-pp-block a,.ms-rich-editable-surface a{color:var(--ui-primary);text-decoration:underline}
+/* The editable surface itself is styled to look like an ordinary text
+   field (border/padding/focus ring) -- the writer edits VISUALLY here,
+   never a raw-markup textarea; :empty shows a muted placeholder exactly
+   like a normal empty Textbox would. */
+.ms-rich-editable-surface{border:1px solid var(--ui-line);border-radius:10px;padding:9px 12px;margin:4px 0 10px;
+  background:#fff;min-height:120px;font-size:13px;line-height:1.6;outline:none;white-space:pre-wrap}
+.ms-rich-editable-surface:focus{border-color:var(--ui-primary);box-shadow:0 0 0 1px var(--ui-primary)}
+.ms-rich-editable-surface:empty::before{content:"Scrivi qui...";color:var(--ui-muted);font-style:italic}
+.ms-rich-toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 4px}
+.ms-rich-toolbar button{font-size:12px!important;padding:4px 10px!important;min-width:0!important}
+/* 4E.3 Save Architecture Replacement: the unmistakable, CONTAINED save
+   confirmation right next to the editor (not relying on the writer to
+   notice the version number changing elsewhere on the page) -- styled
+   per-outcome so a failure reads as clearly different from a success,
+   never a generic/anonymous message box. */
+.ms-rich-save-status{border-radius:10px;padding:8px 12px;margin:2px 0 10px;font-size:12.5px;font-weight:650;line-height:1.5}
+.ms-rich-save-ok{background:var(--ui-green-soft);border:1px solid #a6f4c5;color:#067647}
+.ms-rich-save-err{background:var(--ui-red-soft);border:1px solid #fecaca;color:#b42318}
+.ms-rich-save-info{background:var(--ui-surface-2);border:1px solid var(--ui-line);color:var(--ui-muted)}
 """
 
 def _ccms_db(project_dir: str | Path) -> Path:
@@ -1446,6 +1702,32 @@ def _studio_tech_html_shared_object(repo, object_type: str, object_id: str, tfde
 
 _ST_EMPTY_TABLE_COLS = ["Elemento", "Tipo", "Stato", "Versione", "Archiviato"]
 
+
+def _rich_save_status_update(save_msg: str):
+    """4E.3 Browser-Level Save Gate: the ONE place that renders the
+    contained save-status banner shown right next to the editor.
+
+    Root cause this exists to fix (reproduced in real Chrome, automated:
+    see regressione_browser_save_4e3.py): every PRECONDITION refusal --
+    missing actor name, nothing selected, a table with no columns --
+    returns through _studio_noop_bundle, which deliberately emits
+    gr.update() no-ops for all 49 outputs except st_save_msg. That left
+    the refusal visible ONLY in the st_save_msg Markdown far below the
+    editor, so a writer who clicked "Salva contenuto" with an empty "Il
+    tuo nome" field saw the version simply not move, with no explanation
+    anywhere near where they were looking -- exactly the reported
+    "no confirmation, still versione 11" symptom. The save pipeline
+    itself was working correctly the whole time; only the feedback was
+    invisible. Both bundle builders now route their message through
+    here, so success, no-op and refusal are equally impossible to miss.
+    """
+    if not save_msg:
+        return gr.update(value="", visible=False)
+    cls = ("ms-rich-save-ok" if save_msg.startswith("✅")
+           else "ms-rich-save-err" if save_msg.startswith("⛔")
+           else "ms-rich-save-info")
+    return gr.update(value=f"<div class='ms-rich-save-status {cls}'>{html.escape(save_msg)}</div>", visible=True)
+
 def _studio_pub_header_html(repo, publication_id: str) -> str:
     # UX clarity fix: "Editor professionale" alone never told the user WHICH
     # manual they were looking at -- the static header just said the generic
@@ -1515,6 +1797,12 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
         hidden_notice = gr.update(value="", visible=False)
         if not repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?", (publication_id,)).fetchone():
             empty = pd.DataFrame(columns=_ST_EMPTY_TABLE_COLS)
+            # 4E.3 UI regression fix (46->48) plus 4E.3 Save Architecture
+            # Replacement (48->49, st_rich_save_status appended): every
+            # early-return tuple in this function must keep matching
+            # ST_OUT_FULL's actual width exactly, or the whole panel
+            # renders as cascading red Error controls on any path that
+            # reaches it (see studio_load_ui's own regression coverage).
             return (gr.update(value=empty), gr.update(choices=[], value=None), None, None, None,
                     "Pubblicazione", f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>",
                     hidden_field, hidden_field, hidden_notice,
@@ -1526,7 +1814,8 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     hidden_field, hidden_field, hidden_grid, hidden_grid,
                     gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
                     hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output)
+                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output,
+                    gr.update(visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False))
 
         # service= passed so the outline shows a compact, human condition
         # differentiator (e.g. '· Mercato EU') instead of the generic
@@ -1540,6 +1829,12 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
             picker_value, kind, object_id = None, None, None
 
         if not kind or not object_id:
+            # THIS is the path every normal "Contenuti" tab entry hits
+            # FIRST (nothing selected yet -- kind/object_id are None on
+            # initial load). Same width-parity requirement as the
+            # "publication not found" early return above (46->48, now
+            # 48->49 with st_rich_save_status appended) -- keep both in
+            # lockstep with ST_OUT_FULL's actual length.
             return (gr.update(value=table), gr.update(choices=picker_choices, value=None), None, None, None,
                     "Pubblicazione", "<div class='ms-muted'>Seleziona un topic o un blocco dalla struttura a sinistra, oppure crea un nuovo topic.</div>",
                     hidden_field, hidden_field, hidden_notice,
@@ -1551,7 +1846,8 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     hidden_field, hidden_field, hidden_grid, hidden_grid,
                     gr.update(value=None, visible=False), hidden_field, hidden_field, gr.update(visible=False),
                     hidden_notice, gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
-                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output)
+                    False, None, hidden_notice, hidden_btn, hidden_btn, gr.update(visible=False), diff_output,
+                    gr.update(visible=False), gr.update(value="", visible=False), gr.update(value="", visible=False))
 
         breadcrumb = av.breadcrumb(rows, kind, object_id)
         block_type = None
@@ -1581,6 +1877,17 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
         reuse_impact_upd = hidden_notice
         update_everywhere_btn_visible = False
         fork_local_btn_visible = False
+        # 4E.3 rich-text toolbar/editable surface -- default hidden (topic,
+        # table, figure, component_ref selections all keep this default);
+        # the block/editable-text branch below is the only place that
+        # turns it on.
+        rich_toolbar_visible = False
+        rich_editable_upd = gr.update(value="", visible=False)
+        # 4E.3 Save Architecture Replacement: the unmistakable, CONTAINED
+        # save confirmation next to the editor -- default hidden/empty;
+        # only ever shown right after a save/save-attempt (studio_save_ui
+        # passes save_msg through _studio_full_bundle), for a text block.
+        rich_save_status_upd = gr.update(value="", visible=False)
 
         if kind == "topic":
             detail = av.topic_detail(svc, object_id)
@@ -1604,7 +1911,40 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
             is_table = block_type == "table"
             is_figure = block_type == "figure"
             title_upd = hidden_field
-            text_upd = gr.update(value=detail["text"], visible=editable_text, interactive=(editable_text and not detail["archived"]))
+            # st_text_input is now PERMANENTLY hidden/non-interactive --
+            # it only ever carries the canonical text as a value other
+            # callbacks (save, draft-autosave) read; the writer never
+            # sees or types into it directly (see its own declaration
+            # comment for the full rationale).
+            text_upd = gr.update(value=detail["text"], visible=False, interactive=False)
+            rich_toolbar_visible = editable_text and not detail["archived"]
+            # What the writer actually sees/edits: rich_text.
+            # render_editable_html() -- bare inline HTML (no <p> wrapper;
+            # the contenteditable div itself is the implicit paragraph)
+            # for prose, or the real <ul>/<ol> for a list -- built from
+            # the CURRENTLY SAVED text/text_format, exactly what
+            # Publishing Preview would show for this same content.
+            _cid_container = "ms-rich-editable-inner"
+            rich_editable_upd = gr.update(
+                value=(f"<div id='{_cid_container}' contenteditable='true' "
+                       f"class='ms-rich-editable-surface'>"
+                       f"{rich_text.render_editable_html(detail['text'], detail.get('text_format', 'plain'))}"
+                       f"</div>") if editable_text else "",
+                visible=editable_text,
+            )
+            # 4E.3 Save Architecture Replacement: the ticket's explicit UX
+            # requirement -- "the user could not even tell whether Save
+            # did anything" -- an unmistakable, CONTAINED confirmation
+            # right next to the editor, not relying on the writer to spot
+            # the version number changing elsewhere on the page. Same
+            # save_msg text st_save_msg (further down the panel) already
+            # shows -- one message, shown in two places -- styled by
+            # outcome (success/no-op/error) via a CSS class chosen here,
+            # never a global gr.Error popup, so a save failure shows one
+            # contained, readable line rather than a cascade of red Error
+            # controls.
+            if editable_text and save_msg:
+                rich_save_status_upd = _rich_save_status_update(save_msg)
             readonly_notice = hidden_notice
             new_block_row_visible = False
             submit_review_visible = not (is_table or is_figure)
@@ -1760,6 +2100,7 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
             gr.update(visible=update_everywhere_btn_visible, interactive=update_everywhere_btn_visible),
             gr.update(visible=fork_local_btn_visible, interactive=fork_local_btn_visible),
             gr.update(visible=True), diff_output,
+            gr.update(visible=rich_toolbar_visible), rich_editable_upd, rich_save_status_upd,
         )
     finally:
         repo.close()
@@ -1776,7 +2117,8 @@ ST_IDX_TABLE, ST_IDX_PICKER, ST_IDX_KIND, ST_IDX_ID, ST_IDX_VERSION, ST_IDX_BREA
     ST_IDX_TABLE_ROWCOL_ROW, \
     ST_IDX_SHARED_CONFIRMED, ST_IDX_SHARED_IMPACT_TOKEN, ST_IDX_REUSE_IMPACT, \
     ST_IDX_UPDATE_EVERYWHERE_BTN, ST_IDX_FORK_LOCAL_BTN, \
-    ST_IDX_COMPARE_ROW, ST_IDX_DIFF_OUTPUT = range(46)
+    ST_IDX_COMPARE_ROW, ST_IDX_DIFF_OUTPUT, \
+    ST_IDX_RICH_TOOLBAR_ROW, ST_IDX_RICH_EDITABLE, ST_IDX_RICH_SAVE_STATUS = range(49)
 
 def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # Standard-mode validation UX fix: a predictable, user-correctable input
@@ -1786,15 +2128,29 @@ def _studio_noop_bundle(*, save_msg: str = "", review_msg: str = "") -> tuple:
     # multi-output panel, would otherwise force a full _studio_full_bundle
     # re-render from the DB, silently discarding whatever the user had just
     # typed in a title/text/caption/grid field). gr.update() with no args,
-    # returned for every one of the 46 outputs, touches nothing: verified
+    # returned for every one of the 49 outputs, touches nothing: verified
     # against Gradio 6.5.1's own dispatch code (blocks.py) that a State
     # output (st_kind/st_id/st_version/st_block_type/st_object_ref_id/
     # st_shared_confirmed/st_shared_impact_token) receiving an update-dict
     # with no "value" key is left at its previous value rather than being
-    # overwritten.
-    out = [gr.update() for _ in range(46)]
+    # overwritten. (46 -> 48 in 4E.3: st_rich_toolbar_row/st_rich_editable
+    # appended; 48 -> 49 in the Save Architecture Replacement:
+    # st_rich_save_status appended -- all at the end of
+    # _studio_full_bundle's own return tuple.)
+    out = [gr.update() for _ in range(49)]
     out[ST_IDX_SAVE_MSG] = save_msg
     out[ST_IDX_REVIEW_MSG] = review_msg
+    # 4E.3 Browser-Level Save Gate: the ONE deliberate exception to this
+    # function's "touch nothing" contract. A precondition refusal
+    # ("Inserisci il tuo nome per continuare.", "Seleziona prima un
+    # elemento.", "Aggiungi almeno una colonna.") reached the user ONLY
+    # through st_save_msg, far below the editor -- which is why a real
+    # save refusal looked identical to "nothing happened at all" in the
+    # browser. Writing the SAME message into the contained banner costs
+    # nothing (it is a display-only gr.HTML, never an input, never a
+    # State, so it cannot discard anything the user has typed) and makes
+    # every refusal visible exactly where the writer is already looking.
+    out[ST_IDX_RICH_SAVE_STATUS] = _rich_save_status_update(save_msg)
     return tuple(out)
 
 
@@ -1972,35 +2328,62 @@ def studio_table_remove_col_ui(project_dir, kind, object_id, block_type, object_
 def studio_restore_draft_ui(project_dir, kind, object_id, block_type, object_ref_id):
     # Outputs: [st_title_input, st_text_input, st_table_title, st_table_caption,
     #           st_table_grid_edit, st_figure_caption, st_figure_alt,
-    #           st_restore_draft_btn, st_discard_draft_btn]
+    #           st_restore_draft_btn, st_discard_draft_btn, st_rich_editable,
+    #           st_rich_save_status]
+    #
+    # 4E.3 hardening: st_rich_editable (the VISIBLE contenteditable
+    # surface) was missing from this callback's outputs entirely --
+    # restoring a text-block draft updated only the HIDDEN st_text_input
+    # carrier, so the writer would click "Ripristina bozza" and see no
+    # visible change at all (the old plain-Textbox architecture didn't
+    # have this gap, since st_text_input WAS the visible surface then).
+    # Rendered as 'rich' unconditionally here, matching this whole
+    # editor's established convention that an in-progress/being-edited
+    # text stream is always shown WYSIWYG-interpreted (the actual
+    # STORED text_format is only ever decided at save time, by
+    # save_block's 'auto' policy -- restoring a draft is not a save).
+    #
+    # 4E.3 Save Architecture Replacement: st_rich_save_status (the "Salvato
+    # -- versione X" banner next to the editor) is explicitly CLEARED when
+    # a text draft is restored -- a stale success banner sitting next to
+    # content that is now DIFFERENT from what it describes (the just-
+    # restored, unsaved draft) would be misleading. Every other branch
+    # (topic/table/figure, and the two no-draft early returns) leaves it
+    # untouched, matching st_rich_editable's own existing no-op there --
+    # the rich editor/status pair isn't shown for those kinds anyway.
     draft_kind, draft_id = _studio_draft_target(kind, object_id, block_type, object_ref_id)
     hide2 = (gr.update(visible=False), gr.update(visible=False))
     noop7 = (gr.update(),) * 7
+    noop_rich = (gr.update(), gr.update())
     if not draft_id:
-        return noop7 + hide2
+        return noop7 + hide2 + noop_rich
     repo, svc = av.open_service(project_dir)
     try:
         draft = svc.load_draft(draft_kind, draft_id)
     finally:
         repo.close()
     if not draft:
-        return noop7 + hide2
+        return noop7 + hide2 + noop_rich
     payload = draft["payload"]
     if draft_kind == "topic":
         return (gr.update(value=payload.get("title", "")), gr.update(), gr.update(), gr.update(), gr.update(),
-                gr.update(), gr.update()) + hide2
+                gr.update(), gr.update()) + hide2 + noop_rich
     if draft_kind == "table":
         cols = payload.get("columns") or ["Colonna 1"]
         rows = payload.get("rows") or [["" for _ in cols]]
         grid_df = pd.DataFrame(rows, columns=[str(c) for c in cols])
         return (gr.update(), gr.update(), gr.update(value=payload.get("title", "")),
                 gr.update(value=payload.get("caption", "")), _fixed_grid_update(grid_df),
-                gr.update(), gr.update()) + hide2
+                gr.update(), gr.update()) + hide2 + noop_rich
     if draft_kind == "figure":
         return (gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-                gr.update(value=payload.get("caption", "")), gr.update(value=payload.get("alt_text", ""))) + hide2
-    return (gr.update(), gr.update(value=payload.get("text", "")), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update()) + hide2
+                gr.update(value=payload.get("caption", "")), gr.update(value=payload.get("alt_text", ""))) + hide2 + noop_rich
+    draft_text = payload.get("text", "")
+    draft_editable_html = (f"<div id='ms-rich-editable-inner' contenteditable='true' "
+                           f"class='ms-rich-editable-surface'>{rich_text.render_editable_html(draft_text, 'rich')}</div>")
+    return (gr.update(), gr.update(value=draft_text), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update()) + hide2 + (gr.update(value=draft_editable_html),
+                                                  gr.update(value="", visible=False))
 
 def studio_discard_draft_ui(project_dir, publication_id, kind, object_id, block_type, object_ref_id, show_archived):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
@@ -2042,7 +2425,66 @@ def studio_save_ui(project_dir, publication_id, kind, object_id, block_type, obj
                                      expected_version=int(expected_version), actor=actor,
                                      confirm_shared=bool(shared_confirmed), expected_impact_token=shared_impact_token)
         else:
-            result = svc.save_block(object_id, text=text_val, expected_version=int(expected_version), actor=actor)
+            # 4E.3 Save Architecture Replacement: text_val is now the
+            # editor's live HTML (st_rich_editable is the direct input,
+            # see the wiring's own comment for why) -- convert to the same
+            # canonical markdown-like string save_block()/has_rich_
+            # structure() have always worked with. html_to_canonical() is
+            # the exact inverse of render_editable_html(), reusing
+            # escape_literal() directly, so a real edit round-trips
+            # byte-for-byte the same way it always has.
+            new_text = rich_text.html_to_canonical(text_val).strip()
+            # "when content did not change: do not create a fake version
+            # bump". AuthoringService.save_block() itself bumps the
+            # version UNCONDITIONALLY on every real invocation (by design,
+            # for every OTHER caller in this codebase -- deliberately left
+            # untouched here to avoid any blast radius on 4B/4C/4D/4E.1
+            # behavior/tests that rely on that exact semantic). This is a
+            # narrow, UI-layer-only guard specific to the rich-text save
+            # path.
+            #
+            # Compares against the PROSPECTIVE STORED value, not the raw
+            # incoming string -- fixes a real bug the straight comparison
+            # had: new_text is always in ESCAPED canonical form (backslash-
+            # protected '*_`[]', mirroring escape_literal()), but a 'plain'
+            # block's stored text_content is the UNESCAPED literal text
+            # (save_block's own plain-storage path unescapes on write,
+            # since 'plain' rendering never unescapes on read -- see
+            # rich_text.py's module docstring). A block like the literal-
+            # markup example ("M8*1.25", stored unescaped) would otherwise
+            # NEVER match its own escaped round-trip and would fake-bump
+            # its version on every no-op click. Replicating save_block's
+            # own "auto" decision here (has_rich_structure on the
+            # candidate text, once already-rich never demotes) means this
+            # comparison is against exactly what would actually get
+            # written, for both plain and rich blocks alike.
+            row = repo.conn.execute(
+                "SELECT text_content, text_format FROM content_blocks WHERE block_id=?", (object_id,)).fetchone()
+            current_text = str(row["text_content"]) if row else None
+            current_format = str(row["text_format"]) if row and row["text_format"] else "plain"
+            if current_text is not None:
+                would_be_rich = current_format == "rich" or rich_text.has_rich_structure(new_text)
+                effective_new = new_text if would_be_rich else rich_text.unescape_literal(new_text)
+                if effective_new == current_text:
+                    repo.close()
+                    return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived,
+                                               save_msg="Nessuna modifica da salvare.")
+            # 4E.3 stabilization (Blocker 2): "auto" -- NOT an
+            # unconditional "rich" -- promotes 'plain'->'rich' only when
+            # AuthoringService.save_block determines the saved text
+            # genuinely introduces rich structure (rich_text.
+            # has_rich_structure: a real mark, a link, or a list); an
+            # ordinary text edit with no formatting applied leaves a
+            # 'plain' block exactly 'plain'. An already-'rich' block
+            # always stays 'rich' (no silent demotion either). See
+            # save_block's own "auto" branch for the full policy and the
+            # matching literal-text unescape-on-plain-storage fix.
+            # save_block's guard already rejects `text` entirely for
+            # non-EDITABLE_TEXT_BLOCK_TYPES (table/figure/component_ref),
+            # so this never mislabels something that was never text-
+            # editable in the first place.
+            result = svc.save_block(object_id, text=new_text, expected_version=int(expected_version), actor=actor,
+                                    text_format="auto")
         msg = f"✅ Salvato — versione {result['version']}."
         if result.get("previous_status") in ("Approved", "In Review"):
             msg += " Era Approvato/In revisione: è tornato a Bozza."
@@ -2358,7 +2800,20 @@ def studio_compare_ui(project_dir, kind, object_id, block_type, object_ref_id, v
         old = svc.get_block_version(object_id, cv)
         live = svc.load_block_for_edit(object_id)
         d = av.diff_text(old["text"], live["text"])
-        return f"**Confronto: versione {cv} → versione corrente ({live['version']})**\n\n" + _render_diff_text_markdown(d)
+        # 4E.3: av.diff_text() itself is UNCHANGED (still the plain word-
+        # level SequenceMatcher diff that backs the highlighted body
+        # below) -- only the ONE-LINE SUMMARY is upgraded here, via
+        # rich_text.diff_summary(), to distinguish "Formattazione
+        # modificata" (visible text identical, only marks changed) and
+        # "N elementi elenco modificati" from the generic "Testo
+        # modificato" av.diff_text() would otherwise always say for a
+        # rich-text block. d["summary"] itself is left exactly as
+        # av.diff_text() computed it, still driving the word-added/
+        # removed-count line inside _render_diff_text_markdown(d)'s body.
+        rich_summary = rich_text.diff_summary(old["text"], live["text"],
+                                              old.get("text_format", "plain"), live.get("text_format", "plain"))
+        header = f"**Confronto: versione {cv} → versione corrente ({live['version']})** — {rich_summary}"
+        return header + "\n\n" + _render_diff_text_markdown(d)
     except KeyError:
         return f"⛔ Versione {compare_version} non trovata."
     except Exception as e:
@@ -2939,8 +3394,18 @@ def work_package_ui(project_dir, object_id, kind, tm_files):
     target_langs=canonical_langs(read_project(project_dir).get('target_langs',[]) or [])
     out=Path(project_dir)/'TranslationPackages'/f"{kind}_{object_id}"; out.mkdir(parents=True,exist_ok=True)
     repo=IndustrialRepository(_ccms_db(project_dir))
-    try: result=generate_translation_work_packages(repo,object_id.strip(),kind=kind,tm_paths=tms,target_langs=target_langs,require_approved=True,out_dir=out)
-    finally: repo.close()
+    try:
+        result=generate_translation_work_packages(repo,object_id.strip(),kind=kind,tm_paths=tms,target_langs=target_langs,require_approved=True,out_dir=out)
+    except TranslationFormatNotSupportedError as e:
+        # 4E.3 final translation blocker: this is the ONLY exception this
+        # call can raise where the message is ALREADY the final, safe,
+        # human-readable Italian text with zero internal ids/JSON/raw
+        # markup/stack trace -- str(e) is shown verbatim via gr.Error
+        # (which always surfaces regardless of the app's show_error=False
+        # launch setting, unlike an uncaught exception which would not).
+        raise gr.Error(str(e))
+    finally:
+        repo.close()
     tm_note=(f" TM di progetto usata automaticamente: **{Path(auto_tm).name}**." if auto_tm else " Nessuna TM legacy automatica disponibile: il pacchetto usa comunque le lingue target del progetto.")
 
     # Desktop safety net: do not depend only on the embedded webview download handler.
@@ -3809,7 +4274,72 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_prev_btn = gr.Button("‹ Topic precedente")
                         st_next_btn = gr.Button("Topic successivo ›")
                     st_title_input = gr.Textbox(label="Titolo", visible=False)
-                    st_text_input = gr.Textbox(label="Testo", lines=10, visible=False)
+                    # ----------------------------------------------------------------
+                    # 4E.3 stabilization (Blocker 1): the writer-facing standard
+                    # editor is now a lightweight `contenteditable` surface
+                    # (st_rich_editable, a gr.HTML component whose rendered value
+                    # embeds a real `contenteditable="true"` div) -- NOT a plain
+                    # Textbox exposing canonical markdown syntax as the normal
+                    # authoring surface. Gradio 6.5.1 has no native rich-text/
+                    # WYSIWYG component (confirmed against the installed package --
+                    # gr.Markdown is display-only, gr.Textbox is plain), so a full
+                    # custom editor framework would be the only alternative -- this
+                    # instead reuses the BROWSER's own native contenteditable +
+                    # document.execCommand (bold/italic/lists are real native
+                    # browser commands; only "code span" and "safe link" need a
+                    # few extra lines of JS), which is the lowest-risk path that
+                    # still gives a genuine visual (not markup-typing) surface.
+                    #
+                    # st_text_input remains in the graph but is now PERMANENTLY
+                    # hidden -- purely the canonical-text "wire" between the
+                    # contenteditable's live DOM state and Python (studio_save_ui,
+                    # draft autosave). A hidden REAL Textbox (with a real
+                    # <textarea> Gradio's frontend binds to) is the proven
+                    # mechanism already used for state relay in this app: JS sets
+                    # its .value and dispatches a genuine 'input'/'blur' DOM event,
+                    # and Gradio's own frontend picks the change up exactly as it
+                    # would for a real keystroke -- no new mechanism, same one
+                    # already validated for the toolbar buttons below.
+                    st_text_input = gr.Textbox(label="Testo", lines=10, visible=False, elem_id="ms-rich-text-input")
+                    # Toolbar: full-word Italian labels (never icon-only) so a
+                    # tooltip isn't even load-bearing for understanding what a
+                    # button does. Each button targets the contenteditable's
+                    # SELECTION directly (execCommand, or a small manual insertion
+                    # for Codice/Link, which execCommand has no native command
+                    # for) -- the writer never manages **/_/`` syntax tokens
+                    # themselves; that's an internal storage detail invisible here.
+                    with gr.Row(elem_classes=["ms-rich-toolbar"], visible=False) as st_rich_toolbar_row:
+                        st_rich_bold_btn = gr.Button("Grassetto", size="sm")
+                        st_rich_italic_btn = gr.Button("Corsivo", size="sm")
+                        st_rich_code_btn = gr.Button("Codice", size="sm")
+                        st_rich_bullet_btn = gr.Button("Elenco puntato", size="sm")
+                        st_rich_ordered_btn = gr.Button("Elenco numerato", size="sm")
+                        st_rich_link_btn = gr.Button("Link", size="sm")
+                    # The contenteditable surface itself. Its rendered `value`
+                    # (set fresh in _studio_full_bundle from rich_text.
+                    # render_editable_html(), the SAME renderer Publishing Preview
+                    # is built on) is what the writer sees and edits DIRECTLY --
+                    # bold text looks bold, a list looks like a list, a link is a
+                    # real clickable-looking anchor, never raw '**'/'`'/'[]()'.
+                    # js_on_load (Gradio's own documented "runs when this HTML
+                    # element (re)loads" hook -- the same mechanism Gradio's OWN
+                    # default HTML click-forwarding relies on to survive re-
+                    # renders) wires the live DOM->canonical sync, plain-text-only
+                    # paste, and blur-forwarding -- see _MS_RICH_EDITABLE_JS_ON_LOAD
+                    # below, next to the toolbar wiring, for the full script and
+                    # rationale.
+                    st_rich_editable = gr.HTML(visible=False, elem_classes=["ms-rich-editable"], elem_id="ms-rich-editable",
+                                               js_on_load=_MS_RICH_EDITABLE_JS_ON_LOAD)
+                    # 4E.3 Save Architecture Replacement: an unmistakable,
+                    # CONTAINED confirmation right next to the editor itself
+                    # -- not relying on the writer to notice the version
+                    # number changing elsewhere on the page. Shares the
+                    # exact same save_msg text _studio_full_bundle already
+                    # computes for st_save_msg further down (success/no-op/
+                    # error), so there is one message, shown in two places;
+                    # styled per-outcome (ok/err/info) via a CSS class
+                    # chosen in Python, never a global gr.Error popup.
+                    st_rich_save_status = gr.HTML(visible=False, elem_classes=["ms-rich-save-status-wrap"])
                     # 4C table editor -- reuses structured_tables/
                     # structured_table_versions unchanged (see
                     # AuthoringService.save_table); a plain interactive
@@ -3940,7 +4470,14 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         # table/figure content; "Salva varianti" persists
                         # only where the element is visible. Neither button
                         # requires the other to be clicked.
-                        st_save_btn = gr.Button("Salva contenuto", variant="primary", visible=False, interactive=False)
+                        # elem_id="ms-save-btn": the document-level capture-
+                        # phase click listener installed by st_rich_editable's
+                        # js_on_load (see _MS_RICH_EDITABLE_JS_ON_LOAD) targets
+                        # this exact id to sync the live editor DOM into
+                        # st_rich_editable's own value BEFORE Gradio's own
+                        # click handling gathers inputs for studio_save_ui.
+                        st_save_btn = gr.Button("Salva contenuto", variant="primary", visible=False, interactive=False,
+                                                elem_id="ms-save-btn")
                         st_discard_edits_btn = gr.Button("Scarta modifiche", visible=False, interactive=False)
                     st_save_msg = gr.Markdown()
                     with gr.Row():
@@ -4030,7 +4567,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                           st_figure_preview, st_figure_caption, st_figure_alt, st_figure_replace_row,
                           st_shared_notice, st_new_table_row, st_new_figure_row, st_table_rowcol_row,
                           st_shared_confirmed, st_shared_impact_token, st_reuse_impact_md, st_update_everywhere_btn, st_fork_local_btn,
-                          st_compare_row, st_diff_output]
+                          st_compare_row, st_diff_output,
+                          st_rich_toolbar_row, st_rich_editable, st_rich_save_status]
 
             # 4E.1 Varianti panel outputs. Root-caused live-browser bug fix:
             # this used to be refreshed via st_id.change()/st_version.change()
@@ -4085,6 +4623,101 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             st_figure_caption.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
             st_figure_alt.blur(studio_save_draft_ui, _ST_DRAFT_INPUTS, [st_save_msg])
 
+            # 4E.3 stabilization: rich-text toolbar, rewritten to operate on
+            # the CONTENTEDITABLE surface's real selection via the browser's
+            # own native document.execCommand -- bold/italic/lists are real
+            # native commands; Codice/Link have no native command and get a
+            # few extra lines each. Every snippet: (1) focuses the editable
+            # div so execCommand has something to act on, (2) runs the
+            # command, (3) dispatches a real 'input' event as a defensive
+            # belt-and-braces sync trigger (execCommand already fires a
+            # native 'input' event on the contenteditable in every modern
+            # browser, so js_on_load's own root.oninput normally handles
+            # the sync -- this dispatch just guarantees it even if that
+            # native firing were ever inconsistent). Every snippet bails
+            # out harmlessly via `if (!root) return;` if the editable
+            # surface isn't found (e.g. a non-text block is selected).
+            _MS_ROOT_LOOKUP = "const root = document.querySelector('#ms-rich-editable-inner'); if (!root) return; root.focus();"
+            # 4E.3 Save Architecture Replacement (ticket item: "toolbar
+            # buttons must update props.value immediately after each
+            # formatting operation"): the same window.__msRichEditableSaveSyncer
+            # defined in _MS_RICH_EDITABLE_JS_ON_LOAD (writes the live DOM's
+            # current HTML into st_rich_editable's own tracked value) now
+            # also runs right after every toolbar command -- in addition to,
+            # not instead of, the pre-save capture-phase sync, which stays
+            # the one load-bearing guarantee for Save's own correctness.
+            _ms_sync_tail = ("root.dispatchEvent(new Event('input', { bubbles: true }));"
+                             "if (window.__msRichEditableSaveSyncer) { window.__msRichEditableSaveSyncer(); }")
+            _ms_bold_js = "() => {" + _MS_ROOT_LOOKUP + "document.execCommand('bold');" + _ms_sync_tail + "}"
+            _ms_italic_js = "() => {" + _MS_ROOT_LOOKUP + "document.execCommand('italic');" + _ms_sync_tail + "}"
+            _ms_code_js = (
+                "() => {" + _MS_ROOT_LOOKUP +
+                "const sel = window.getSelection(); const text = (sel && sel.toString()) ? sel.toString() : 'codice';"
+                "const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');"
+                "document.execCommand('insertHTML', false, '<code>' + esc + '</code>');" + _ms_sync_tail + "}"
+            )
+            _ms_bullet_js = "() => {" + _MS_ROOT_LOOKUP + "document.execCommand('insertUnorderedList');" + _ms_sync_tail + "}"
+            _ms_ordered_js = "() => {" + _MS_ROOT_LOOKUP + "document.execCommand('insertOrderedList');" + _ms_sync_tail + "}"
+            _ms_link_js = (
+                "() => {" + _MS_ROOT_LOOKUP +
+                "const sel = window.getSelection();"
+                "if (!sel || !sel.toString()) { window.alert('Seleziona il testo che vuoi trasformare in link, poi premi di nuovo \"Link\".'); return; }"
+                "const url = window.prompt('Indirizzo del link (es. https://esempio.it):', 'https://');"
+                "if (!url) return;"
+                "const lower = url.toLowerCase();"
+                "if (lower.indexOf('http://') !== 0 && lower.indexOf('https://') !== 0 && lower.indexOf('mailto:') !== 0) {"
+                "  window.alert('Indirizzo non valido: sono ammessi solo link http://, https:// o mailto:.'); return;"
+                "}"
+                "document.execCommand('createLink', false, url);" + _ms_sync_tail + "}"
+            )
+            st_rich_bold_btn.click(fn=None, inputs=[], outputs=[], js=_ms_bold_js)
+            st_rich_italic_btn.click(fn=None, inputs=[], outputs=[], js=_ms_italic_js)
+            st_rich_code_btn.click(fn=None, inputs=[], outputs=[], js=_ms_code_js)
+            st_rich_bullet_btn.click(fn=None, inputs=[], outputs=[], js=_ms_bullet_js)
+            st_rich_ordered_btn.click(fn=None, inputs=[], outputs=[], js=_ms_ordered_js)
+            st_rich_link_btn.click(fn=None, inputs=[], outputs=[], js=_ms_link_js)
+
+            # 4E.3 Save Architecture Replacement.
+            #
+            # The previous two-step `.then()` chain (fn=None+js= writing
+            # into hidden st_text_input's own output slot, THEN a chained
+            # studio_save_ui reading that Textbox) failed real-browser
+            # acceptance twice: no reliable visible confirmation, version
+            # not reliably advancing. Per the ticket, that timing is not
+            # being patched again -- the hidden-carrier architecture is
+            # removed as Save's source of truth entirely.
+            #
+            # st_save_btn.click is now a SINGLE, ordinary Gradio dependency
+            # -- no js=, no fn=None step, no .then() bridging two components.
+            # st_rich_editable is listed DIRECTLY in `inputs`, exactly like
+            # any other interactive component: Gradio gathers whatever its
+            # frontend-tracked `value` currently is at click time. What
+            # guarantees that value is fresh is st_rich_editable's OWN
+            # js_on_load (see _MS_RICH_EDITABLE_JS_ON_LOAD): a document-level
+            # CAPTURE-PHASE click listener on this exact button (elem_id=
+            # "ms-save-btn") writes the live contenteditable DOM's current
+            # HTML into props.value SYNCHRONOUSLY, before this SAME click
+            # event reaches Gradio's own bubble-phase handler -- a hard
+            # ordering guarantee from the browser's own event-dispatch spec,
+            # not from a Gradio promise-chain.
+            #
+            # studio_save_ui's text_val parameter therefore now receives
+            # HTML (the live editor's current markup), not canonical
+            # markdown-like text -- it converts via rich_text.
+            # html_to_canonical() itself (the inverse of render_editable_
+            # html()) before using it, so every OTHER caller of
+            # studio_save_ui's signature (there are none besides this
+            # wiring) is unaffected and the conversion lives in exactly one
+            # place.
+            st_save_btn.click(
+                studio_save_ui,
+                [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
+                 st_title_input, st_rich_editable, st_table_title, st_table_caption, st_table_grid_edit,
+                 st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
+                 st_shared_impact_token],
+                ST_OUT_FULL
+            ).then(*_VARIANT_THEN_ARGS)
+
             # Add/remove row/column -- see _table_rowcol_op: replaces
             # reliance on the Dataframe's own native right-click menu,
             # which does not reliably sync to what Save submits. Only ever
@@ -4099,15 +4732,17 @@ with gr.Blocks(title=BRAND_NAME) as demo:
 
             st_restore_draft_btn.click(studio_restore_draft_ui, [project_state, st_kind, st_id, st_block_type, st_object_ref_id],
                                        [st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
-                                        st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn])
+                                        st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn,
+                                        st_rich_editable, st_rich_save_status])
             st_discard_draft_btn.click(studio_discard_draft_ui,
                                        [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_save_btn.click(studio_save_ui,
-                              [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_version,
-                               st_title_input, st_text_input, st_table_title, st_table_caption, st_table_grid_edit,
-                               st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
-                               st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            # st_save_btn's own wiring is now the two-step guaranteed-order
+            # chain declared earlier, right after the rich-text toolbar
+            # buttons (see the "4E.3 Save/Version Regression Fix" comment
+            # there) -- this used to be a single .click(studio_save_ui, ...)
+            # here; kept as a comment, not a second binding, to avoid two
+            # competing click handlers on the same button.
 
             # 4D reuse-aware shared-object decision -- see
             # studio_confirm_shared_update_ui/studio_fork_local_ui.

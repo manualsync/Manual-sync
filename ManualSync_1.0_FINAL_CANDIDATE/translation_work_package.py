@@ -14,9 +14,53 @@ import pandas as pd
 
 from cat_batch import _append_text_with_inline, _read_text_with_inline
 from ccms_industrial import IndustrialRepository
-from translation_impact import analyze_translation_impact
+from translation_impact import analyze_translation_impact, extract_source_units, RICH_FORMAT_UNSAFE_MARKER
 
 WORK_PACKAGE_BUILD = "0.23.1-deduplicated-nontranslatable-work-package-20260820"
+
+# 4E.3 final translation blocker: until a protected inline-format
+# round-trip exists, genuinely rich-formatted content must never enter a
+# translation work package at all -- not even as a flagged/plain-
+# projected segment. A note inside an already-created package is NOT
+# fail-closed (the package still exists, still gets sent to a
+# translator, still comes back without deterministic formatting
+# reconstruction). This exception, and the pre-flight check that raises
+# it (see generate_translation_work_packages below), is the actual
+# enforcement boundary.
+class TranslationFormatNotSupportedError(RuntimeError):
+    """Raised BEFORE any package/file/directory/state is created when
+    the requested source content contains genuine rich-text formatting
+    (rich_text.has_rich_structure) that this translation pipeline cannot
+    yet round-trip safely. Callers should present str(exc) directly to
+    the user -- it is already the final, human-readable, Italian
+    message with no internal ids/JSON/raw markup/stack trace."""
+
+
+_RICH_FORMAT_BLOCKED_MESSAGE = (
+    "Questo contenuto contiene formattazione avanzata che non può ancora essere mantenuta in modo sicuro "
+    "nel ciclo di traduzione. Rimuovi la formattazione oppure usa contenuto semplice prima di creare il "
+    "pacchetto di traduzione."
+)
+
+
+def _reject_if_unsafe_rich_content(repo: IndustrialRepository, changed_id: str, *, kind: str) -> None:
+    """Pure, read-only pre-flight check -- issues SELECTs only (via
+    extract_source_units, itself unchanged and side-effect-free), never
+    creates a directory/file/DB row. Raises TranslationFormatNotSupportedError
+    the instant ANY unit destined for this translation operation is a
+    rich block's visible-text projection (i.e. formatting was stripped
+    rather than preserved) -- detected via the stable RICH_FORMAT_UNSAFE_MARKER
+    embedded in that unit's source_ref (translation_impact.py's own,
+    single source of truth for this signal; not re-derived here).
+    Deliberately covers 'block'/'topic'/'publication' kind uniformly,
+    since extract_source_units() already recurses through topics/
+    publications down to the same per-block extraction this marker
+    comes from -- one rich paragraph anywhere inside a topic or
+    publication being packaged is enough to refuse the WHOLE operation,
+    never a partial/silent skip of just that one segment."""
+    units, _meta = extract_source_units(repo, changed_id, kind=kind)
+    if any(RICH_FORMAT_UNSAFE_MARKER in (u.source_ref or "") for u in units):
+        raise TranslationFormatNotSupportedError(_RICH_FORMAT_BLOCKED_MESSAGE)
 XLIFF_NS = "urn:oasis:names:tc:xliff:document:2.0"
 ET.register_namespace("", XLIFF_NS)
 
@@ -161,6 +205,13 @@ def generate_translation_work_packages(
     require_approved: bool = True,
     out_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    # 4E.3 final translation blocker: the FIRST thing this function does,
+    # before touching the filesystem at all (no root.mkdir(), no
+    # analyze_translation_impact(), nothing) -- a pure read that either
+    # returns silently (safe to proceed) or raises
+    # TranslationFormatNotSupportedError with zero side effects.
+    _reject_if_unsafe_rich_content(repo, changed_id, kind=kind)
+
     root = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="manualsync_v23_workpkg_"))
     if root.exists():
         root.mkdir(parents=True, exist_ok=True)
