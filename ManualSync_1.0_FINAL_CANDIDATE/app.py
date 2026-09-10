@@ -21,6 +21,8 @@ from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_block
 from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError, SharedObjectError, MissingAssetError
 import authoring_view as av
 import publishing_preview as pp
+import publishing_output as po
+import export_links
 import rich_text
 from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
 from cat_tm import TranslationMemory, source_target_safe
@@ -431,6 +433,28 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-pp-table-caption{color:var(--ui-muted);font-size:11.5px;margin-bottom:2px}
 .ms-pp-figure{max-width:100%;border-radius:8px;margin-top:6px;display:block}
 .ms-pp-figure-caption{color:var(--ui-muted);font-size:11.5px;margin-top:4px}
+/* 4F.1 export result card: the deliverable's own small product surface.
+   Two real actions (open / download) instead of a filename card, so the
+   user never has to work out where to click. Failure uses the same card
+   shape in an error tone -- always contained, never a global toast. */
+.ms-export-card{background:var(--ui-green-soft);border:1px solid #a6f4c5;border-radius:12px;
+  padding:14px 16px;margin:10px 0 4px}
+.ms-export-card-err{background:var(--ui-red-soft);border-color:#fecaca}
+.ms-export-headline{font-size:14px;font-weight:800;color:#067647}
+.ms-export-card-err .ms-export-headline{color:#b42318}
+.ms-export-subtitle{color:#475467;font-size:12.5px;margin-top:3px}
+.ms-export-warn{background:var(--ui-amber-soft);border:1px solid #fde68a;color:#93450a;border-radius:8px;
+  padding:6px 9px;font-size:11.5px;margin-top:8px}
+.ms-export-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:12px}
+.ms-export-btn{display:inline-block;border-radius:9px;padding:8px 16px;font-size:12.5px;font-weight:750;
+  text-decoration:none!important;border:1px solid transparent;cursor:pointer}
+.ms-export-btn-primary{background:var(--ui-primary);color:#fff!important;border-color:var(--ui-primary)}
+.ms-export-btn-primary:hover{background:var(--ui-primary-hover)}
+.ms-export-btn-secondary{background:#fff;color:#344054!important;border-color:#d0d5dd}
+.ms-export-btn-secondary:hover{background:#f9fafb}
+.ms-export-tech{margin-top:11px;font-size:11px;color:var(--ui-muted)}
+.ms-export-tech summary{cursor:pointer;color:#98a2b3}
+.ms-export-tech div{margin-top:5px;word-break:break-all;font-family:ui-monospace,Consolas,monospace}
 /* 4E.3: rich-text marks, shared look between the standard editor's own
    contenteditable surface (.ms-rich-editable-surface) and Publishing
    Preview (.ms-pp-block) -- deliberately understated (no arbitrary
@@ -3135,6 +3159,177 @@ def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excl
         repo.close()
 
 
+# ----------------------------------------------------------------
+# 4F.1 Production publishing outputs -- the smallest additive export UI
+# that exposes publishing_output.py's real deliverables. Deliberately
+# ISOLATED callbacks with their own two small outputs: they never touch
+# ST_OUT_FULL, so a failed export can never disturb the authoring panel
+# (the 49-slot bundle is exactly where a partial-update bug becomes a
+# cascade of red Error controls -- see the 4E.3 UI regression).
+#
+# Read-only, like the preview they sit under: exporting a deliverable is
+# NOT a release decision. No version bump, no audit event, no status
+# change -- proven by regressione_publishing_outputs_4f1.py's mutation
+# suite, not merely asserted here.
+# ----------------------------------------------------------------
+
+def _export_error_html(message: str) -> str:
+    """A failed export is a contained, human-readable card in this
+    section -- never a global red toast, never a stack trace."""
+    return (f"<div class='ms-export-card ms-export-card-err'>"
+            f"<div class='ms-export-headline'>{html.escape(message)}</div></div>")
+
+
+def _export_result_card(*, headline: str, subtitle: str, open_url: str, open_label: str,
+                        download_url: str, download_label: str, tech_detail: str,
+                        warnings: str = "") -> str:
+    """The product-grade export result card.
+
+    Root UX problem this replaces: the first cut returned a success
+    banner plus a raw Gradio File widget ("manuale.pdf / Scarica / 12 kB")
+    and printed the technical path in standard mode -- leaving the user to
+    work out that the filename card was the way to open the deliverable.
+
+    Here the two things a user actually wants ARE the interface: a primary
+    "Apri" button and a secondary "Scarica" button, both real links to
+    opaque same-origin routes (see export_links.py -- no filesystem path
+    reaches the page). The technical path stays collapsed inside
+    "Dettagli tecnici (modalità avanzata)", matching where every other
+    technical detail lives in this app."""
+    warn_html = (f"<div class='ms-export-warn'>{html.escape(warnings)}</div>" if warnings else "")
+    tech_html = (f"<details class='ms-export-tech'><summary>Dettagli tecnici (modalità avanzata)</summary>"
+                 f"<div>{html.escape(tech_detail)}</div></details>" if tech_detail else "")
+    return (
+        "<div class='ms-export-card'>"
+        f"<div class='ms-export-headline'>{html.escape(headline)}</div>"
+        f"<div class='ms-export-subtitle'>{html.escape(subtitle)}</div>"
+        f"{warn_html}"
+        "<div class='ms-export-actions'>"
+        f"<a class='ms-export-btn ms-export-btn-primary' href='{html.escape(open_url)}' "
+        f"target='_blank' rel='noopener'>{html.escape(open_label)}</a>"
+        f"<a class='ms-export-btn ms-export-btn-secondary' href='{html.escape(download_url)}' "
+        f"download>{html.escape(download_label)}</a>"
+        "</div>"
+        f"{tech_html}"
+        "</div>"
+    )
+
+
+def _ensure_export_routes() -> bool:
+    """Installs the opaque artifact routes on the already-running Gradio
+    FastAPI app, once. Called from the export callbacks because by then
+    the server necessarily exists -- which keeps both launch paths
+    (app.py's blocking launch and manualsync_desktop's) untouched."""
+    try:
+        return export_links.install_routes(getattr(demo, "app", None))
+    except Exception as e:  # never let a link-route problem break an export
+        _app_log("Export link routes unavailable", e)
+        return False
+
+
+def _export_human_location(project_dir, path: Path) -> str:
+    """Where the artifact landed, expressed RELATIVE to the project the
+    user already chose -- enough to find the file, without printing their
+    home directory or username into the UI."""
+    try:
+        return str(Path(path).relative_to(Path(project_dir)))
+    except (ValueError, TypeError):
+        return Path(path).name
+
+
+def _export_warnings_detail(warnings: list[str]) -> str:
+    if not warnings:
+        return ""
+    head = "Avviso: " if len(warnings) == 1 else f"{len(warnings)} avvisi: "
+    return head + " · ".join(warnings[:4]) + (" …" if len(warnings) > 4 else "")
+
+
+def _it_pages(n: int) -> str:
+    return "1 pagina" if n == 1 else f"{n} pagine"
+
+
+def studio_export_pdf_ui(project_dir, publication_id, profile_id):
+    """Single output: the export result card. Never raises gr.Error -- an
+    export problem is a contained, human-readable card in this section,
+    never a global red toast over the whole app."""
+    if not project_dir:
+        return _export_error_html("Nessun progetto attivo.")
+    if not profile_id:
+        return _export_error_html("Seleziona prima un profilo.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        res = po.export_pdf(repo, svc, (publication_id or "").strip() or "PUB-MAIN", profile_id)
+    except po.PublishingOutputError as e:
+        return _export_error_html(str(e))
+    except KeyError:
+        return _export_error_html("La publication o il profilo selezionato non sono più disponibili.")
+    except Exception as e:
+        _app_log("PDF export failed", e)
+        return _export_error_html("Non è stato possibile creare il PDF.")
+    finally:
+        repo.close()
+
+    if not _ensure_export_routes():
+        return _export_error_html("PDF creato, ma il collegamento per aprirlo non è disponibile. "
+                                  "Riavvia l'applicazione e riprova.")
+    token = export_links.register_export(
+        root=res["output_dir"], primary_rel=res["pdf"].name, download_path=res["pdf"],
+        download_name=f"{po._slug(res['publication_title'])}-{po._slug(res['profile_name'])}.pdf")
+    return _export_result_card(
+        headline="PDF creato correttamente",
+        subtitle=f"{res['publication_title']} · {res['profile_name']} · {_it_pages(res['pages'])}",
+        open_url=export_links.open_url(token), open_label="Apri PDF",
+        download_url=export_links.download_url(token), download_label="Scarica PDF",
+        tech_detail=_export_human_location(project_dir, res["pdf"]),
+        warnings=_export_warnings_detail(res["warnings"]))
+
+
+def studio_export_html_ui(project_dir, publication_id, profile_id):
+    """Single output: the export result card. The canonical artifact is
+    the portable FOLDER (index.html + style.css + assets/ + manifest);
+    "Apri HTML" serves index.html from that folder through the opaque
+    route (so its relative style.css/assets hrefs resolve), and "Scarica"
+    hands over a ZIP of exactly that folder, built in a temp directory so
+    the export is never polluted by its own archive."""
+    if not project_dir:
+        return _export_error_html("Nessun progetto attivo.")
+    if not profile_id:
+        return _export_error_html("Seleziona prima un profilo.")
+    repo, svc = av.open_service(project_dir)
+    try:
+        res = po.export_html_package(repo, svc, (publication_id or "").strip() or "PUB-MAIN", profile_id)
+    except po.PublishingOutputError as e:
+        return _export_error_html(str(e))
+    except KeyError:
+        return _export_error_html("La publication o il profilo selezionato non sono più disponibili.")
+    except Exception as e:
+        _app_log("HTML export failed", e)
+        return _export_error_html("Non è stato possibile creare il pacchetto HTML.")
+    finally:
+        repo.close()
+
+    zip_path = None
+    try:
+        tmp_dir = Path(tempfile.mkdtemp(prefix="ms_html_zip_"))
+        zip_path = shutil.make_archive(str(tmp_dir / "pacchetto-html"), "zip",
+                                       root_dir=str(res["output_dir"]))
+    except Exception as e:
+        _app_log("HTML package zip failed (package itself is valid)", e)
+    if not _ensure_export_routes():
+        return _export_error_html("Pacchetto HTML creato, ma il collegamento per aprirlo non è "
+                                  "disponibile. Riavvia l'applicazione e riprova.")
+    token = export_links.register_export(
+        root=res["output_dir"], primary_rel="index.html", download_path=zip_path,
+        download_name=f"{po._slug(res['publication_title'])}-{po._slug(res['profile_name'])}.zip")
+    return _export_result_card(
+        headline="Pacchetto HTML creato correttamente",
+        subtitle=f"{res['publication_title']} · {res['profile_name']}",
+        open_url=export_links.open_url(token), open_label="Apri HTML",
+        download_url=export_links.download_url(token), download_label="Scarica pacchetto HTML",
+        tech_detail=_export_human_location(project_dir, res["output_dir"]),
+        warnings=_export_warnings_detail(res["warnings"]))
+
+
 # ---- Impostazioni > Varianti: minimal dimension/value/profile management ----
 
 def settings_variant_dimensions_table_ui(project_dir):
@@ -4528,6 +4723,30 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 pv_show_excluded = gr.Checkbox(label="Mostra contenuti esclusi", value=False, scale=1)
             pv_output = gr.HTML("<div class='ms-pp-note-line'>Seleziona un profilo per vedere quali contenuti verranno inclusi.</div>")
 
+            # ------------------------------------------------------------
+            # 4F.1 production outputs. Deliberately the SMALLEST additive
+            # surface: two buttons, one contained status line, one download
+            # slot -- and their own isolated callbacks (never ST_OUT_FULL).
+            # The exported PDF/HTML5 use the SAME publication+profile
+            # semantics the preview above just showed, so what the user
+            # previews is what they get.
+            # ------------------------------------------------------------
+            gr.HTML("<div class='ms-section-sub' style='margin-top:14px'>Output di produzione — genera il "
+                    "manuale finale per il profilo selezionato. L'esportazione non modifica i contenuti "
+                    "e non approva nulla.</div>")
+            with gr.Row():
+                pv_export_pdf_btn = gr.Button("Esporta PDF", variant="primary", scale=1)
+                pv_export_html_btn = gr.Button("Esporta HTML", scale=1)
+            # One HTML output, nothing else: the export RESULT CARD (see
+            # _export_result_card). Deliberately NOT a gr.File widget --
+            # a filename card with a generic "Scarica" is exactly the UX
+            # that failed manual acceptance, because "how do I open it?"
+            # had no visible answer.
+            pv_export_status = gr.HTML()
+            # .click() wiring is deferred to the Studio wiring section below,
+            # where c_pub (the Publication ID field) already exists -- the
+            # same deferral the 4B.2 block uses for exactly this reason.
+
             with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
                 with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
                 c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
@@ -4865,6 +5084,14 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             pv_refresh_btn.click(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
             pv_profile.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
             pv_show_excluded.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            # 4F.1: production exports -- isolated callbacks, isolated
+            # outputs, same [project, publication, profile] inputs the
+            # preview above already uses, so preview and deliverable can
+            # never disagree about WHAT is being published.
+            pv_export_pdf_btn.click(studio_export_pdf_ui, [project_state, c_pub, pv_profile],
+                                    [pv_export_status])
+            pv_export_html_btn.click(studio_export_html_ui, [project_state, c_pub, pv_profile],
+                                     [pv_export_status])
 
         with gr.Tab("Compliance", id="compliance") as cp_tab:
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
@@ -5105,7 +5332,19 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     _nav_outputs=[workspace_tabs,*_NAV_BUTTONS]
     nav_home.click(lambda:_navigate('home'),None,_nav_outputs)
     nav_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
-    nav_authoring.click(lambda:_navigate('authoring'),None,_nav_outputs)
+    # 4F.1 export-UX fix (real defect, found by the browser gate): the
+    # sidebar switches tabs PROGRAMMATICALLY via gr.Tabs(selected=...),
+    # which does NOT fire authoring_tab.select() -- and the tab strip
+    # itself is hidden by design (R23), so a user navigating normally
+    # never triggered studio_preview_profile_choices_ui at all. The
+    # Publishing Preview profile picker therefore stayed EMPTY, making
+    # both the preview and the new PDF/HTML export unusable unless the
+    # project happened to change in that session. Refreshing the picker
+    # on the navigation itself is the fix, chained (never merged into the
+    # nav callback) so navigation keeps working even if the project has
+    # no profiles yet.
+    nav_authoring.click(lambda:_navigate('authoring'),None,_nav_outputs).then(
+        studio_preview_profile_choices_ui,[project_state],[pv_profile])
     nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
     nav_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
@@ -5118,7 +5357,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # DEFAULT view (c_simple_table) is now the friendly standard view — the
     # technical dataframes live only inside the collapsed "modalità avanzata"
     # accordion, so they're never the primary call-to-action.
-    lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel])
+    lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel]).then(
+        studio_preview_profile_choices_ui,[project_state],[pv_profile])
     # Keeps the standard review table in sync with the SAME topics/blocks data
     # shown in "modalità avanzata" — fires after either the guided import or the
     # manual "Importa come draft" click, since both set c_blocks. No second backend.

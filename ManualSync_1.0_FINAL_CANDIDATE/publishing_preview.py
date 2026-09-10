@@ -106,8 +106,23 @@ class _PreviewImageBudget:
         return True
 
 
-def _figure_data_uri(project_dir: Path, file_path: str,
-                      budget: "_PreviewImageBudget | None" = None) -> tuple[str | None, bool]:
+def _resolve_figure_asset(project_dir: Path, file_path: str,
+                          budget: "_PreviewImageBudget | None" = None, *,
+                          mode: str = "data_uri") -> tuple[Any, bool]:
+    """4F.1: the SINGLE asset gate for both the on-screen preview and the
+    production exports -- same containment, same extension allowlist,
+    same per-image cap, so a file the preview refuses can never sneak
+    into a published PDF/HTML package through a second, laxer path.
+
+    mode="data_uri" (unchanged 4E.2 behavior): returns a bounded base64
+    `data:` URI so the browser never sees a filesystem path.
+    mode="path": returns the VALIDATED absolute Path instead, and never
+    reads or encodes the bytes -- production exports copy the file into
+    their own `assets/` folder themselves, so base64-inlining it here
+    would burn RAM (~1.33x every image, all at once) for a string that
+    would be thrown away. The aggregate preview image budget is likewise
+    only meaningful for inlining, so it is not consulted in path mode;
+    exports apply their own on-disk budget instead."""
     """A browser-consumable `data:` URI for a figure asset, or (None, ...)
     if it can't (or shouldn't) be served. Returns `(data_uri, budget_
     exhausted)` -- `budget_exhausted` is True ONLY when the asset is
@@ -171,6 +186,10 @@ def _figure_data_uri(project_dir: Path, file_path: str,
         size = abs_path.stat().st_size
         if size > _FIGURE_MAX_BYTES:
             return None, False
+        if mode == "path":
+            # Fully validated, but deliberately no read and no budget
+            # charge -- see this function's docstring.
+            return abs_path, False
         if budget is not None and not budget.try_reserve(size):
             return None, True
         raw = abs_path.read_bytes()
@@ -179,9 +198,17 @@ def _figure_data_uri(project_dir: Path, file_path: str,
     return f"data:{mime};base64," + base64.b64encode(raw).decode("ascii"), False
 
 
+def _figure_data_uri(project_dir: Path, file_path: str,
+                     budget: "_PreviewImageBudget | None" = None) -> tuple[str | None, bool]:
+    """Backwards-compatible 4E.2 entry point (kept so existing callers and
+    the 4E.2 suite keep exercising the exact same signature)."""
+    return _resolve_figure_asset(project_dir, file_path, budget, mode="data_uri")
+
+
 def _resolve_block_content(repo: IndustrialRepository, block_row: Any,
                            image_budget: "_PreviewImageBudget | None" = None, *,
-                           resolve_figure_bytes: bool = True) -> dict[str, Any]:
+                           resolve_figure_bytes: bool = True,
+                           figure_mode: str = "data_uri") -> dict[str, Any]:
     """Read-only resolution of a block's CURRENT content -- never a
     historical version, never mutates anything. Wrapped so a single
     corrupt/unexpected row can only ever degrade ITS OWN preview item,
@@ -245,7 +272,7 @@ def _resolve_block_content(repo: IndustrialRepository, block_row: Any,
             return {
                 "kind": "figure", "title": frow["title"], "caption": frow["caption"],
                 "alt_text": frow["alt_text"], "asset_url": None, "asset_missing": True,
-                "asset_budget_skipped": False,
+                "asset_budget_skipped": False, "asset_path": None,
             }
         # asset_url is a bounded `data:` URI (image bytes inlined into
         # the HTML itself), never a filesystem path or a path-bearing
@@ -259,12 +286,14 @@ def _resolve_block_content(repo: IndustrialRepository, block_row: Any,
         # <img>), but asset_budget_skipped distinguishes the last case so
         # the WORDING can differ (never call a valid image "unavailable"
         # just because memory-budget bookkeeping skipped it).
-        asset_url, budget_exhausted = _figure_data_uri(
-            Path(repo.path).parent, str(frow["file_path"] or ""), image_budget)
+        resolved, budget_exhausted = _resolve_figure_asset(
+            Path(repo.path).parent, str(frow["file_path"] or ""), image_budget, mode=figure_mode)
+        asset_url = resolved if figure_mode == "data_uri" else None
+        asset_path = resolved if figure_mode == "path" else None
         return {
             "kind": "figure", "title": frow["title"], "caption": frow["caption"],
-            "alt_text": frow["alt_text"], "asset_url": asset_url, "asset_missing": asset_url is None,
-            "asset_budget_skipped": budget_exhausted,
+            "alt_text": frow["alt_text"], "asset_url": asset_url, "asset_missing": resolved is None,
+            "asset_budget_skipped": budget_exhausted, "asset_path": asset_path,
         }
     if bt == "component_ref":
         crow = repo.conn.execute(
@@ -284,7 +313,7 @@ def _resolve_block_content(repo: IndustrialRepository, block_row: Any,
 
 
 def build_preview_model(repo: IndustrialRepository, svc: AuthoringService, publication_id: str,
-                        profile_id: str) -> dict[str, Any]:
+                        profile_id: str, *, figure_mode: str = "data_uri") -> dict[str, Any]:
     """The single, pure, read-only entry point for Publishing Preview.
 
     Raises KeyError if the publication or the profile does not exist --
@@ -383,7 +412,8 @@ def build_preview_model(repo: IndustrialRepository, svc: AuthoringService, publi
                 # reading its file or charging the aggregate image budget.
                 likely_included = topic_included and own_included
                 content = _resolve_block_content(repo, brow, image_budget,
-                                                 resolve_figure_bytes=likely_included)
+                                                 resolve_figure_bytes=likely_included,
+                                                 figure_mode=figure_mode)
                 failed = False
             except Exception as e:  # a single corrupt/unexpected block must never crash the preview
                 own_included = False
