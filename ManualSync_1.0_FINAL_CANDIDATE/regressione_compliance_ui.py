@@ -154,8 +154,9 @@ check("group2: dashboard reflects Not applicable=1 from the backend summary", ba
 check("group2: dashboard reflects To verify=1 (REQ-SYNTH-4, never touched) from the backend summary", backend_summary['counts']['To verify'] == 1, backend_summary)
 check("group2: requirement table row count equals backend total", len(bundle2[IDX_TABLE]) == backend_summary["total"] == 4, (len(bundle2[IDX_TABLE]), backend_summary))
 statuses_in_table = list(bundle2[IDX_TABLE]["Stato"])
-check("group2: table sort order is Missing, To verify, Covered, Not applicable",
-      statuses_in_table == ["Missing", "To verify", "Covered", "Not applicable"], statuses_in_table)
+check("group2: table sort order is Missing, To verify, Covered, Not applicable -- shown to an "
+      "Italian user in Italian, ordered by what still needs a decision",
+      statuses_in_table == ["Mancante", "Da verificare", "Coperto", "Non applicabile"], statuses_in_table)
 check("group2: the mandatory non-certification disclaimer is present", "conformità legale" in dash2, dash2)
 
 # ------------------------------------------------------------------
@@ -279,8 +280,9 @@ try:
 finally:
     repo9.close()
 bundle9 = app.compliance_switch_scope_ui(str(proj9), scope9)
-check("group9: the requirement table shows 'To verify', not a 5th 'Stale' label",
-      list(bundle9[IDX_TABLE]["Stato"]) == ["To verify"], list(bundle9[IDX_TABLE]["Stato"]))
+check("group9: the requirement table shows 'Da verificare' (the Italian label for the engine's "
+      "'To verify'), not a 5th 'Stale' label",
+      list(bundle9[IDX_TABLE]["Stato"]) == ["Da verificare"], list(bundle9[IDX_TABLE]["Stato"]))
 check("group9: the essential reason explains it's a staleness issue, in plain language",
       "cambiato" in bundle9[IDX_TABLE]["Motivo"].iloc[0], bundle9[IDX_TABLE]["Motivo"].iloc[0])
 check("group9: no status value ANYWHERE in the table is the literal word 'Stale'",
@@ -300,7 +302,7 @@ finally:
 # A brand-new repo/service pair -- nothing shared with the write above.
 bundle10 = app.compliance_switch_scope_ui(str(proj10), scope10)
 check("group10: the decision persisted across a fresh ComplianceService instance (simulated reload)",
-      "Not applicable" in list(bundle10[IDX_TABLE]["Stato"]), list(bundle10[IDX_TABLE]["Stato"]))
+      "Non applicabile" in list(bundle10[IDX_TABLE]["Stato"]), list(bundle10[IDX_TABLE]["Stato"]))
 
 # ------------------------------------------------------------------
 # Group 11: no partial mutation survives a rejected decision -- audit

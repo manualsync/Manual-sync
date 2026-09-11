@@ -328,8 +328,39 @@ class ComplianceService:
         self.conn = repo.conn
         self._ensure_schema()
 
+    # 4F.2 starter packs: additive provenance columns on
+    # compliance_requirement. A curated pack must be able to answer "da
+    # dove arriva questo requisito?" without relying on display text as
+    # identity -- so pack identity, the official source URL, its language,
+    # the review date and the verification state all live as real columns.
+    # Additive with safe defaults, exactly like ccms_industrial's own
+    # text_format migration: every requirement that existed before this
+    # column did keeps working, simply carrying no pack provenance.
+    _REQUIREMENT_PROVENANCE_COLUMNS = {
+        "pack_id": "TEXT NOT NULL DEFAULT ''",
+        "pack_version": "TEXT NOT NULL DEFAULT ''",
+        "provenance_type": "TEXT NOT NULL DEFAULT ''",
+        "source_url": "TEXT NOT NULL DEFAULT ''",
+        "source_lang": "TEXT NOT NULL DEFAULT ''",
+        "reviewed_date": "TEXT NOT NULL DEFAULT ''",
+        "verification_status": "TEXT NOT NULL DEFAULT ''",
+        "applicability_group": "TEXT NOT NULL DEFAULT ''",
+        # Source-revision bookkeeping for the pack update path. Rows that
+        # predate these columns read as content_version 0 / revision 1 /
+        # ACTIVE, which is exactly "older than anything shipping today,
+        # not retired" -- so an old project needs no data migration.
+        "content_version": "INTEGER NOT NULL DEFAULT 0",
+        "substantive_revision": "INTEGER NOT NULL DEFAULT 1",
+        "source_status": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+        "retired_at": "TEXT NOT NULL DEFAULT ''",
+    }
+
     def _ensure_schema(self) -> None:
         self.conn.executescript(SCHEMA_SQL)
+        existing = {str(r[1]) for r in self.conn.execute("PRAGMA table_info(compliance_requirement)")}
+        for column, ddl in self._REQUIREMENT_PROVENANCE_COLUMNS.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE compliance_requirement ADD COLUMN {column} {ddl}")
         self.conn.commit()
 
     # ---------- internal helpers ----------
@@ -557,6 +588,329 @@ class ComplianceService:
                  description.strip(), status.strip(), now))
             self._audit("compliance_requirement", requirement_id, "CREATE", actor, {"instrument_id": instrument_id})
         return requirement_id
+
+    # ---------- 4F.2: curated starter packs ----------
+    def import_requirement_pack(self, pack: dict[str, Any], *, scope_id: str, actor: str,
+                                groups: list[str] | None = None) -> dict[str, Any]:
+        """Imports a curated pack's SOURCE records into this project and
+        attaches them to an existing scope. Deliberately takes a plain
+        dict, so this engine stays content-agnostic: the curated content
+        lives in compliance_starter_packs.py and this method never needs
+        to know which regulation it is installing.
+
+        Contract:
+        * EXPLICIT -- only ever called from a deliberate user action; a
+          pack never installs itself into a project.
+        * ATOMIC -- instrument, standard metadata, requirements and the
+          scope references are written inside ONE transaction, so a
+          failure part-way leaves the project exactly as it was.
+        * IDEMPOTENT -- re-importing the SAME pack version is a no-op:
+          existing requirement ids are skipped, never duplicated and
+          never rewritten, so a second import can never reset a project's
+          applicability/coverage decisions.
+        * NON-DESTRUCTIVE -- it only ever inserts pack SOURCE rows. It
+          writes nothing into compliance_applicability /
+          compliance_assessment, touches no authoring content, and makes
+          no approval or release decision.
+
+        Returns a summary of what was actually added vs already present."""
+        actor = self._require_actor(actor)
+        if not self.conn.execute("SELECT 1 FROM compliance_scope WHERE scope_id=?", (scope_id,)).fetchone():
+            raise KeyError(scope_id)
+        instrument = pack["instrument"]
+        wanted_groups = set(groups or ["full_machinery"])
+        requirements = [r for r in pack["requirements"] if r["applicability_group"] in wanted_groups]
+        if not requirements:
+            raise ValueError("Nessun requisito selezionato per questo ambito di applicabilità.")
+
+        now = _now()
+        added_requirements: list[str] = []
+        skipped_requirements: list[str] = []
+        with self._atomic():
+            inst_id = instrument["instrument_id"]
+            inst_row = self.conn.execute(
+                "SELECT version FROM compliance_regulatory_instrument WHERE instrument_id=?", (inst_id,)).fetchone()
+            if not inst_row:
+                self.conn.execute(
+                    """INSERT INTO compliance_regulatory_instrument(instrument_id,kind,official_identifier,title,
+                       status,version,valid_from,official_source_ref,created_at,updated_at)
+                       VALUES(?,?,?,?,'ACTIVE',1,?,?,?,?)""",
+                    (inst_id, instrument.get("kind", "regulation"), instrument["official_identifier"],
+                     instrument.get("title", ""), instrument.get("applies_from", ""),
+                     instrument.get("official_source_ref", ""), now, now))
+                self.conn.execute(
+                    """INSERT INTO compliance_regulatory_instrument_versions(instrument_id,version,kind,
+                       official_identifier,title,status,valid_from,valid_until,official_source_ref,
+                       supersedes_instrument_id,created_at)
+                       VALUES(?,1,?,?,?,'ACTIVE',?,'',?,'',?)""",
+                    (inst_id, instrument.get("kind", "regulation"), instrument["official_identifier"],
+                     instrument.get("title", ""), instrument.get("applies_from", ""),
+                     instrument.get("official_source_ref", ""), now))
+                instrument_version = 1
+            else:
+                instrument_version = int(inst_row["version"])
+
+            for std in pack.get("standards", []):
+                if self.conn.execute("SELECT 1 FROM compliance_standard WHERE standard_id=?",
+                                     (std["standard_id"],)).fetchone():
+                    continue
+                self.conn.execute(
+                    """INSERT INTO compliance_standard(standard_id,designation,title,edition,status,version,
+                       harmonized_under_instrument_id,publisher,external_reference_url,licensed_content_ref,
+                       created_at,updated_at) VALUES(?,?,?,?,'CURRENT',1,'',?,?,?,?,?)""",
+                    (std["standard_id"], std["designation"], std.get("title", ""), std.get("edition", ""),
+                     std.get("publisher", ""), std.get("external_reference_url", ""),
+                     std.get("licensed_content_ref", ""), now, now))
+                self.conn.execute(
+                    """INSERT INTO compliance_standard_versions(standard_id,version,designation,title,edition,
+                       status,harmonized_under_instrument_id,publisher,external_reference_url,
+                       licensed_content_ref,created_at) VALUES(?,1,?,?,?,'CURRENT','',?,?,?,?)""",
+                    (std["standard_id"], std["designation"], std.get("title", ""), std.get("edition", ""),
+                     std.get("publisher", ""), std.get("external_reference_url", ""),
+                     std.get("licensed_content_ref", ""), now))
+
+            for req in requirements:
+                rid = req["requirement_id"]
+                if self.conn.execute("SELECT 1 FROM compliance_requirement WHERE requirement_id=?",
+                                     (rid,)).fetchone():
+                    skipped_requirements.append(rid)
+                    continue
+                self.conn.execute(
+                    """INSERT INTO compliance_requirement(requirement_id,instrument_id,
+                       instrument_version_at_authoring,article_ref,title,description,status,version,
+                       created_at,updated_at,pack_id,pack_version,provenance_type,source_url,source_lang,
+                       reviewed_date,verification_status,applicability_group,content_version,
+                       substantive_revision,source_status)
+                       VALUES(?,?,?,?,?,?,'ACTIVE',1,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE')""",
+                    (rid, inst_id, instrument_version, req["article_ref"], req["title"], req["summary"],
+                     now, now, pack["pack_id"], pack["pack_version"], req["provenance_type"],
+                     req.get("source_url", ""), req.get("source_lang", ""), pack.get("reviewed_date", ""),
+                     req["verification_status"], req["applicability_group"],
+                     int(pack.get("content_version", 0)), int(req.get("substantive_revision", 1))))
+                self.conn.execute(
+                    """INSERT INTO compliance_requirement_versions(requirement_id,version,instrument_id,
+                       instrument_version_at_authoring,article_ref,title,description,status,created_at)
+                       VALUES(?,1,?,?,?,?,?,'ACTIVE',?)""",
+                    (rid, inst_id, instrument_version, req["article_ref"], req["title"], req["summary"], now))
+                added_requirements.append(rid)
+
+            self.conn.execute(
+                """INSERT INTO compliance_scope_reference(scope_id,ref_kind,ref_id,ref_version,added_by,added_at)
+                   VALUES(?,'instrument',?,?,?,?)
+                   ON CONFLICT(scope_id,ref_kind,ref_id) DO UPDATE SET ref_version=excluded.ref_version,
+                   added_by=excluded.added_by,added_at=excluded.added_at""",
+                (scope_id, inst_id, instrument_version, actor, now))
+            for std in pack.get("standards", []):
+                std_row = self.conn.execute("SELECT version FROM compliance_standard WHERE standard_id=?",
+                                            (std["standard_id"],)).fetchone()
+                if std_row:
+                    self.conn.execute(
+                        """INSERT INTO compliance_scope_reference(scope_id,ref_kind,ref_id,ref_version,added_by,added_at)
+                           VALUES(?,'standard',?,?,?,?)
+                           ON CONFLICT(scope_id,ref_kind,ref_id) DO UPDATE SET ref_version=excluded.ref_version,
+                           added_by=excluded.added_by,added_at=excluded.added_at""",
+                        (scope_id, std["standard_id"], int(std_row["version"]), actor, now))
+
+            self._audit("compliance_scope", scope_id, "IMPORT_REQUIREMENT_PACK", actor, {
+                "pack_id": pack["pack_id"], "pack_version": pack["pack_version"],
+                "groups": sorted(wanted_groups), "added": len(added_requirements),
+                "already_present": len(skipped_requirements)})
+
+        return {
+            "pack_id": pack["pack_id"], "pack_version": pack["pack_version"], "scope_id": scope_id,
+            "added": added_requirements, "already_present": skipped_requirements,
+            "requested": [r["requirement_id"] for r in requirements],
+        }
+
+    def update_requirement_pack(self, pack: dict[str, Any], *, scope_id: str, actor: str,
+                                diff: dict[str, Any]) -> dict[str, Any]:
+        """Applies a newer revision of an already-imported pack.
+
+        Import is additive and never rewrites a requirement, which is
+        correct for import and precisely why this method has to exist: a
+        project that imported an older revision would otherwise keep
+        pre-verification wording forever while still presenting it as
+        VERIFIED_OFFICIAL.
+
+        Contract:
+        * EXPLICIT -- only ever called from a deliberate user action.
+        * ATOMIC -- text refresh, additions, retirements and the audit
+          record all happen in ONE transaction.
+        * IDEMPOTENT -- applying the same revision twice is a no-op, so a
+          double click cannot double-add or double-bump anything.
+        * NON-DESTRUCTIVE -- it never deletes a requirement and never
+          writes to compliance_applicability / compliance_assessment /
+          compliance_evidence. The project overlay is preserved by NOT
+          being touched, which is a stronger guarantee than restoring it
+          afterwards.
+        * SUBSCOPE-FAITHFUL -- only the applicability groups the project
+          actually imported are considered. A full-machinery project is
+          never handed seven quasi-macchina obligations it never opted
+          into.
+
+        The one deliberate effect on existing decisions: a requirement
+        whose OBLIGATION widened gets its stored version bumped, so
+        compute_status() reads any decision pinned to the old version as
+        "To verify" again. Requirements whose wording was merely
+        corrected keep their version, and every decision on them survives
+        untouched. That split comes from the pack (`substantive_revision`)
+        and is computed by `pack_diff`, never guessed here.
+
+        `diff` is supplied by the caller rather than computed here on
+        purpose: this engine stays content-agnostic (it only ever sees a
+        plain dict), and there is exactly ONE diff implementation, in the
+        pack module, instead of a second one drifting in here."""
+        actor = self._require_actor(actor)
+        if not self.conn.execute("SELECT 1 FROM compliance_scope WHERE scope_id=?", (scope_id,)).fetchone():
+            raise KeyError(scope_id)
+
+        pack_id = pack["pack_id"]
+        installed = self.installed_pack_requirements(pack_id)
+        if not installed:
+            raise ValueError("Questo pacchetto non è ancora stato importato in questo progetto.")
+        by_id = {r["requirement_id"]: r for r in pack["requirements"]}
+        installed_by_id = {r["requirement_id"]: r for r in installed}
+        content_version = int(pack.get("content_version", 0))
+        now = _now()
+        applied = {"added": [], "updated_substantive": [], "updated_editorial": [], "retired": []}
+
+        with self._atomic():
+            inst_row = self.conn.execute(
+                "SELECT version FROM compliance_regulatory_instrument WHERE instrument_id=?",
+                (pack["instrument"]["instrument_id"],)).fetchone()
+            instrument_version = int(inst_row["version"]) if inst_row else 1
+
+            # 1. New obligations, inserted exactly as import would.
+            for rid in diff["added"]:
+                req = by_id[rid]
+                if self.conn.execute("SELECT 1 FROM compliance_requirement WHERE requirement_id=?",
+                                     (rid,)).fetchone():
+                    continue
+                self.conn.execute(
+                    """INSERT INTO compliance_requirement(requirement_id,instrument_id,
+                       instrument_version_at_authoring,article_ref,title,description,status,version,
+                       created_at,updated_at,pack_id,pack_version,provenance_type,source_url,source_lang,
+                       reviewed_date,verification_status,applicability_group,content_version,
+                       substantive_revision,source_status)
+                       VALUES(?,?,?,?,?,?,'ACTIVE',1,?,?,?,?,?,?,?,?,?,?,?,?,'ACTIVE')""",
+                    (rid, pack["instrument"]["instrument_id"], instrument_version, req["article_ref"],
+                     req["title"], req["summary"], now, now, pack_id, pack["pack_version"],
+                     req["provenance_type"], req.get("source_url", ""), req.get("source_lang", ""),
+                     pack.get("reviewed_date", ""), req["verification_status"],
+                     req["applicability_group"], content_version,
+                     int(req.get("substantive_revision", 1))))
+                self.conn.execute(
+                    """INSERT INTO compliance_requirement_versions(requirement_id,version,instrument_id,
+                       instrument_version_at_authoring,article_ref,title,description,status,created_at)
+                       VALUES(?,1,?,?,?,?,?,'ACTIVE',?)""",
+                    (rid, pack["instrument"]["instrument_id"], instrument_version, req["article_ref"],
+                     req["title"], req["summary"], now))
+                applied["added"].append(rid)
+
+            # 2. Refreshed source text. A version bump ONLY where the
+            #    obligation itself grew, because that is what sends a
+            #    human decision back to "Da verificare".
+            for rid in diff["changed"]:
+                req = by_id[rid]
+                cur = installed_by_id[rid]
+                substantive = rid in diff["changed_substantive"]
+                new_version = int(cur["version"]) + 1 if substantive else int(cur["version"])
+                self.conn.execute(
+                    """UPDATE compliance_requirement
+                       SET article_ref=?,title=?,description=?,version=?,updated_at=?,
+                           pack_version=?,source_url=?,source_lang=?,reviewed_date=?,
+                           verification_status=?,applicability_group=?,content_version=?,
+                           substantive_revision=?
+                       WHERE requirement_id=?""",
+                    (req["article_ref"], req["title"], req["summary"], new_version, now,
+                     pack["pack_version"], req.get("source_url", ""), req.get("source_lang", ""),
+                     pack.get("reviewed_date", ""), req["verification_status"],
+                     req["applicability_group"], content_version,
+                     int(req.get("substantive_revision", 1)), rid))
+                if substantive:
+                    self.conn.execute(
+                        """INSERT INTO compliance_requirement_versions(requirement_id,version,instrument_id,
+                           instrument_version_at_authoring,article_ref,title,description,status,created_at)
+                           VALUES(?,?,?,?,?,?,?,'ACTIVE',?)""",
+                        (rid, new_version, pack["instrument"]["instrument_id"], instrument_version,
+                         req["article_ref"], req["title"], req["summary"], now))
+                    applied["updated_substantive"].append(rid)
+                else:
+                    applied["updated_editorial"].append(rid)
+
+            # 3. Withdrawn obligations: marked, never deleted.
+            for rid in diff["retired"]:
+                self.conn.execute(
+                    "UPDATE compliance_requirement SET source_status='RETIRED',retired_at=?,updated_at=? "
+                    "WHERE requirement_id=?", (now, now, rid))
+                applied["retired"].append(rid)
+
+            # 4. Rows that did not change still carry the revision they
+            #    were checked against, so the project stops reporting an
+            #    update that has in fact been applied.
+            for rid in diff["unaffected"]:
+                self.conn.execute(
+                    "UPDATE compliance_requirement SET content_version=?,pack_version=?,reviewed_date=? "
+                    "WHERE requirement_id=?",
+                    (content_version, pack["pack_version"], pack.get("reviewed_date", ""), rid))
+
+            self._audit("compliance_scope", scope_id, "UPDATE_REQUIREMENT_PACK", actor, {
+                "pack_id": pack_id, "pack_version": pack["pack_version"],
+                "content_version": content_version,
+                "added": len(applied["added"]),
+                "updated_substantive": len(applied["updated_substantive"]),
+                "updated_editorial": len(applied["updated_editorial"]),
+                "retired": len(applied["retired"]),
+                "unaffected": len(diff["unaffected"])})
+
+        return {
+            "pack_id": pack_id, "pack_version": pack["pack_version"],
+            "content_version": content_version, "scope_id": scope_id,
+            "added": applied["added"],
+            "updated_substantive": applied["updated_substantive"],
+            "updated_editorial": applied["updated_editorial"],
+            "updated": applied["updated_substantive"] + applied["updated_editorial"],
+            "retired": applied["retired"],
+            "unaffected": list(diff["unaffected"]),
+            "changed_nothing": not (applied["added"] or applied["updated_substantive"]
+                                    or applied["updated_editorial"] or applied["retired"]),
+        }
+
+    def installed_pack_state(self, pack_id: str) -> dict[str, Any]:
+        """What revision of a pack this project actually holds.
+
+        Reports the LOWEST content revision across the installed rows, not
+        the highest: if any row is behind, the project is behind."""
+        rows = self.installed_pack_requirements(pack_id)
+        if not rows:
+            return {"installed": False, "requirement_count": 0}
+        return {
+            "installed": True,
+            "requirement_count": len(rows),
+            "content_version": min(int(r["content_version"] or 0) for r in rows),
+            "pack_version": sorted({str(r["pack_version"] or "") for r in rows})[0],
+            "groups": sorted({str(r["applicability_group"] or "") for r in rows if r["applicability_group"]}),
+            "retired_count": len(self.retired_pack_requirements(pack_id)),
+        }
+
+    def installed_pack_requirements(self, pack_id: str) -> list[dict[str, Any]]:
+        """Stored pack requirement rows, for a local pack-version diff."""
+        return [dict(r) for r in self.conn.execute(
+            """SELECT requirement_id,title,description AS summary,article_ref,pack_id,pack_version,
+                      verification_status,applicability_group,source_url,reviewed_date,
+                      content_version,substantive_revision,source_status,retired_at,version
+               FROM compliance_requirement WHERE pack_id=? AND source_status='ACTIVE'
+               ORDER BY requirement_id""", (pack_id,))]
+
+    def retired_pack_requirements(self, pack_id: str) -> list[dict[str, Any]]:
+        """Requirements a pack update withdrew. Kept, never deleted: their
+        project history stays readable even though they no longer count
+        towards active coverage."""
+        return [dict(r) for r in self.conn.execute(
+            """SELECT requirement_id,title,description AS summary,article_ref,pack_id,pack_version,
+                      applicability_group,retired_at
+               FROM compliance_requirement WHERE pack_id=? AND source_status='RETIRED'
+               ORDER BY requirement_id""", (pack_id,))]
 
     def update_requirement(self, requirement_id: str, *, actor: str, **fields: Any) -> int:
         actor = self._require_actor(actor)
@@ -968,6 +1322,14 @@ class ComplianceService:
             ids.add(r["requirement_id"])
         for r in self.conn.execute("SELECT DISTINCT requirement_id FROM compliance_assessment WHERE scope_id=?", (scope_id,)):
             ids.add(r["requirement_id"])
+        # A requirement a pack update withdrew stops counting towards this
+        # scope's ACTIVE coverage, but its row and its project history are
+        # never deleted -- the union above would otherwise pull it back in
+        # through its own applicability/assessment rows.
+        if ids:
+            retired = {r["requirement_id"] for r in self.conn.execute(
+                "SELECT requirement_id FROM compliance_requirement WHERE source_status='RETIRED'")}
+            ids -= retired
         return sorted(ids)
 
     def summary_for_scope(self, scope_id: str) -> dict[str, Any]:
