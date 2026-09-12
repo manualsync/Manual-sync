@@ -441,6 +441,12 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-export-card{background:var(--ui-green-soft);border:1px solid #a6f4c5;border-radius:12px;
   padding:14px 16px;margin:10px 0 4px}
 .ms-export-card-err{background:var(--ui-red-soft);border-color:#fecaca}
+/* Publishing preflight: a refusal has to be readable, so each finding and
+   its "dove / cosa fare" lines keep their own shape instead of collapsing
+   into one paragraph. */
+.ms-export-pf{margin-top:8px;font-size:12px;line-height:1.55}
+.ms-export-pf-item{font-weight:600;margin-top:7px}
+.ms-export-pf-detail{padding-left:14px;color:var(--ui-muted)}
 .ms-export-headline{font-size:14px;font-weight:800;color:#067647}
 .ms-export-card-err .ms-export-headline{color:#b42318}
 .ms-export-subtitle{color:#475467;font-size:12.5px;margin-top:3px}
@@ -3241,9 +3247,26 @@ def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excl
 
 def _export_error_html(message: str) -> str:
     """A failed export is a contained, human-readable card in this
-    section -- never a global red toast, never a stack trace."""
+    section -- never a global red toast, never a stack trace.
+
+    A preflight refusal arrives as several lines (what failed, where, what
+    to change). Rendering it as one run-on sentence would waste exactly
+    the information the user needs, so the structure is preserved: the
+    first line is the headline, the rest become the body."""
+    text = str(message or "")
+    head, _, rest = text.partition("\n")
+    body = ""
+    if rest.strip():
+        lines = []
+        for raw in rest.split("\n"):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            cls = "ms-export-pf-detail" if raw.startswith("    ") else "ms-export-pf-item"
+            lines.append(f"<div class='{cls}'>{html.escape(stripped)}</div>")
+        body = f"<div class='ms-export-pf'>{''.join(lines)}</div>"
     return (f"<div class='ms-export-card ms-export-card-err'>"
-            f"<div class='ms-export-headline'>{html.escape(message)}</div></div>")
+            f"<div class='ms-export-headline'>{html.escape(head)}</div>{body}</div>")
 
 
 def _export_result_card(*, headline: str, subtitle: str, open_url: str, open_label: str,

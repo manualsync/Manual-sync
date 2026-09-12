@@ -63,6 +63,7 @@ from ccms_industrial import IndustrialRepository
 from authoring_service import AuthoringService
 import authoring_view as av
 import publishing_preview as pp
+import publishing_preflight as pf
 import rich_text
 from product_version import PRODUCT_BUILD, PRODUCT_VERSION
 
@@ -398,27 +399,45 @@ def materialize_assets(model: dict[str, Any], staging_dir: Path) -> tuple[dict[i
 # PDF rendering
 # ---------------------------------------------------------------------
 
-def _render_pdf_file(html: str, staging_dir: Path, out_pdf: Path) -> int:
+def _render_pdf_file(html: str, staging_dir: Path, out_pdf: Path) -> tuple[int, pf.LayoutTrace]:
     """HTML -> PDF via fitz.Story. The Archive is rooted at the staging
     directory so the SAME `assets/fig-0001.png` hrefs the HTML5 package
     uses resolve here too -- one HTML, two consumers, and no original
-    filesystem path is ever handed to the renderer."""
+    filesystem path is ever handed to the renderer.
+
+    Also returns a LayoutTrace: what the layout engine reported on every
+    single placement. That trace is the only honest basis for overset
+    detection -- `more` is the engine itself saying "there is content I
+    could not place", and `filled` is the rectangle it actually used.
+    Recording it costs nothing here and removes any need to guess later.
+
+    Before this, the loop could hit _PDF_PAGE_LIMIT with content still
+    unplaced and return as though it had finished, silently truncating
+    the deliverable. `page_limit_hit` + `unplaced_at_end` make that
+    visible to the caller."""
     archive = fitz.Archive(str(staging_dir))
     story = fitz.Story(html=html, archive=archive)
     writer = fitz.DocumentWriter(str(out_pdf))
     mediabox = fitz.paper_rect("A4")
     frame = mediabox + (56, 56, -56, -56)  # ~20mm margins
+    trace = pf.LayoutTrace(frame_height=frame.height, frame_width=frame.width,
+                           page_limit=_PDF_PAGE_LIMIT)
     pages, more = 0, 1
     while more:
         device = writer.begin_page(mediabox)
-        more, _ = story.place(frame)
+        more, filled = story.place(frame)
+        # place() returns the filled rect as a plain tuple in this build.
+        filled_rect = fitz.Rect(filled)
+        trace.placements.append((int(more), float(filled_rect.height)))
         story.draw(device)
         writer.end_page()
         pages += 1
         if pages >= _PDF_PAGE_LIMIT:
+            trace.page_limit_hit = True
             break
     writer.close()
-    return pages
+    trace.unplaced_at_end = bool(more)
+    return pages, trace
 
 
 def _distinctive_word(text: str) -> str | None:
@@ -439,57 +458,162 @@ def _distinctive_word(text: str) -> str | None:
     return max(candidates, key=len) if candidates else None
 
 
-def _pdf_expected_tokens(model: dict[str, Any], *, limit: int = 24) -> list[str]:
+_BLOCK_KIND_LABEL = {"table": "tabella", "figure": "figura"}
+
+
+def _word_counts(text: str) -> dict[str, int]:
+    """Alphanumeric words of >=5 chars and how often they occur.
+
+    Only fully alphanumeric candidates: a probe must appear VERBATIM in
+    the extracted text layer, so a word carrying internal punctuation
+    ("P-401", "M8*1.25") is skipped rather than silently altered."""
+    counts: dict[str, int] = {}
+    for raw in (text or "").split():
+        w = raw.strip(".,;:!?()[]{}«»\"'—–")
+        if len(w) >= 5 and w.isalnum():
+            counts[w] = counts.get(w, 0) + 1
+    return counts
+
+
+def _table_count_probe(rows: list[list[Any]]) -> tuple[str, int] | None:
+    """A token that must appear a KNOWN NUMBER OF TIMES, and that count.
+
+    Presence probing cannot see a clipped table whose columns share
+    vocabulary: "Grandezza misurata 01 .. 34" repeats the same words in
+    every column, so one surviving column keeps every probe word alive
+    while 30 columns are silently dropped. Measured on exactly that
+    fixture: 0 of 34 data cells reached the PDF and a presence probe
+    still passed.
+
+    Counting the repetition is what makes that visible. The most frequent
+    cell token is chosen precisely BECAUSE it repeats: if the table
+    contributes it 34 times and the finished PDF contains it 4 times,
+    cells were dropped, and no threshold had to be invented to say so.
+
+    Returns None when no token repeats -- such a table is covered by the
+    ordinary presence probe instead."""
+    flat = " ".join(str(c) for row in rows for c in row)
+    counts = _word_counts(flat)
+    if not counts:
+        return None
+    token = max(counts, key=lambda w: (counts[w], len(w)))
+    return (token, counts[token]) if counts[token] >= 2 else None
+
+
+def _table_tail_probe(rows: list[list[Any]]) -> str | None:
+    """A token that occurs ONLY in the table's last column.
+
+    The counting probe above covers tables whose columns repeat the same
+    vocabulary. This covers the opposite shape: every column distinct, so
+    nothing repeats and there is no count to check -- but the last column
+    is still the first thing a too-wide table loses. Requiring the token
+    to be absent from every other column is what makes its disappearance
+    mean "the last column was clipped" rather than "this word moved".
+
+    Returns None when the last column shares all its vocabulary with the
+    rest of the table; that table is covered by the counting probe."""
+    if not rows:
+        return None
+    tail = " ".join(str(row[-1]) for row in rows if row)
+    others = " ".join(str(c) for row in rows for c in row[:-1])
+    other_words = set(_word_counts(others))
+    unique = [w for w in _word_counts(tail) if w not in other_words]
+    return max(unique, key=len) if unique else None
+
+
+def _pdf_expected_tokens(model: dict[str, Any], *, limit: int = 24) -> list[dict[str, Any]]:
     """Representative visible strings that MUST survive into the finished
-    PDF: the publication title, every topic heading, and one distinctive
-    word per content block (including one per table, whose cells vanish
-    entirely when MuPDF drops an over-wide table). Used by
-    _verify_pdf_content to catch silent renderer content loss."""
+    PDF: the publication title, every section heading, one distinctive
+    word per content block, and -- for tables -- a REPEATED token with the
+    number of times it has to appear.
+
+    Each probe carries WHERE it came from. A finding that says "content
+    was lost" without saying which section is not actionable; with
+    provenance the report can point at "Sezione «Installazione» — tabella
+    2", which is something an author can go and fix."""
     # Headings go through the same single-word probe: a long title wraps
     # across lines in the text layer, so probing the whole phrase would
     # report a perfectly good PDF as broken.
-    tokens: list[str] = []
-    title_probe = _distinctive_word(model["publication_title"]) or model["publication_title"]
-    tokens.append(title_probe)
+    probes: list[dict[str, Any]] = []
+    pub_title = model["publication_title"]
+    title_probe = _distinctive_word(pub_title) or pub_title
+    probes.append({"token": title_probe, "count": 1,
+                   "where": f"Titolo della pubblicazione «{pub_title}»"})
     for topic in model["topics"]:
-        topic_probe = _distinctive_word(topic["title"])
+        topic_title = topic.get("title", "")
+        topic_probe = _distinctive_word(topic_title)
         if topic_probe:
-            tokens.append(topic_probe)
+            probes.append({"token": topic_probe, "count": 1,
+                           "where": f"Titolo della sezione «{topic_title}»"})
+        counters: dict[str, int] = {}
         for block in topic["blocks"]:
-            if len(tokens) >= limit:
-                return tokens[:limit]
+            if len(probes) >= limit:
+                return probes[:limit]
             content = block["content"]
             kind = content.get("kind")
+            counters[kind] = counters.get(kind, 0) + 1
+            label = _BLOCK_KIND_LABEL.get(kind, "blocco")
+            where = f"Sezione «{topic_title}» — {label} {counters[kind]}"
             probe: str | None = None
             if kind in pp._TEXT_BLOCK_KINDS:
                 probe = _distinctive_word(rich_text.plain_text(
                     content.get("text", ""), content.get("text_format", "plain")))
             elif kind == "table" and content.get("rows"):
+                # Two complementary probes, because a too-wide table can
+                # be clipped in either of two shapes. A repeated token
+                # says HOW MANY cells survived; a token unique to the last
+                # column says WHETHER the far edge survived. Whichever
+                # applies to this table is the one that fires.
+                counted = _table_count_probe(content["rows"])
+                if counted:
+                    probes.append({"token": counted[0], "count": counted[1], "where": where})
+                tail = _table_tail_probe(content["rows"])
+                if tail:
+                    probes.append({"token": tail, "count": 1,
+                                   "where": where + " (ultima colonna)"})
+                if counted or tail:
+                    continue
                 flat = " ".join(str(c) for row in content["rows"] for c in row)
                 probe = _distinctive_word(flat)
             if probe:
-                tokens.append(probe)
-    return tokens[:limit]
+                probes.append({"token": probe, "count": 1, "where": where})
+    return probes[:limit]
 
 
-def _verify_pdf_content(pdf_path: Path, model: dict[str, Any]) -> tuple[bool, list[str]]:
+def _verify_pdf_content(pdf_path: Path, model: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     """Re-opens the finished PDF and proves the deliverable is real:
-    parsable, non-empty, with extractable text that still contains the
-    representative content. Returns (ok, missing_tokens). This is what
-    turns MuPDF's silent-drop failure modes into a fail-closed export."""
+    parsable, non-empty, and still containing the sampled content -- for
+    tables, the RIGHT NUMBER of times. Returns (ok, missing) where each
+    missing entry names where it came from. This is what turns MuPDF's
+    silent-drop failure modes into a fail-closed export.
+
+    A token found MORE often than expected is never a failure: the same
+    word may legitimately occur elsewhere in the document. That makes the
+    count check conservative -- it can under-report, never over-report."""
     try:
         doc = fitz.open(pdf_path)
     except Exception:
-        return False, ["PDF non apribile"]
+        return False, [{"token": "", "where": "Il PDF prodotto non è apribile."}]
     try:
         if doc.page_count < 1:
-            return False, ["PDF senza pagine"]
+            return False, [{"token": "", "where": "Il PDF prodotto non contiene pagine."}]
         text = normalize_pdf_text("\n".join(page.get_text() for page in doc))
     finally:
         doc.close()
     if not text.strip():
-        return False, ["PDF senza testo estraibile"]
-    missing = [t for t in _pdf_expected_tokens(model) if normalize_pdf_text(t) not in text]
+        return False, [{"token": "", "where": "Il PDF prodotto non contiene testo estraibile."}]
+
+    missing: list[dict[str, Any]] = []
+    found_counts = _word_counts(text)
+    for pr in _pdf_expected_tokens(model):
+        token = normalize_pdf_text(pr["token"])
+        expected = int(pr.get("count", 1))
+        if expected > 1:
+            actual = found_counts.get(token, 0)
+            if actual < expected:
+                missing.append({**pr, "found": actual})
+        elif token not in text:
+            missing.append({**pr, "found": 0})
     return (not missing), missing
 
 
@@ -567,12 +691,20 @@ def export_html_package(repo: IndustrialRepository, svc: AuthoringService, publi
     successful-looking partial artifact behind."""
     project_dir = Path(project_dir) if project_dir else Path(repo.path).parent
     model = build_output_model(repo, svc, publication_id, profile_id)
+    # An HTML5 package reflows to the reader's window: it has no page
+    # frame, so it cannot have overset, and pretending to check for it
+    # here would be theatre. Only the content-level rules apply.
+    report = pf.check_model(model, kind="html5")
+    if not report.ok:
+        raise PublishingOutputError(pf.blocking_message(report))
     root = export_root_for(project_dir, model)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
     staging = Path(tempfile.mkdtemp(prefix="ms_html_export_"))
     try:
         hrefs, warnings = materialize_assets(model, staging)
+        pf.check_assets(report, warnings)
+        warnings = warnings + pf.manifest_entries(report)
         (staging / "index.html").write_text(
             render_output_html(model, asset_hrefs=hrefs, for_pdf=False), encoding="utf-8")
         (staging / "style.css").write_text(_PACKAGE_CSS, encoding="utf-8")
@@ -590,6 +722,7 @@ def export_html_package(repo: IndustrialRepository, svc: AuthoringService, publi
 
     return {"kind": "html5", "output_dir": target, "index": target / "index.html",
             "manifest": target / "manifest.json", "warnings": warnings,
+            "preflight": report.as_dict(),
             "figures": len(hrefs), "topics": len(model["topics"]),
             "publication_title": model["publication_title"], "profile_name": model["profile_name"]}
 
@@ -608,28 +741,38 @@ def export_pdf(repo: IndustrialRepository, svc: AuthoringService, publication_id
     deliverable is never handed over looking successful."""
     project_dir = Path(project_dir) if project_dir else Path(repo.path).parent
     model = build_output_model(repo, svc, publication_id, profile_id)
-    if not model["topics"]:
-        raise PublishingOutputError(
-            "Nessun contenuto incluso per questo profilo: non è possibile creare il PDF.")
+    # Preflight, stage 1: content-level rules, before a renderer is even
+    # started. No point laying out a publication that has nothing in it.
+    report = pf.check_model(model, kind="pdf")
+    if not report.ok:
+        raise PublishingOutputError(pf.blocking_message(report))
     root = export_root_for(project_dir, model)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
 
     staging = Path(tempfile.mkdtemp(prefix="ms_pdf_export_"))
     try:
         hrefs, warnings = materialize_assets(model, staging)
+        pf.check_assets(report, warnings)
         html = render_output_html(model, asset_hrefs=hrefs, for_pdf=True)
         staged_pdf = staging / "manuale.pdf"
         try:
-            pages = _render_pdf_file(html, staging, staged_pdf)
+            pages, trace = _render_pdf_file(html, staging, staged_pdf)
         except Exception as exc:  # renderer failure -> nothing is published
             raise PublishingOutputError(
                 "Non è stato possibile generare il PDF con il contenuto corrente.") from exc
-        ok, missing = _verify_pdf_content(staged_pdf, model)
-        if not ok:
-            raise PublishingOutputError(
-                "Il PDF generato non conteneva tutto il contenuto previsto e non è stato salvato. "
-                "Controlla le tabelle molto larghe e riprova.")
+        # Preflight, stage 2: what the layout engine reported while it
+        # worked, then what actually survived into the finished file. Both
+        # are read from the real render -- neither is inferred.
+        pf.check_layout(report, trace)
+        _ok, missing = _verify_pdf_content(staged_pdf, model)
+        pf.check_content_survived(report, missing)
+        if not report.ok:
+            # The staged PDF is discarded by the finally block: a refused
+            # export leaves nothing behind that could be mistaken for a
+            # deliverable.
+            raise PublishingOutputError(pf.blocking_message(report))
 
+        warnings = warnings + pf.manifest_entries(report)
         root.mkdir(parents=True, exist_ok=True)
         target = _unique_target_dir(root, stamp)
         target.mkdir(parents=True)
@@ -641,5 +784,6 @@ def export_pdf(repo: IndustrialRepository, svc: AuthoringService, publication_id
 
     return {"kind": "pdf", "output_dir": target, "pdf": final_pdf,
             "manifest": target / "manifest.json", "warnings": warnings, "pages": pages,
+            "preflight": report.as_dict(),
             "figures": len(hrefs), "topics": len(model["topics"]),
             "publication_title": model["publication_title"], "profile_name": model["profile_name"]}
