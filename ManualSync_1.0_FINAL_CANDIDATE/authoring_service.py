@@ -60,7 +60,7 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 import domain_errors as de
-from domain_errors import DomainFileMissingError, DomainValidationError
+from domain_errors import DomainError, DomainFileMissingError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 import rich_text
 
@@ -135,6 +135,21 @@ class VersionConflictError(Exception):
 class ArchivedObjectError(Exception):
     """Raised when an editing operation targets an archived topic/block.
     Restore it first -- an archived object is not editable in place."""
+
+
+class ArchivedContentError(DomainError, ArchivedObjectError):
+    """The structured form of ArchivedObjectError.
+
+    Both bases are load-bearing. Eight app.py handlers and four suites
+    catch ArchivedObjectError BY NAME, and they must keep catching this;
+    DomainError is what lets the UI resolve it into whatever language the
+    session is in rather than printing a sentence the service composed.
+
+    str() is DomainError's -- the bare code -- so an unresolved one looks
+    wrong on screen rather than merely untranslated.
+    """
+
+    code = de.ERR_AUTHORING_CONTENT_ARCHIVED
 
 
 class SharedObjectError(Exception):
@@ -349,7 +364,8 @@ class AuthoringService:
                 raise KeyError(topic_id)
             if row["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di modificarlo.")
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=topic_id)
             new_title = row["title"] if title is None else title.strip()
             new_body = row["body"] if body is None else body.strip()
             new_refs = _load_json(row["source_refs_json"], []) if source_refs is None else _norm_set(source_refs)
@@ -420,7 +436,8 @@ class AuthoringService:
                 raise KeyError(block_id)
             if row["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(f"Il blocco {block_id} è archiviato: ripristinalo prima di modificarlo.")
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=block_id)
             if text is not None and row["block_type"] not in EDITABLE_TEXT_BLOCK_TYPES:
                 self.conn.rollback()
                 raise ValueError(
@@ -1350,7 +1367,8 @@ class AuthoringService:
                 raise KeyError(topic_id)
             if live["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di un revert.")
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=topic_id)
             hist = self.conn.execute(
                 "SELECT * FROM topic_versions WHERE topic_id=? AND version=?", (topic_id, int(version))
             ).fetchone()
@@ -1403,7 +1421,8 @@ class AuthoringService:
                 raise KeyError(block_id)
             if live["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(f"Il blocco {block_id} è archiviato: ripristinalo prima di un revert.")
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=block_id)
             hist = self.conn.execute(
                 "SELECT * FROM block_versions WHERE block_id=? AND version=?", (block_id, int(version))
             ).fetchone()
@@ -1589,7 +1608,8 @@ class AuthoringService:
         if not topic_row:
             raise KeyError(topic_id)
         if topic_row["archived_at"]:
-            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere blocchi.")
+            raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                       object_id=topic_id)
 
         block_id = f"BLK-{uuid4().hex[:10].upper()}"
         while self.conn.execute("SELECT 1 FROM content_blocks WHERE block_id=?", (block_id,)).fetchone():
@@ -1874,9 +1894,7 @@ class AuthoringService:
         block = self._referencing_block(object_type, object_id)
         if block is not None and block["archived_at"]:
             label = "tabella" if object_type == "table" else "figura"
-            raise ArchivedObjectError(
-                f"Questa {label} è collegata a un blocco archiviato: ripristina il blocco prima di modificarla."
-            )
+            raise ArchivedContentError(de.ERR_AUTHORING_CONTAINER_ARCHIVED)
         if self._reference_count(object_type, object_id) > 1 and not confirm_shared:
             raise SharedObjectError(_SHARED_OBJECT_MESSAGE)
         if confirm_shared:
@@ -1989,7 +2007,8 @@ class AuthoringService:
         if not topic_row:
             raise KeyError(topic_id)
         if topic_row["archived_at"]:
-            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere una tabella.")
+            raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                       object_id=topic_id)
 
         table_id = f"TBL-{uuid4().hex[:10].upper()}"
         while self.conn.execute("SELECT 1 FROM structured_tables WHERE table_id=?", (table_id,)).fetchone():
@@ -2160,9 +2179,8 @@ class AuthoringService:
                 raise ValueError(f"Il blocco {block_id} non referenzia la tabella {table_id}.")
             if block["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(
-                    f"Il blocco {block_id} è archiviato: ripristinalo prima di creare una copia locale."
-                )
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=block_id)
 
             new_table_id = f"TBL-{uuid4().hex[:10].upper()}"
             while self.conn.execute("SELECT 1 FROM structured_tables WHERE table_id=?", (new_table_id,)).fetchone():
@@ -2314,7 +2332,8 @@ class AuthoringService:
         if not topic_row:
             raise KeyError(topic_id)
         if topic_row["archived_at"]:
-            raise ArchivedObjectError(f"Il topic {topic_id} è archiviato: ripristinalo prima di aggiungere una figura.")
+            raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                       object_id=topic_id)
 
         # Materialize BEFORE any DB write: if this fails, nothing partial
         # exists yet at all -- genuinely fail-closed, not a compensation.
@@ -2490,9 +2509,8 @@ class AuthoringService:
                 raise ValueError(f"Il blocco {block_id} non referenzia la figura {figure_id}.")
             if block["archived_at"]:
                 self.conn.rollback()
-                raise ArchivedObjectError(
-                    f"Il blocco {block_id} è archiviato: ripristinalo prima di creare una copia locale."
-                )
+                raise ArchivedContentError(de.ERR_AUTHORING_CONTENT_ARCHIVED,
+                                           object_id=block_id)
 
             new_figure_id = f"FIG-{uuid4().hex[:10].upper()}"
             while self.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (new_figure_id,)).fetchone():

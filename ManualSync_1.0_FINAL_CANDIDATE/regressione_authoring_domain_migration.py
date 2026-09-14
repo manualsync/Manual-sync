@@ -218,9 +218,13 @@ with tempfile.TemporaryDirectory() as tmp:
           "ERR_" not in app.ui_error_text(exc)
           and i18n.t("error.unknown") not in app.ui_error_text(exc),
           app.ui_error_text(exc))
-    check("keep3: an ArchivedObjectError is untouched too",
-          "ArchivedObjectError" in SRC["authoring_service.py"]
-          and "class ArchivedObjectError" in SRC["authoring_service.py"])
+    # ArchivedObjectError itself still exists as a catchable class (a later
+    # gate made its raises structured WITHOUT removing the base), and the
+    # inverse guard -- restoring something not archived -- is still plain.
+    check("keep3: ArchivedObjectError survives as a catchable base class",
+          "class ArchivedObjectError" in SRC["authoring_service.py"])
+    check("keep3b: and 'non è archiviato' is still an unmigrated ValueError",
+          "non è archiviato" in SRC["authoring_service.py"])
 
     # A missing publication still raises a plain KeyError, as before.
     exc = raised(svc.create_topic_in_publication, "PUB-NOPE", "Titolo", actor="QA")

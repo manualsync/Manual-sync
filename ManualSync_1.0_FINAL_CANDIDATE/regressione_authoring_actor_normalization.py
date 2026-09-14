@@ -191,8 +191,16 @@ with tempfile.TemporaryDirectory() as tmp:
     exc = raised(lambda: svc.save_topic("T-NOPE", title="X", expected_version=1, actor="QA"))
     check("keep2: an unknown topic still raises its own builtin",
           exc is not None and not isinstance(exc, de.DomainError), repr(exc))
-    check("keep3: ArchivedObjectError is still untouched",
-          "class ArchivedObjectError" in SRC and "è archiviato" in SRC)
+    # The archived-object raises were migrated by a LATER gate, which owns
+    # their assertions. What is still un-migrated here -- and must stay
+    # that way -- is the inverse guard: restoring something that is not
+    # archived. (An earlier version of this check matched "è archiviato"
+    # and so passed on the unrelated "non è archiviato." message; it was
+    # asserting nothing.)
+    exc = raised(lambda: svc.restore_topic(topic, actor="QA"))
+    check("keep3: 'non è archiviato' is NOT migrated and stays a plain ValueError",
+          isinstance(exc, ValueError) and not isinstance(exc, de.DomainError)
+          and "non è archiviato" in str(exc), repr(exc))
     repo.close()
 
 # =====================================================================

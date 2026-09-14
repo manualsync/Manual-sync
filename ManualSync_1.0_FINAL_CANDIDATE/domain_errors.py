@@ -223,6 +223,28 @@ ACTOR_CODES = (
     ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL,
 )
 
+# ---------------------------------------------------------------------
+# Authoring / Contenuti — archived content (10 raises).
+#
+# Two codes, because two different things are wrong and the remedy
+# differs. Nine raises mean "the thing you are editing is archived";
+# one means "the thing you are editing is fine, but the BLOCK holding
+# it is archived" -- there the user must restore something they did not
+# select, which is worth saying.
+#
+# The nine collapse because their six trailing clauses only named the
+# button just pressed ("prima di un revert", "prima di aggiungere una
+# tabella"); the remedy is identical. Wording follows the product
+# decision: "contenuto", not the internal topic/blocco labels.
+# ---------------------------------------------------------------------
+ERR_AUTHORING_CONTENT_ARCHIVED = "ERR_AUTHORING_CONTENT_ARCHIVED"
+ERR_AUTHORING_CONTAINER_ARCHIVED = "ERR_AUTHORING_CONTAINER_ARCHIVED"
+
+ARCHIVED_CODES = (
+    ERR_AUTHORING_CONTENT_ARCHIVED,
+    ERR_AUTHORING_CONTAINER_ARCHIVED,
+)
+
 #: Batch 1: repository and object validation.
 AUTHORING_OBJECT_CODES = (
     ERR_AUTHORING_REPOSITORY_MISSING,
@@ -237,7 +259,7 @@ AUTHORING_OBJECT_CODES = (
 #: Everything migrated out of Authoring/Contenuti so far. Kept separate
 #: from MIGRATED_CODES so a suite can still assert which layer a code
 #: belongs to, and split by batch so each gate can name its own.
-AUTHORING_CODES = AUTHORING_OBJECT_CODES + ACTOR_CODES
+AUTHORING_CODES = AUTHORING_OBJECT_CODES + ACTOR_CODES + ARCHIVED_CODES
 
 #: Every code migrated so far, whatever the layer.
 ALL_CODES = MIGRATED_CODES + AUTHORING_CODES
