@@ -717,6 +717,32 @@ def domain_error_message(exc: BaseException) -> str:
     return t(key, **(params or {}))
 
 
+def ui_error_text(exc: BaseException, lang: str | None = None) -> str:
+    """Message for an exception at a boundary that is NOT yet migrated.
+
+    Authoring/Contenuti services still refuse operations by raising
+    finished Italian sentences, and those must keep rendering exactly as
+    they do today -- this gate hardens the boundary, it does not migrate
+    the domain. But the same handlers also sit downstream of code that
+    HAS been migrated, so a DomainError can arrive here; printing it
+    would put a bare "ERR_..." on screen.
+
+    So: a DomainError is localized, anything else is returned verbatim.
+    A generic failure is never dressed up as a validation message -- it
+    keeps its own text, unchanged.
+
+    `lang` is accepted so that when Contenuti is localized these call
+    sites gain the session language by passing an argument, rather than
+    needing this decision revisited.
+    """
+    if not isinstance(exc, de.DomainError):
+        return str(exc)
+    if lang is None:
+        return domain_error_message(exc)
+    with i18n.use_language(lang):
+        return domain_error_message(exc)
+
+
 def domain_error_detail(exc: BaseException) -> str:
     """Technical identification, for advanced/diagnostic surfaces only.
 
@@ -2761,10 +2787,10 @@ def studio_save_ui(project_dir, publication_id, kind, object_id, block_type, obj
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {av.conflict_message()}")
     except (ArchivedObjectError, SharedObjectError) as e:
         repo.close()
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     except (KeyError, ValueError) as e:
         repo.close()
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=msg)
@@ -2800,7 +2826,7 @@ def studio_move_ui(project_dir, publication_id, kind, object_id, direction, show
             new_order = list(ids); new_order[i], new_order[j] = new_order[j], new_order[i]
             svc.reorder_blocks(topic_id, new_order, expected_block_ids=ids, actor=actor)
     except (KeyError, ValueError, VersionConflictError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived)
@@ -2814,7 +2840,7 @@ def studio_archive_ui(project_dir, publication_id, kind, object_id, show_archive
         if kind == "topic": svc.archive_topic(object_id, actor=actor)
         else: svc.archive_block(object_id, actor=actor)
     except (KeyError, ValueError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Archiviato.")
@@ -2828,7 +2854,7 @@ def studio_restore_obj_ui(project_dir, publication_id, kind, object_id, show_arc
         if kind == "topic": svc.restore_topic(object_id, actor=actor)
         else: svc.restore_block(object_id, actor=actor)
     except (KeyError, ValueError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Ripristinato.")
@@ -2842,7 +2868,7 @@ def studio_new_topic_ui(project_dir, publication_id, new_title, kind, object_id,
         after_topic_id = object_id if kind == "topic" else (av.block_detail(svc, object_id)["topic_id"] if kind == "block" else None)
         result = svc.create_topic_in_publication(publication_id, new_title, actor=actor, after_topic_id=after_topic_id)
     except (KeyError, ValueError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, "topic", result["topic_id"], show_archived, save_msg="✅ Topic creato.")
@@ -2855,7 +2881,7 @@ def studio_new_block_ui(project_dir, publication_id, kind, object_id, block_type
     try:
         result = svc.create_block_in_topic(object_id, block_type, actor=actor, text="")
     except (KeyError, ValueError, ArchivedObjectError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Blocco aggiunto.")
@@ -2876,7 +2902,7 @@ def studio_new_table_ui(project_dir, publication_id, kind, object_id, caption, s
         result = svc.create_table_in_topic(object_id, actor=actor, caption=(caption or "").strip(),
                                            columns=["Colonna 1", "Colonna 2"], rows=[["", ""]])
     except (KeyError, ValueError, ArchivedObjectError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Tabella creata.")
@@ -2891,7 +2917,7 @@ def studio_new_figure_ui(project_dir, publication_id, kind, object_id, image_fil
         result = svc.create_figure_in_topic(object_id, actor=actor, source_file_path=image_file,
                                             caption=(caption or "").strip(), alt_text=(alt_text or "").strip())
     except (KeyError, ValueError, ArchivedObjectError, FileNotFoundError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, "block", result["block_id"], show_archived, save_msg="✅ Figura aggiunta.")
@@ -2915,7 +2941,7 @@ def studio_replace_figure_ui(project_dir, publication_id, kind, object_id, block
         return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {av.conflict_message()}")
     except (KeyError, ValueError, ArchivedObjectError, SharedObjectError, FileNotFoundError) as e:
         repo.close()
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=msg)
@@ -2930,7 +2956,7 @@ def studio_submit_review_ui(project_dir, publication_id, kind, object_id, show_a
         review_msg = f"✅ Inviato in revisione — Review #{rid}."
     except (KeyError, ValueError) as e:
         repo.close()
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, review_msg=review_msg)
@@ -2952,7 +2978,7 @@ def studio_revert_ui(project_dir, publication_id, kind, object_id, block_type, o
                                          expected_impact_token=shared_impact_token)
         else: svc.revert_block_to_version(object_id, int(version), actor=actor)
     except (KeyError, ValueError, ArchivedObjectError, SharedObjectError, MissingAssetError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg="✅ Versione ripristinata (creata una nuova versione corrente).")
@@ -3008,7 +3034,7 @@ def studio_fork_local_ui(project_dir, publication_id, kind, object_id, block_typ
         else:
             svc.fork_figure_local(object_ref_id, block_id=object_id, expected_version=int(version), actor=actor)
     except (KeyError, ValueError, ArchivedObjectError, VersionConflictError) as e:
-        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {e}")
+        return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, save_msg=f"⛔ {ui_error_text(e)}")
     finally:
         repo.close()
     return _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived,
@@ -3083,7 +3109,7 @@ def studio_compare_ui(project_dir, kind, object_id, block_type, object_ref_id, v
     except KeyError:
         return f"⛔ Versione {compare_version} non trovata."
     except Exception as e:
-        return f"⛔ {e}"
+        return f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
 
@@ -3319,14 +3345,14 @@ def studio_variant_save_ui(project_dir, kind, object_id, block_type, actor, *dim
     except VersionConflictError:
         raise gr.Error(av.conflict_message())
     except ArchivedObjectError as e:
-        raise gr.Error(str(e))
+        raise gr.Error(ui_error_text(e))
     except (KeyError, ValueError) as e:
-        raise gr.Error(str(e))
+        raise gr.Error(ui_error_text(e))
     except Exception as e:
         # Catch-all: an unanticipated DB/service error must still surface
         # visibly (see the docstring above) rather than vanish into the
         # terminal-only log show_error=False produces for a bare exception.
-        raise gr.Error(f"Salvataggio varianti non riuscito: {e}")
+        raise gr.Error(f"Salvataggio varianti non riuscito: {ui_error_text(e)}")
     finally:
         repo.close()
     return "✅ Varianti salvate.", version_out
@@ -3342,7 +3368,7 @@ def studio_variant_evaluate_ui(project_dir, kind, object_id, profile_id):
         result = svc.evaluate_element_with_profile(kind, object_id, profile_id)
         return av.evaluate_summary_text(result)
     except KeyError as e:
-        return f"⛔ {e}"
+        return f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
 
@@ -3615,7 +3641,7 @@ def settings_variant_create_dimension_ui(project_dir, dimension_id, name, actor)
         svc.create_condition_dimension(dimension_id, name, actor=actor)
         msg = "✅ Dimensione creata."
     except ValueError as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_dimensions_table_ui(project_dir), msg
@@ -3630,7 +3656,7 @@ def settings_variant_rename_dimension_ui(project_dir, dimension_id, new_name, ac
         svc.rename_condition_dimension(dimension_id, name=new_name, actor=actor)
         msg = "✅ Dimensione rinominata."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_dimensions_table_ui(project_dir), msg
@@ -3645,7 +3671,7 @@ def settings_variant_set_dimension_active_ui(project_dir, dimension_id, active, 
         svc.set_condition_dimension_active(dimension_id, bool(active), actor=actor)
         msg = "✅ Dimensione aggiornata."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_dimensions_table_ui(project_dir), msg
@@ -3675,7 +3701,7 @@ def settings_variant_create_value_ui(project_dir, dimension_id, value_id, label,
         svc.create_condition_value(value_id, dimension_id, label, actor=actor)
         msg = "✅ Valore creato."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_values_table_ui(project_dir), msg
@@ -3690,7 +3716,7 @@ def settings_variant_rename_value_ui(project_dir, value_id, new_label, actor):
         svc.rename_condition_value(value_id, label=new_label, actor=actor)
         msg = "✅ Valore rinominato."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_values_table_ui(project_dir), msg
@@ -3705,7 +3731,7 @@ def settings_variant_set_value_active_ui(project_dir, value_id, active, actor):
         svc.set_condition_value_active(value_id, bool(active), actor=actor)
         msg = "✅ Valore aggiornato."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_values_table_ui(project_dir), msg
@@ -3757,7 +3783,7 @@ def settings_variant_create_profile_ui(project_dir, profile_id, name, config_tex
         svc.create_variant_profile(profile_id, name, dims, actor=actor)
         msg = "✅ Profilo creato."
     except ValueError as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_profiles_table_ui(project_dir), msg
@@ -3772,7 +3798,7 @@ def settings_variant_set_profile_active_ui(project_dir, profile_id, active, acto
         svc.set_variant_profile_active(profile_id, bool(active), actor=actor)
         msg = "✅ Profilo aggiornato."
     except (KeyError, ValueError) as e:
-        msg = f"⛔ {e}"
+        msg = f"⛔ {ui_error_text(e)}"
     finally:
         repo.close()
     return settings_variant_profiles_table_ui(project_dir), msg
