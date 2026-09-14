@@ -153,5 +153,20 @@
   "reason.instrument_updated": "Il riferimento normativo collegato è stato aggiornato: da rivedere",
   "reason.coverage.not_assessed": "Copertura non ancora valutata",
   "reason.requirement_changed_after_assessment": "Il testo del requisito è cambiato dopo l'ultima valutazione: da rivedere",
-  "reason.evidence_stale": "L'evidenza collegata non è più aggiornata: da rivedere"
+  "reason.evidence_stale": "L'evidenza collegata non è più aggiornata: da rivedere",
+  "error.unknown": "Operazione non riuscita. Riprova; se il problema persiste, consulta la diagnostica.",
+  "error.ERR_ACTOR_REQUIRED": "Indica il nome dell'operatore: ogni decisione viene registrata a nome di chi la prende.",
+  "error.ERR_JUSTIFICATION_REQUIRED": "Per dichiarare un requisito «non applicabile» serve una motivazione esplicita.",
+  "error.ERR_COVERAGE_REQUIRES_APPLIES": "Prima conferma che il requisito si applica a questo progetto: applicabilità e copertura non possono contraddirsi.",
+  "error.ERR_COVERED_REQUIRES_EVIDENCE": "Per dichiarare «Coperto» serve un'evidenza aggiornata collegata a questo requisito.",
+  "error.ERR_EVIDENCE_OBJECT_NOT_FOUND": "Il contenuto scelto come evidenza non esiste più in questa versione ({kind} {object_id}, v{version}).",
+  "error.ERR_EVIDENCE_NOT_FOUND": "L'evidenza indicata non esiste più in questo progetto.",
+  "error.ERR_REQUIREMENT_NOT_FOUND": "Il requisito indicato non esiste in questo perimetro.",
+  "error.ERR_EVIDENCE_EXTERNAL_INCOMPLETE": "Un'evidenza esterna deve indicare almeno un riferimento o una descrizione, altrimenti non è verificabile.",
+  "error.ERR_EVIDENCE_INTERNAL_INCOMPLETE": "Un'evidenza interna deve indicare quale contenuto la fornisce e in quale versione.",
+  "error.ERR_PACK_NOT_INSTALLED": "Questo pacchetto non è ancora stato aggiunto al progetto.",
+  "error.ERR_PACK_NO_REQUIREMENTS_SELECTED": "Nessun requisito corrisponde all'ambito di applicabilità selezionato.",
+  "error.ERR_PROJECT_EXISTS": "Esiste già un progetto con questo nome: {project_name}.",
+  "error.ERR_PROJECT_MANIFEST_INVALID": "Il file di progetto non è leggibile come progetto ERYLOS valido.",
+  "error.ERR_PROJECT_REPOSITORY_MISSING": "Questo progetto non contiene ancora un archivio contenuti."
 }

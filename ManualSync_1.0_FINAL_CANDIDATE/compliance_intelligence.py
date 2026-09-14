@@ -72,6 +72,8 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+import domain_errors as de
+from domain_errors import DomainNotFoundError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 
 COMPLIANCE_BUILD = "0.4.0-compliance-core-3-5c-release-readiness-20260901"
@@ -368,7 +370,7 @@ class ComplianceService:
     def _require_actor(actor: Any) -> str:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per registrare questa decisione.")
+            raise DomainValidationError(de.ERR_ACTOR_REQUIRED, field="actor")
         return actor
 
     def _audit(self, object_type: str, object_id: str, action: str, actor: str, detail: dict | None = None) -> None:
@@ -621,7 +623,7 @@ class ComplianceService:
         wanted_groups = set(groups or ["full_machinery"])
         requirements = [r for r in pack["requirements"] if r["applicability_group"] in wanted_groups]
         if not requirements:
-            raise ValueError("Nessun requisito selezionato per questo ambito di applicabilità.")
+            raise DomainValidationError(de.ERR_PACK_NO_REQUIREMENTS_SELECTED)
 
         now = _now()
         added_requirements: list[str] = []
@@ -767,7 +769,7 @@ class ComplianceService:
         pack_id = pack["pack_id"]
         installed = self.installed_pack_requirements(pack_id)
         if not installed:
-            raise ValueError("Questo pacchetto non è ancora stato importato in questo progetto.")
+            raise DomainValidationError(de.ERR_PACK_NOT_INSTALLED, pack_id=pack_id)
         by_id = {r["requirement_id"]: r for r in pack["requirements"]}
         installed_by_id = {r["requirement_id"]: r for r in installed}
         content_version = int(pack.get("content_version", 0))
@@ -1091,7 +1093,8 @@ class ComplianceService:
         if applies not in APPLICABILITY_STATES:
             raise ValueError(f"applies deve essere uno tra {sorted(APPLICABILITY_STATES)}")
         if applies == "NOT_APPLICABLE" and not str(justification or "").strip():
-            raise ValueError("Una decisione 'Not applicable' richiede una giustificazione esplicita.")
+            raise DomainValidationError(de.ERR_JUSTIFICATION_REQUIRED,
+                                        requirement_id=requirement_id)
         if not self.conn.execute("SELECT 1 FROM compliance_scope WHERE scope_id=?", (scope_id,)).fetchone():
             raise KeyError(scope_id)
         req = self.conn.execute("SELECT version FROM compliance_requirement WHERE requirement_id=?", (requirement_id,)).fetchone()
@@ -1134,12 +1137,13 @@ class ComplianceService:
             raise ValueError(f"evidence_kind non supportato: {kind}")
         if kind in INTERNAL_EVIDENCE_KINDS:
             if not object_id or object_version is None:
-                raise ValueError("Un'evidenza interna richiede object_id e object_version.")
+                raise DomainValidationError(de.ERR_EVIDENCE_INTERNAL_INCOMPLETE, kind=kind)
             if not self._object_version_exists(kind, object_id, int(object_version)):
-                raise KeyError(f"{kind}:{object_id}@v{object_version} non esiste nel CCMS di questo progetto.")
+                raise DomainNotFoundError(de.ERR_EVIDENCE_OBJECT_NOT_FOUND, kind=kind,
+                                          object_id=object_id, version=int(object_version))
         else:
             if not str(external_ref or "").strip() and not str(description or "").strip():
-                raise ValueError("Un'evidenza esterna richiede almeno external_ref o description per essere verificabile.")
+                raise DomainValidationError(de.ERR_EVIDENCE_EXTERNAL_INCOMPLETE, kind=kind)
         if self.conn.execute("SELECT 1 FROM compliance_evidence WHERE evidence_id=?", (evidence_id,)).fetchone():
             raise ValueError(f"evidence_id già esistente: {evidence_id}")
         now = _now()
@@ -1155,10 +1159,10 @@ class ComplianceService:
     def link_evidence_requirement(self, evidence_id: str, requirement_id: str, *, actor: str) -> int:
         actor = self._require_actor(actor)
         if not self.conn.execute("SELECT 1 FROM compliance_evidence WHERE evidence_id=?", (evidence_id,)).fetchone():
-            raise KeyError(evidence_id)
+            raise DomainNotFoundError(de.ERR_EVIDENCE_NOT_FOUND, evidence_id=evidence_id)
         req = self.conn.execute("SELECT version FROM compliance_requirement WHERE requirement_id=?", (requirement_id,)).fetchone()
         if not req:
-            raise KeyError(requirement_id)
+            raise DomainNotFoundError(de.ERR_REQUIREMENT_NOT_FOUND, requirement_id=requirement_id)
         now = _now()
         with self._atomic():
             self.conn.execute(
@@ -1241,16 +1245,11 @@ class ComplianceService:
             "SELECT applies FROM compliance_applicability WHERE scope_id=? AND requirement_id=?",
             (scope_id, requirement_id)).fetchone()
         if not ap or ap["applies"] != "APPLIES":
-            raise ValueError(
-                "Impossibile registrare una coverage assessment: il requisito non è attualmente 'APPLIES' in "
-                "questo scope. Imposta prima set_applicability(..., 'APPLIES', ...) -- applicability e coverage "
-                "non possono contraddirsi."
-            )
+            raise DomainValidationError(de.ERR_COVERAGE_REQUIRES_APPLIES,
+                                        requirement_id=requirement_id)
         if status == "COVERED" and not self._has_valid_current_evidence(requirement_id):
-            raise ValueError(
-                "Impossibile impostare 'Covered': nessuna evidenza valida e corrente collegata a questo requisito. "
-                "Collega un'evidenza interna aggiornata o un'evidenza esterna con provenance prima di dichiarare copertura."
-            )
+            raise DomainValidationError(de.ERR_COVERED_REQUIRES_EVIDENCE,
+                                        requirement_id=requirement_id)
         now = _now()
         with self._atomic():
             self.conn.execute(

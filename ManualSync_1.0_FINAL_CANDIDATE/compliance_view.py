@@ -22,6 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import domain_errors as de
+from domain_errors import DomainFileMissingError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
 import compliance_starter_packs as csp
@@ -126,7 +128,7 @@ def ccms_db_path(project_dir: str | Path) -> Path:
         p = base / name
         if p.exists():
             return p
-    raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    raise DomainFileMissingError(de.ERR_PROJECT_REPOSITORY_MISSING, project_dir=str(base))
 
 
 def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, ComplianceService]:
@@ -650,7 +652,7 @@ def apply_pack_update(svc: ComplianceService, pack: dict[str, Any], scope_id: st
     gets written."""
     status = pack_update_status(svc, pack)
     if not status["installed"]:
-        raise ValueError("Questo pacchetto non è ancora stato importato in questo progetto.")
+        raise DomainValidationError(de.ERR_PACK_NOT_INSTALLED, pack_id=pack["pack_id"])
     result = svc.update_requirement_pack(pack, scope_id=scope_id, actor=actor, diff=status["diff"])
     result["message"] = (UPDATE_NONE_MESSAGE if result["changed_nothing"]
                          else UPDATE_APPLIED_MESSAGE)

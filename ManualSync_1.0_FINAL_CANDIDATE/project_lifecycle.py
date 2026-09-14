@@ -10,6 +10,8 @@ from typing import Any
 
 from language_codes import canonical_lang, canonical_langs
 
+import domain_errors as de
+from domain_errors import DomainAlreadyExistsError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 from workflow_management import WorkflowManager
 
@@ -62,7 +64,7 @@ def create_project(
     # Commercial safety: never silently merge a "new" project into an existing
     # directory. A duplicate name must be an explicit user decision.
     if project_dir.exists() and any(project_dir.iterdir()):
-        raise FileExistsError(f"Esiste già un progetto con questo nome: {project_name}")
+        raise DomainAlreadyExistsError(de.ERR_PROJECT_EXISTS, project_name=project_name)
     project_dir.mkdir(parents=True, exist_ok=True)
 
     db = project_dir / "ManualSync_CCMS.sqlite"
@@ -96,7 +98,7 @@ def read_project(project_dir: str | Path) -> dict[str, Any]:
         return {"project_name": Path(project_dir).name, "target_langs": []}
     data = json.loads(p.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("Manifest progetto ManualSync non valido.")
+        raise DomainValidationError(de.ERR_PROJECT_MANIFEST_INVALID, path=str(p))
     return data
 
 

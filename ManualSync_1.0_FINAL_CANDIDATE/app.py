@@ -38,6 +38,7 @@ import compliance_starter_packs as csp
 
 from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
+import domain_errors as de
 import i18n
 from i18n import t
 
@@ -682,6 +683,51 @@ def _sidebar_context(project_dir: str | None) -> str:
         return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{name}</div><div class='ctx-sub'>{client}</div></div>"
     except Exception:
         return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{Path(project_dir).name}</div><div class='ctx-sub'>Workspace locale</div></div>"
+
+# ======================================================================
+# Domain error -> sentence. The ONLY place a code becomes words.
+#
+# Services raise a stable code with structured parameters and no opinion
+# about language (see domain_errors.py). This resolves one, in whatever
+# language the session selected, through the same catalog every other
+# label goes through.
+#
+# Three rules it enforces:
+#   * an unknown code, or a failure that is not a DomainError at all,
+#     resolves to ONE generic sentence -- never to the raw code, and never
+#     to a Python exception message. i18n's own fallback returns the key
+#     verbatim, which is right for a label and wrong for an error, so this
+#     checks has_key() explicitly rather than relying on it.
+#   * parameters go through t(**params), which interpolates via the safe
+#     mapping -- a missing one stays visible as {name} instead of raising.
+#   * the technical detail is not thrown away, it is logged. Users get a
+#     sentence; diagnostics get the class, the code and the params.
+# ======================================================================
+def domain_error_message(exc: BaseException) -> str:
+    """The user-facing sentence for a failure, in the session's language."""
+    code = getattr(exc, "code", None)
+    params = getattr(exc, "params", None)
+    if not isinstance(exc, de.DomainError) or not code:
+        _app_log(f"unresolved failure surfaced to the UI: {type(exc).__name__}", exc)
+        return t("error.unknown")
+    key = f"error.{code}"
+    if not i18n.has_key(key):
+        _app_log(f"domain error with no catalog entry: {code!r} {params!r}")
+        return t("error.unknown")
+    return t(key, **(params or {}))
+
+
+def domain_error_detail(exc: BaseException) -> str:
+    """Technical identification, for advanced/diagnostic surfaces only.
+
+    Deliberately NOT shown in the normal flow: a stable user never needs
+    to read ERR_COVERED_REQUIRES_EVIDENCE to understand that they have to
+    link evidence first.
+    """
+    if isinstance(exc, de.DomainError):
+        return repr(exc)
+    return f"{type(exc).__name__}: {exc}"
+
 
 def _page_head_html(kicker_key: str, title_key: str, subtitle_key: str) -> str:
     """One section page head: kicker, title, one-line subtitle.
@@ -4465,7 +4511,8 @@ def compliance_import_pack_ui(project_dir, publication_id, scope_id, pack_id, gr
         return (_export_error_html("Pubblicazione o pacchetto non disponibili in questo progetto."),
                 gr.update(), gr.update(), gr.update())
     except ValueError as e:
-        return _export_error_html(str(e)), gr.update(), gr.update(), gr.update()
+        return (_export_error_html(domain_error_message(e)),
+                gr.update(), gr.update(), gr.update())
     except Exception as e:
         _app_log("Compliance pack import failed", e)
         return (_export_error_html("Non è stato possibile aggiungere il pacchetto al progetto."),
@@ -4653,7 +4700,13 @@ def compliance_pack_update_apply_ui(project_dir, scope_id, actor):
         cov_html = _coverage_html(cv.documentation_coverage(svc, scope_id))
         gaps = _gap_dataframe(cv.to_complete_rows(svc, scope_id))
     except (KeyError, ValueError) as e:
-        return _export_error_html(str(e)), gr.update(), gr.update(), gr.update()
+        # cv.apply_pack_update raises a DomainError (ERR_PACK_NOT_INSTALLED),
+        # whose str() is the bare CODE by design. Printing it here put
+        # "ERR_PACK_NOT_INSTALLED" on screen; resolve it like every other
+        # migrated boundary. A non-domain KeyError/ValueError still lands in
+        # the generic sentence rather than being dressed up as validation.
+        return (_export_error_html(domain_error_message(e)),
+                gr.update(), gr.update(), gr.update())
     except Exception as e:
         _app_log("Pack update failed", e)
         return (_export_error_html("Non è stato possibile aggiornare il pacchetto."),
@@ -4808,131 +4861,148 @@ def compliance_open_requirement_row_ui(project_dir, scope_id, search, status_fil
 
 
 def compliance_decide_applicability_ui(project_dir, scope_id, rid, applies_label, reviewer, justification, comment,
-                                       cur_cov_radio=None):
-    if not project_dir:
-        raise gr.Error("Nessun progetto attivo.")
-    repo, svc = cv.open_service(project_dir)
-    try:
-        msg = ""
-        failed = False
-        if scope_id and rid:
-            # The Radio carries the engine code, not the visible word, so
-            # this works identically in every language and no translated
-            # string is ever handed to the service.
-            applies_code = applies_label if applies_label in cv.APPLICABILITY_CODES else ""
-            if not applies_code:
-                msg = "⛔ " + t("conformity.applicability.choose_first",
-                                options=" / ".join(cv.applicability_labels().values()))
-                failed = True
-            else:
-                try:
-                    svc.set_applicability(scope_id, rid, applies_code, actor=reviewer or "",
-                                          justification=justification or "", comment=comment or "")
-                    msg = "✅ Decisione registrata."
-                except Exception as exc:
-                    msg = f"⛔ {exc}"
+                                       cur_cov_radio=None, lang=None):
+    # The session's language, so a refusal is worded for whoever is
+    # looking at it. Without this the resolver would fall back to the
+    # default and an English session would read an Italian refusal.
+    with i18n.use_language(lang):
+        if not project_dir:
+            raise gr.Error("Nessun progetto attivo.")
+        repo, svc = cv.open_service(project_dir)
+        try:
+            msg = ""
+            failed = False
+            if scope_id and rid:
+                # The Radio carries the engine code, not the visible word, so
+                # this works identically in every language and no translated
+                # string is ever handed to the service.
+                applies_code = applies_label if applies_label in cv.APPLICABILITY_CODES else ""
+                if not applies_code:
+                    msg = "⛔ " + t("conformity.applicability.choose_first",
+                                    options=" / ".join(cv.applicability_labels().values()))
                     failed = True
-        # Acceptance fix: a validation failure (e.g. missing justification,
-        # missing reviewer) must be inline and non-destructive -- the choice
-        # the user just made stays visibly selected so they can add what's
-        # missing and re-confirm without reselecting it. On SUCCESS (or when
-        # nothing was submitted) the Radio still resets to unselected: the
-        # decision just taken is shown in applic_current above it, and an
-        # unselected Radio is the correct starting point for the NEXT edit
-        # -- same "never pre-selected" invariant as a fresh open. The
-        # COVERAGE radio is untouched by an applicability action either way
-        # -- echo back whatever it currently shows (found to reset to None
-        # otherwise, wiping an unrelated pending choice during 3.5B
-        # stabilization acceptance).
-        return _compliance_full_bundle(svc, repo, scope_id, rid, applic_msg=msg,
-                                       applic_radio_value=applies_label if failed else None,
-                                       cov_radio_value=cur_cov_radio)
-    finally:
-        repo.close()
+                else:
+                    try:
+                        svc.set_applicability(scope_id, rid, applies_code, actor=reviewer or "",
+                                              justification=justification or "", comment=comment or "")
+                        msg = "✅ Decisione registrata."
+                    except Exception as exc:
+                        msg = "⛔ " + domain_error_message(exc)
+                        failed = True
+            # Acceptance fix: a validation failure (e.g. missing justification,
+            # missing reviewer) must be inline and non-destructive -- the choice
+            # the user just made stays visibly selected so they can add what's
+            # missing and re-confirm without reselecting it. On SUCCESS (or when
+            # nothing was submitted) the Radio still resets to unselected: the
+            # decision just taken is shown in applic_current above it, and an
+            # unselected Radio is the correct starting point for the NEXT edit
+            # -- same "never pre-selected" invariant as a fresh open. The
+            # COVERAGE radio is untouched by an applicability action either way
+            # -- echo back whatever it currently shows (found to reset to None
+            # otherwise, wiping an unrelated pending choice during 3.5B
+            # stabilization acceptance).
+            return _compliance_full_bundle(svc, repo, scope_id, rid, applic_msg=msg,
+                                           applic_radio_value=applies_label if failed else None,
+                                           cov_radio_value=cur_cov_radio)
+        finally:
+            repo.close()
 
-def compliance_decide_coverage_ui(project_dir, scope_id, rid, coverage_label, reviewer, comment, cur_applic_radio=None):
-    if not project_dir:
-        raise gr.Error("Nessun progetto attivo.")
-    repo, svc = cv.open_service(project_dir)
-    try:
-        msg = ""
-        failed = False
-        if scope_id and rid:
-            cov_code = coverage_label if coverage_label in cv.COVERAGE_CODES else ""
-            if not cov_code:
-                msg = "⛔ " + t("conformity.coverage.choose_first",
-                                options=" / ".join(cv.coverage_labels().values()))
-                failed = True
-            else:
-                try:
-                    svc.set_assessment(scope_id, rid, cov_code, actor=reviewer or "", comment=comment or "")
-                    msg = "✅ Decisione registrata."
-                except Exception as exc:
-                    msg = f"⛔ {exc}"
+def compliance_decide_coverage_ui(project_dir, scope_id, rid, coverage_label, reviewer, comment,
+                                  cur_applic_radio=None, lang=None):
+    # The session's language, so a refusal is worded for whoever is
+    # looking at it. Without this the resolver would fall back to the
+    # default and an English session would read an Italian refusal.
+    with i18n.use_language(lang):
+        if not project_dir:
+            raise gr.Error("Nessun progetto attivo.")
+        repo, svc = cv.open_service(project_dir)
+        try:
+            msg = ""
+            failed = False
+            if scope_id and rid:
+                cov_code = coverage_label if coverage_label in cv.COVERAGE_CODES else ""
+                if not cov_code:
+                    msg = "⛔ " + t("conformity.coverage.choose_first",
+                                    options=" / ".join(cv.coverage_labels().values()))
                     failed = True
-        # Same non-destructive-on-failure fix as applicability, see there --
-        # and the same "don't touch the OTHER radio" symmetry.
-        return _compliance_full_bundle(svc, repo, scope_id, rid, cov_msg=msg,
-                                       cov_radio_value=coverage_label if failed else None,
-                                       applic_radio_value=cur_applic_radio)
-    finally:
-        repo.close()
+                else:
+                    try:
+                        svc.set_assessment(scope_id, rid, cov_code, actor=reviewer or "", comment=comment or "")
+                        msg = "✅ Decisione registrata."
+                    except Exception as exc:
+                        msg = "⛔ " + domain_error_message(exc)
+                        failed = True
+            # Same non-destructive-on-failure fix as applicability, see there --
+            # and the same "don't touch the OTHER radio" symmetry.
+            return _compliance_full_bundle(svc, repo, scope_id, rid, cov_msg=msg,
+                                           cov_radio_value=coverage_label if failed else None,
+                                           applic_radio_value=cur_applic_radio)
+        finally:
+            repo.close()
 
 def compliance_link_evidence_ui(project_dir, scope_id, rid, candidate_label, reviewer,
-                                cur_applic_radio=None, cur_cov_radio=None):
-    if not project_dir:
-        raise gr.Error("Nessun progetto attivo.")
-    repo, svc = cv.open_service(project_dir)
-    try:
-        msg = ""
-        if scope_id and rid:
-            if not candidate_label:
-                msg = "⛔ Scegli un contenuto dalla lista prima di collegarlo come evidenza."
-            elif not str(reviewer or "").strip():
-                msg = "⛔ Indica il tuo nome per registrare il collegamento dell'evidenza."
-            else:
-                try:
-                    head = candidate_label.split(" — ", 1)[0]
-                    kind, object_id, version_str = head.split(":", 2)
-                    cv.link_ccms_object_as_evidence(svc, kind, object_id, int(version_str), rid, actor=reviewer)
-                    msg = "✅ Evidenza collegata."
-                except Exception as exc:
-                    msg = f"⛔ {exc}"
-        # Acceptance fix: linking evidence is a SUPPORTING action for a
-        # pending Covered decision (the acceptance path is: try Covered ->
-        # rejected -> link evidence -> confirm Covered again WITHOUT
-        # reselecting). It must never reset either decision Radio -- echo
-        # back exactly what the panel currently shows for both.
-        return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
-                                       applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
-    finally:
-        repo.close()
+                                cur_applic_radio=None, cur_cov_radio=None, lang=None):
+    # The session's language, so a refusal is worded for whoever is
+    # looking at it. Without this the resolver would fall back to the
+    # default and an English session would read an Italian refusal.
+    with i18n.use_language(lang):
+        if not project_dir:
+            raise gr.Error("Nessun progetto attivo.")
+        repo, svc = cv.open_service(project_dir)
+        try:
+            msg = ""
+            if scope_id and rid:
+                if not candidate_label:
+                    msg = "⛔ Scegli un contenuto dalla lista prima di collegarlo come evidenza."
+                elif not str(reviewer or "").strip():
+                    msg = "⛔ Indica il tuo nome per registrare il collegamento dell'evidenza."
+                else:
+                    try:
+                        head = candidate_label.split(" — ", 1)[0]
+                        kind, object_id, version_str = head.split(":", 2)
+                        cv.link_ccms_object_as_evidence(svc, kind, object_id, int(version_str), rid, actor=reviewer)
+                        msg = "✅ Evidenza collegata."
+                    except Exception as exc:
+                        msg = "⛔ " + domain_error_message(exc)
+            # Acceptance fix: linking evidence is a SUPPORTING action for a
+            # pending Covered decision (the acceptance path is: try Covered ->
+            # rejected -> link evidence -> confirm Covered again WITHOUT
+            # reselecting). It must never reset either decision Radio -- echo
+            # back exactly what the panel currently shows for both.
+            return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
+                                           applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
+        finally:
+            repo.close()
 
 def compliance_unlink_evidence_ui(project_dir, scope_id, rid, unlink_label, reviewer,
-                                  cur_applic_radio=None, cur_cov_radio=None):
-    if not project_dir:
-        raise gr.Error("Nessun progetto attivo.")
-    repo, svc = cv.open_service(project_dir)
-    try:
-        msg = ""
-        if scope_id and rid:
-            if not unlink_label:
-                msg = "⛔ Scegli quale evidenza scollegare."
-            elif not str(reviewer or "").strip():
-                msg = "⛔ Indica il tuo nome per registrare lo scollegamento."
-            else:
-                evidence_id = unlink_label.split(" — ", 1)[0].strip()
-                try:
-                    ok = svc.unlink_evidence_requirement(evidence_id, rid, actor=reviewer)
-                    msg = "✅ Evidenza scollegata." if ok else "⛔ Collegamento non trovato (forse già rimosso)."
-                except Exception as exc:
-                    msg = f"⛔ {exc}"
-        # Same symmetry as link: unlinking must never reset a pending
-        # applicability/coverage choice either.
-        return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
-                                       applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
-    finally:
-        repo.close()
+                                  cur_applic_radio=None, cur_cov_radio=None, lang=None):
+    # The session's language, so a refusal is worded for whoever is
+    # looking at it. Without this the resolver would fall back to the
+    # default and an English session would read an Italian refusal.
+    with i18n.use_language(lang):
+        if not project_dir:
+            raise gr.Error("Nessun progetto attivo.")
+        repo, svc = cv.open_service(project_dir)
+        try:
+            msg = ""
+            if scope_id and rid:
+                if not unlink_label:
+                    msg = "⛔ Scegli quale evidenza scollegare."
+                elif not str(reviewer or "").strip():
+                    msg = "⛔ Indica il tuo nome per registrare lo scollegamento."
+                else:
+                    evidence_id = unlink_label.split(" — ", 1)[0].strip()
+                    try:
+                        ok = svc.unlink_evidence_requirement(evidence_id, rid, actor=reviewer)
+                        msg = "✅ Evidenza scollegata." if ok else "⛔ Collegamento non trovato (forse già rimosso)."
+                    except Exception as exc:
+                        msg = "⛔ " + domain_error_message(exc)
+            # Same symmetry as link: unlinking must never reset a pending
+            # applicability/coverage choice either.
+            return _compliance_full_bundle(svc, repo, scope_id, rid, evidence_msg=msg,
+                                           applic_radio_value=cur_applic_radio, cov_radio_value=cur_cov_radio)
+        finally:
+            repo.close()
 
 
 # ======================================================================
@@ -6240,21 +6310,21 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             cp_filter.change(compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table, show_progress="hidden")
             cp_applic_confirm.click(compliance_decide_applicability_ui,
                                     [project_state, cp_scope, cp_open_rid, cp_applic_radio, ws_operator,
-                                     cp_applic_justification, cp_applic_comment, cp_cov_radio], cp_out_full).then(
+                                     cp_applic_justification, cp_applic_comment, cp_cov_radio, ws_lang], cp_out_full).then(
                 compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table)
             cp_cov_confirm.click(compliance_decide_coverage_ui,
                                  [project_state, cp_scope, cp_open_rid, cp_cov_radio, ws_operator, cp_cov_comment,
-                                  cp_applic_radio],
+                                  cp_applic_radio, ws_lang],
                                  cp_out_full).then(
                 compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table)
             cp_evidence_link_btn.click(compliance_link_evidence_ui,
                                        [project_state, cp_scope, cp_open_rid, cp_evidence_candidates, ws_operator,
-                                        cp_applic_radio, cp_cov_radio],
+                                        cp_applic_radio, cp_cov_radio, ws_lang],
                                        cp_out_full).then(
                 compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table)
             cp_evidence_unlink_btn.click(compliance_unlink_evidence_ui,
                                          [project_state, cp_scope, cp_open_rid, cp_evidence_unlink_dd,
-                                          ws_operator, cp_applic_radio, cp_cov_radio], cp_out_full).then(
+                                          ws_operator, cp_applic_radio, cp_cov_radio, ws_lang], cp_out_full).then(
                 compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table)
             # Acceptance fix: this tab must never depend on the user remembering
             # to press "Aggiorna". Whenever it becomes the selected tab -- first

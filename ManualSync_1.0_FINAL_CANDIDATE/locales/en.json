@@ -153,5 +153,20 @@
   "reason.instrument_updated": "The linked regulatory reference was updated: review it",
   "reason.coverage.not_assessed": "Coverage not assessed yet",
   "reason.requirement_changed_after_assessment": "The requirement text changed after the last assessment: review it",
-  "reason.evidence_stale": "The linked evidence is no longer current: review it"
+  "reason.evidence_stale": "The linked evidence is no longer current: review it",
+  "error.unknown": "The operation could not be completed. Try again; if it persists, check the diagnostics.",
+  "error.ERR_ACTOR_REQUIRED": "Enter the operator name: every decision is recorded against whoever makes it.",
+  "error.ERR_JUSTIFICATION_REQUIRED": "Declaring a requirement “not applicable” requires an explicit justification.",
+  "error.ERR_COVERAGE_REQUIRES_APPLIES": "First confirm the requirement applies to this project: applicability and coverage cannot contradict each other.",
+  "error.ERR_COVERED_REQUIRES_EVIDENCE": "Declaring “Covered” requires current evidence linked to this requirement.",
+  "error.ERR_EVIDENCE_OBJECT_NOT_FOUND": "The content chosen as evidence no longer exists at that version ({kind} {object_id}, v{version}).",
+  "error.ERR_EVIDENCE_NOT_FOUND": "That evidence no longer exists in this project.",
+  "error.ERR_REQUIREMENT_NOT_FOUND": "That requirement does not exist in this scope.",
+  "error.ERR_EVIDENCE_EXTERNAL_INCOMPLETE": "External evidence needs at least a reference or a description, otherwise it cannot be verified.",
+  "error.ERR_EVIDENCE_INTERNAL_INCOMPLETE": "Internal evidence must say which content provides it, and at which version.",
+  "error.ERR_PACK_NOT_INSTALLED": "This package has not been added to the project yet.",
+  "error.ERR_PACK_NO_REQUIREMENTS_SELECTED": "No requirement matches the selected applicability scope.",
+  "error.ERR_PROJECT_EXISTS": "A project with this name already exists: {project_name}.",
+  "error.ERR_PROJECT_MANIFEST_INVALID": "This project file cannot be read as a valid ERYLOS project.",
+  "error.ERR_PROJECT_REPOSITORY_MISSING": "This project does not contain a content repository yet."
 }

@@ -61,9 +61,13 @@ check("cat2: exactly Italian and English are supported",
 check("cat3: every migrated key exists in BOTH catalogs -- no key is Italian-only",
       IT == EN, {"missing_in_en": sorted(IT - EN), "extra_in_en": sorted(EN - IT)})
 check("cat4: the catalogs are not empty", len(IT) > 100, len(IT))
+# "error.ERR_ACTOR_REQUIRED" is deliberate: an error key mirrors the
+# domain's stable CODE exactly, so the two cannot drift apart. Everything
+# else stays lowercase-dotted.
+_KEY_SHAPE = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+|error\.(unknown|ERR_[A-Z0-9_]+)")
 check("cat5: no key is Italian text used as an identifier",
-      all(re.fullmatch(r"[a-z0-9_]+(\.[a-z0-9_]+)+", k) for k in IT),
-      [k for k in sorted(IT) if not re.fullmatch(r"[a-z0-9_]+(\.[a-z0-9_]+)+", k)][:6])
+      all(_KEY_SHAPE.fullmatch(k) for k in IT),
+      [k for k in sorted(IT) if not _KEY_SHAPE.fullmatch(k)][:6])
 check("cat6: no catalog VALUE is blank in either language",
       all(i18n.translate(k, lg).strip() for k in IT for lg in ("it", "en")),
       [k for k in sorted(IT) if not i18n.translate(k, "en").strip()][:6])

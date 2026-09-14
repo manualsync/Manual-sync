@@ -26,6 +26,7 @@ from ccms_industrial import IndustrialRepository
 from project_lifecycle import create_project
 import authoring_view as av
 import compliance_view as cv
+import domain_errors as de
 import i18n
 import compliance_starter_packs as csp
 
@@ -493,12 +494,18 @@ check("ovl19 (item 19): a project decision does NOT modify the pack SOURCE recor
       _source_before == _source_after, None)
 check("ovl20 (item 20): project applicability is editable and stored in the overlay",
       svc.applicability_row("SCOPE-EU", RID)["applies"] == "APPLIES", None)
+# Domain Error Semantics V1: the refusal carries a stable CODE, so this
+# asserts the rule that fired rather than the words it happened to use.
+# The old form ("evidenza" in the message) broke the moment the UI could
+# be English -- which is the coupling that gate removed.
 _na_error = None
 try:
     svc.set_applicability("SCOPE-EU", "MR2023-A10-7-PAPER-SAFETY-INFO", "NOT_APPLICABLE", actor="Quality")
 except ValueError as e:
-    _na_error = str(e)
-check("ovl21 (item 21): 'Non applicabile' REQUIRES a human reason", _na_error is not None, _na_error)
+    _na_error = e
+check("ovl21 (item 21): 'Non applicabile' REQUIRES a human reason",
+      _na_error is not None and _na_error.code == de.ERR_JUSTIFICATION_REQUIRED,
+      repr(_na_error))
 svc.set_applicability("SCOPE-EU", "MR2023-A10-7-PAPER-SAFETY-INFO", "NOT_APPLICABLE", actor="Quality",
                       justification="Macchina destinata esclusivamente a uso professionale.")
 check("ovl21b: with a justification the decision is accepted and the reason persists",
@@ -509,9 +516,11 @@ _cov_error = None
 try:
     svc.set_assessment("SCOPE-EU", RID, "COVERED", actor="Quality")
 except ValueError as e:
-    _cov_error = str(e)
+    _cov_error = e
 check("ovl22 (item 22): evidence never auto-sets compliance -- declaring 'Coperto' without linked "
-      "evidence is refused", _cov_error is not None and "evidenza" in _cov_error.lower(), _cov_error)
+      "evidence is refused",
+      _cov_error is not None and _cov_error.code == de.ERR_COVERED_REQUIRES_EVIDENCE,
+      repr(_cov_error))
 check("ovl23 (item 23): uncertainty is representable -- an undecided requirement reads 'To verify', "
       "never a silent pass", svc.compute_status("SCOPE-EU", "MR2023-A3-17442-RESIDUAL-RISKS") == "To verify",
       svc.compute_status("SCOPE-EU", "MR2023-A3-17442-RESIDUAL-RISKS"))
