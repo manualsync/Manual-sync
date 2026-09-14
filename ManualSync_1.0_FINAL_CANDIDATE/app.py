@@ -1024,7 +1024,7 @@ def revision_analysis_ui(project_dir, old_source, old_translation, new_source, f
         return friendly, _friendly_review_queue(queue), paths['rapporto'], paths['coda']
     except Exception as e:
         _app_log(f"Revision analysis FAILED project={p.name}", e)
-        msg=f"<div class='ms-card'><h3 class='ms-block'>Analisi non completata</h3><p><b>{type(e).__name__}</b>: {str(e)}</p><p class='ms-muted'>Dettagli salvati in {APP_LOG}</p></div>"
+        msg=f"<div class='ms-card'><h3 class='ms-block'>Analisi non completata</h3><p><b>{type(e).__name__}</b>: {ui_error_text(e)}</p><p class='ms-muted'>Dettagli salvati in {APP_LOG}</p></div>"
         return msg, pd.DataFrame(), None, None
 
 def _it_count(n: int, singular: str, plural: str) -> str:
@@ -1083,7 +1083,7 @@ def _idml_review_state(project_dir, publication_id) -> list[dict]:
         raw = path.read_text(encoding="utf-8")
         items = json.loads(raw)
     except Exception as exc:
-        raise IdmlReviewCorruptError(f"{path.name} non è leggibile o non è JSON valido: {exc}") from exc
+        raise IdmlReviewCorruptError(f"{path.name} non è leggibile o non è JSON valido: {ui_error_text(exc)}") from exc
     if not isinstance(items, list) or not all(isinstance(it, dict) and "reason" in it for it in items):
         raise IdmlReviewCorruptError(f"{path.name} non ha il formato atteso (elenco di elementi di revisione).")
     return items
@@ -1115,7 +1115,7 @@ def _idml_review_panel_ui(project_dir, publication_id="PUB-MAIN"):
         items = _idml_review_state(project_dir, publication_id)
     except IdmlReviewCorruptError as exc:
         error_html = (f"<div class='ms-prod'><b>Stato di revisione IDML non leggibile.</b><br>"
-                      f"{html.escape(str(exc))}<br>L'approvazione di questa sorgente resta bloccata "
+                      f"{html.escape(ui_error_text(exc))}<br>L'approvazione di questa sorgente resta bloccata "
                       f"finché il file non viene ripristinato o l'import rieseguito.</div>")
         return (gr.update(value=error_html, visible=True), gr.update(visible=False)) + tuple(
             gr.update(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS))
@@ -1170,7 +1170,7 @@ def idml_review_confirm_ui(project_dir, reviewer, *radio_values):
     try:
         items = _idml_review_state(project_dir, publication_id)
     except IdmlReviewCorruptError as exc:
-        raise gr.Error(f"Stato di revisione IDML non leggibile: {exc}. Ripristina il file o riesegui l'importazione prima di continuare.") from exc
+        raise gr.Error(f"Stato di revisione IDML non leggibile: {ui_error_text(exc)}. Ripristina il file o riesegui l'importazione prima di continuare.") from exc
     pending = [it for it in items if it.get("decision") is None]
     if not pending:
         return _idml_review_panel_ui(project_dir, publication_id)
@@ -1835,7 +1835,7 @@ def guided_approve_source_ui(project_dir, reviewer, confirmed):
         # next to the approval button, instead of letting the exception
         # propagate and leave this callback's other outputs in an error
         # state.
-        msg = f"⛔ {exc}"
+        msg = f"⛔ {ui_error_text(exc)}"
     return msg, _project_card(project_dir), _sidebar_context(project_dir), _simple_review_table_for_project(project_dir)
 
 def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
@@ -1844,7 +1844,7 @@ def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
         pending=_idml_pending_review_items(project_dir, publication_id)
     except IdmlReviewCorruptError as exc:
         raise gr.Error(f"Impossibile approvare: lo stato di revisione IDML non è leggibile o è corrotto "
-                        f"({exc}). Ripristina il file o riesegui l'importazione prima di approvare.") from exc
+                        f"({ui_error_text(exc)}). Ripristina il file o riesegui l'importazione prima di approvare.") from exc
     if pending:
         raise gr.Error(f"Ci sono {len(pending)} elementi da verificare prima di poter approvare questa sorgente. "
                         "Prendi una decisione per ciascuno nella sezione «Elementi da verificare» qui sopra.")
@@ -1857,7 +1857,7 @@ def approve_source_ui(project_dir, publication_id, reviewer, confirmed):
         # keep seeing even after "Approva sorgente" was clicked.
         result = AuthoringService(repo).bulk_approve_publication(publication_id, actor=reviewer or 'Human reviewer')
     except ValueError as e:
-        raise gr.Error(str(e))
+        raise gr.Error(ui_error_text(e))
     finally: repo.close()
     extra = f" {result['review_tasks_closed']} task di revisione in sospeso sono stati riconciliati." if result.get('review_tasks_closed') else ""
     return f"✅ Sorgente approvata dal revisore umano.{extra}"
@@ -1882,7 +1882,7 @@ def review_decide_ui(project_dir, review_id, decision, actor, comment):
         new_status = repo.decide_review(int(review_id), decision=decision, actor=actor, comment=comment or '')
         queue = repo.review_queue(status='OPEN')
     except (KeyError, ValueError) as e:
-        raise gr.Error(str(e))
+        raise gr.Error(ui_error_text(e))
     finally: repo.close()
     return f"✅ Review #{int(review_id)} decisa: nuovo stato **{new_status}**.", queue
 
@@ -1936,7 +1936,7 @@ def grounded_queue_ui(project_dir, proposal_id, topic_id, block_id, block_type, 
     try:
         repo.add_block(block_id.strip(),topic_id.strip(),block_type or 'paragraph',position=int(position or 1),text=row['draft'],status='Draft',source_refs=refs,evidence_status='SOURCE_GROUNDED')
         rid=repo.request_review('block',block_id.strip(),requested_by='ManualSync AI',assigned_to=reviewer or '',comment=f"Grounded proposal {proposal_id}; human approval required")
-    except Exception as e: raise gr.Error(str(e))
+    except Exception as e: raise gr.Error(ui_error_text(e))
     finally: repo.close()
     return f"✅ Proposta inserita come **Draft/In Review**. Review #{rid}. Nessun contenuto AI è stato approvato automaticamente."
 
@@ -3422,7 +3422,7 @@ def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excl
         raise gr.Error("Impossibile generare l'anteprima: la publication o il profilo selezionato non sono "
                        "più disponibili. Aggiorna la struttura o l'elenco profili e riprova.")
     except Exception as e:
-        raise gr.Error(f"Anteprima non generabile: {e}")
+        raise gr.Error(f"Anteprima non generabile: {ui_error_text(e)}")
     finally:
         repo.close()
 
@@ -3545,7 +3545,7 @@ def studio_export_pdf_ui(project_dir, publication_id, profile_id):
     try:
         res = po.export_pdf(repo, svc, (publication_id or "").strip() or "PUB-MAIN", profile_id)
     except po.PublishingOutputError as e:
-        return _export_error_html(str(e))
+        return _export_error_html(ui_error_text(e))
     except KeyError:
         return _export_error_html("La publication o il profilo selezionato non sono più disponibili.")
     except Exception as e:
@@ -3584,7 +3584,7 @@ def studio_export_html_ui(project_dir, publication_id, profile_id):
     try:
         res = po.export_html_package(repo, svc, (publication_id or "").strip() or "PUB-MAIN", profile_id)
     except po.PublishingOutputError as e:
-        return _export_error_html(str(e))
+        return _export_error_html(ui_error_text(e))
     except KeyError:
         return _export_error_html("La publication o il profilo selezionato non sono più disponibili.")
     except Exception as e:
@@ -3880,10 +3880,12 @@ def work_package_ui(project_dir, object_id, kind, tm_files):
         # 4E.3 final translation blocker: this is the ONLY exception this
         # call can raise where the message is ALREADY the final, safe,
         # human-readable Italian text with zero internal ids/JSON/raw
-        # markup/stack trace -- str(e) is shown verbatim via gr.Error
-        # (which always surfaces regardless of the app's show_error=False
-        # launch setting, unlike an uncaught exception which would not).
-        raise gr.Error(str(e))
+        # markup/stack trace -- so it is shown verbatim via gr.Error (which
+        # always surfaces regardless of the app's show_error=False launch
+        # setting, unlike an uncaught exception which would not).
+        # ui_error_text() is a pass-through for it: this class is not a
+        # DomainError, so the wording below is byte-identical to before.
+        raise gr.Error(ui_error_text(e))
     finally:
         repo.close()
     tm_note=(f" TM di progetto usata automaticamente: **{Path(auto_tm).name}**." if auto_tm else " Nessuna TM legacy automatica disponibile: il pacchetto usa comunque le lingue target del progetto.")
@@ -3941,7 +3943,7 @@ def create_job_ui(project_dir, package, vendor, due):
         except Exception as exc:
             # Keep operational validation visible in-page instead of a transient
             # Gradio toast that can be missed when the user is scrolled lower.
-            msg=f"⛔ Job non creato: **{str(exc)}**"
+            msg=f"⛔ Job non creato: **{ui_error_text(exc)}**"
         jobs=_friendly_jobs(wf.jobs_table())
         return msg, gr.update(value=jobs, visible=not jobs.empty)
     finally: wf.close()
@@ -4004,7 +4006,7 @@ def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, stri
         qa_update = gr.update(value=qa_table, visible=not qa_table.empty)
         jobs, events = _friendly_jobs(wf.jobs_table()), _friendly_events(wf.events_table(job_id))
         return msg,gr.update(value=jobs, visible=not jobs.empty),gr.update(value=events, visible=not events.empty),qa_update,approval,tm
-    except Exception as e: raise gr.Error(str(e))
+    except Exception as e: raise gr.Error(ui_error_text(e))
     finally: wf.close()
 
 def _compliance_readiness_html(compliance: dict | None) -> str:
