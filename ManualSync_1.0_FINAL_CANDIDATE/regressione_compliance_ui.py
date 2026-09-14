@@ -1,4 +1,12 @@
-"""Milestone 3.5B regression suite: Guided Compliance UX.
+"""3.5B Compliance UI adapter regression.
+
+NOTE (Localization Foundation V1): the decision callbacks take the ENGINE
+CODE ("APPLIES", "COVERED", ...), not the visible label. The Radio carries
+the code and shows a translated word, because the previous label -> code
+reverse map worked in exactly one language: in English the Radio would
+read "Applies", the lookup would miss, and confirming a decision would
+silently do nothing. These tests therefore pass codes.
+Milestone 3.5B regression suite: Guided Compliance UX.
 
 Tests the actual UI callback functions in app.py (compliance_load_ui,
 compliance_switch_scope_ui, compliance_open_requirement_ui,
@@ -204,7 +212,7 @@ check("group3: even after a real decision exists, re-opening the SAME requiremen
 # NOTHING is persisted (no partial mutation).
 # ------------------------------------------------------------------
 proj4, scope4, rids4 = _seed_scope(_new_project("g4_na_no_justification"))
-bundle4 = app.compliance_decide_applicability_ui(str(proj4), scope4, rids4[0], "Non applicabile", "QA Reviewer", "", "")
+bundle4 = app.compliance_decide_applicability_ui(str(proj4), scope4, rids4[0], "NOT_APPLICABLE", "QA Reviewer", "", "")
 check("group4: inline error, no gr.Error raised (function returned normally)", "⛔" in bundle4[IDX_APPLIC_MSG], bundle4[IDX_APPLIC_MSG])
 repo4 = IndustrialRepository(cv.ccms_db_path(proj4))
 svc4 = ComplianceService(repo4)
@@ -220,7 +228,7 @@ check("group4: the detail panel and dashboard are still fully rendered (not corr
 # inline, nothing persisted.
 # ------------------------------------------------------------------
 proj5, scope5, rids5 = _seed_scope(_new_project("g5_missing_reviewer"))
-bundle5 = app.compliance_decide_applicability_ui(str(proj5), scope5, rids5[0], "Si applica", "", "", "")
+bundle5 = app.compliance_decide_applicability_ui(str(proj5), scope5, rids5[0], "APPLIES", "", "", "")
 check("group5: inline error for missing reviewer", "⛔" in bundle5[IDX_APPLIC_MSG], bundle5[IDX_APPLIC_MSG])
 repo5 = IndustrialRepository(cv.ccms_db_path(proj5))
 svc5 = ComplianceService(repo5)
@@ -241,7 +249,7 @@ try:
     svc6.set_applicability(scope6, rids6[0], "APPLIES", actor="QA")
 finally:
     repo6.close()
-bundle6 = app.compliance_decide_coverage_ui(str(proj6), scope6, rids6[0], "Coperto", "QA Reviewer", "")
+bundle6 = app.compliance_decide_coverage_ui(str(proj6), scope6, rids6[0], "COVERED", "QA Reviewer", "")
 check("group6: Covered without evidence is rejected inline", "⛔" in bundle6[IDX_COV_MSG], bundle6[IDX_COV_MSG])
 repo6b = IndustrialRepository(cv.ccms_db_path(proj6))
 svc6b = ComplianceService(repo6b)
@@ -271,7 +279,7 @@ link_bundle = app.compliance_link_evidence_ui(str(proj7), scope7, rids7[0], bloc
 check("group7: evidence linking succeeds with an inline confirmation", "✅" in link_bundle[IDX_EV_MSG], link_bundle[IDX_EV_MSG])
 check("group7: the linked evidence now appears in the evidence table", len(link_bundle[IDX_EV_TABLE]) == 1, link_bundle[IDX_EV_TABLE])
 
-cover_bundle = app.compliance_decide_coverage_ui(str(proj7), scope7, rids7[0], "Coperto", "QA Reviewer", "")
+cover_bundle = app.compliance_decide_coverage_ui(str(proj7), scope7, rids7[0], "COVERED", "QA Reviewer", "")
 check("group8: Covered succeeds once real evidence is linked", "✅" in cover_bundle[IDX_COV_MSG], cover_bundle[IDX_COV_MSG])
 check("group8: dashboard now shows Covered=1 for this scope", "Coperti" in cover_bundle[IDX_DASH] and "<b>1</b>" in cover_bundle[IDX_DASH], cover_bundle[IDX_DASH])
 repo7b = IndustrialRepository(cv.ccms_db_path(proj7))
@@ -348,8 +356,8 @@ try:
     audit_before = svc11.conn.execute("SELECT COUNT(*) c FROM audit_events").fetchone()["c"]
 finally:
     repo11.close()
-app.compliance_decide_applicability_ui(str(proj11), scope11, rids11[0], "Non applicabile", "QA Reviewer", "", "")
-app.compliance_decide_coverage_ui(str(proj11), scope11, rids11[0], "Coperto", "QA Reviewer", "")
+app.compliance_decide_applicability_ui(str(proj11), scope11, rids11[0], "NOT_APPLICABLE", "QA Reviewer", "", "")
+app.compliance_decide_coverage_ui(str(proj11), scope11, rids11[0], "COVERED", "QA Reviewer", "")
 repo11b = IndustrialRepository(cv.ccms_db_path(proj11))
 svc11b = ComplianceService(repo11b)
 try:
@@ -390,9 +398,13 @@ _select_dep = _select_deps[0]
 check("group12: the tab's select event is bound to compliance_load_ui (same function 'Aggiorna' calls) -- "
       "not a no-op, not a different/partial reload function",
       _select_dep.get("api_name") == "compliance_load_ui_1", _select_dep.get("api_name"))
-check("group12: the select event takes exactly [project_state, cp_pub] as inputs -- 2 inputs, "
-      "matching compliance_load_ui's real signature",
-      len(_select_dep.get("inputs", [])) == 2, _select_dep.get("inputs"))
+# Localization Foundation V1 added a third input: ws_lang, the session's
+# language selector. It is what makes the language per-session rather than
+# a shared process variable, so the contract this guard protects is now
+# 3 in / 18 out -- still exactly compliance_load_ui's signature.
+check("group12: the select event takes exactly [project_state, cp_pub, ws_lang] as inputs -- "
+      "3 inputs, matching compliance_load_ui's real signature",
+      len(_select_dep.get("inputs", [])) == 3, _select_dep.get("inputs"))
 check("group12: the select event writes to exactly 18 outputs (scope dropdown + the full 17-item detail bundle) -- "
       "an output-count mismatch here would silently corrupt the panel exactly like the reported bug",
       len(_select_dep.get("outputs", [])) == 18, len(_select_dep.get("outputs", [])))
@@ -430,11 +442,11 @@ label13 = f"{rids13[0]} — Synthetic requirement 1"
 app.compliance_open_requirement_ui(str(proj13), scope13, label13)
 
 # 13a: Not-applicable submitted with reviewer but NO justification -- must
-# fail, and the Radio must echo back "Non applicabile", not reset to None.
-b13a = app.compliance_decide_applicability_ui(str(proj13), scope13, rids13[0], "Non applicabile", "Alessandro", "", "")
+# fail, and the Radio must echo back NOT_APPLICABLE, not reset to None.
+b13a = app.compliance_decide_applicability_ui(str(proj13), scope13, rids13[0], "NOT_APPLICABLE", "Alessandro", "", "")
 check("group13a: the rejection message is inline", "⛔" in b13a[IDX_APPLIC_MSG], b13a[IDX_APPLIC_MSG])
-check("group13a: the Radio still shows 'Non applicabile' selected after the failed attempt -- not reset to None",
-      b13a[IDX_APPLIC_RADIO].get("value") == "Non applicabile", b13a[IDX_APPLIC_RADIO])
+check("group13a: the Radio still holds NOT_APPLICABLE after the failed attempt -- not reset to None",
+      b13a[IDX_APPLIC_RADIO].get("value") == "NOT_APPLICABLE", b13a[IDX_APPLIC_RADIO])
 repo13 = IndustrialRepository(cv.ccms_db_path(proj13))
 svc13 = ComplianceService(repo13)
 try:
@@ -443,10 +455,10 @@ try:
 finally:
     repo13.close()
 
-# 13b: retry WITHOUT reselecting (same "Non applicabile" label, as a real
+# 13b: retry WITHOUT reselecting (same NOT_APPLICABLE value, as a real
 # client would resend since the Radio was never cleared), this time with a
 # real justification -- must succeed.
-b13b = app.compliance_decide_applicability_ui(str(proj13), scope13, rids13[0], "Non applicabile", "Alessandro",
+b13b = app.compliance_decide_applicability_ui(str(proj13), scope13, rids13[0], "NOT_APPLICABLE", "Alessandro",
                                               "Variante senza questo rischio.", "")
 check("group13b: the retry succeeds without the caller ever reselecting the Radio",
       "✅" in b13b[IDX_APPLIC_MSG], b13b[IDX_APPLIC_MSG])
@@ -461,14 +473,14 @@ try:
 finally:
     repo13b.close()
 
-# 13c: the SAME property for "Si applica" -- fails here on a missing
+# 13c: the SAME property for "APPLIES" -- fails here on a missing
 # reviewer (not missing justification), Radio must still be preserved.
 proj13c, scope13c, rids13c = _seed_scope(_new_project("g13c_applies_radio_preserved"))
 app.compliance_open_requirement_ui(str(proj13c), scope13c, f"{rids13c[0]} — Synthetic requirement 1")
-b13c = app.compliance_decide_applicability_ui(str(proj13c), scope13c, rids13c[0], "Si applica", "", "", "")
-check("group13c: 'Si applica' rejected for a missing reviewer stays inline", "⛔" in b13c[IDX_APPLIC_MSG], b13c[IDX_APPLIC_MSG])
-check("group13c: the Radio still shows 'Si applica' selected after this failed attempt too",
-      b13c[IDX_APPLIC_RADIO].get("value") == "Si applica", b13c[IDX_APPLIC_RADIO])
+b13c = app.compliance_decide_applicability_ui(str(proj13c), scope13c, rids13c[0], "APPLIES", "", "", "")
+check("group13c: 'APPLIES' rejected for a missing reviewer stays inline", "⛔" in b13c[IDX_APPLIC_MSG], b13c[IDX_APPLIC_MSG])
+check("group13c: the Radio still holds APPLIES after this failed attempt too",
+      b13c[IDX_APPLIC_RADIO].get("value") == "APPLIES", b13c[IDX_APPLIC_RADIO])
 
 # 13d: Coverage -- Covered rejected for missing evidence must preserve the
 # 'Coperto' selection the same way.
@@ -480,10 +492,10 @@ try:
 finally:
     repo13d.close()
 app.compliance_open_requirement_ui(str(proj13d), scope13d, f"{rids13d[0]} — Synthetic requirement 1")
-b13d = app.compliance_decide_coverage_ui(str(proj13d), scope13d, rids13d[0], "Coperto", "Alessandro", "")
+b13d = app.compliance_decide_coverage_ui(str(proj13d), scope13d, rids13d[0], "COVERED", "Alessandro", "")
 check("group13d: Covered without evidence is rejected inline", "⛔" in b13d[IDX_COV_MSG], b13d[IDX_COV_MSG])
-check("group13d: the Radio still shows 'Coperto' selected after the rejection -- not reset to None",
-      b13d[IDX_COV_RADIO].get("value") == "Coperto", b13d[IDX_COV_RADIO])
+check("group13d: the Radio still holds COVERED after the rejection -- not reset to None",
+      b13d[IDX_COV_RADIO].get("value") == "COVERED", b13d[IDX_COV_RADIO])
 repo13d_check = IndustrialRepository(cv.ccms_db_path(proj13d))
 svc13d_check = ComplianceService(repo13d_check)
 try:
@@ -501,7 +513,7 @@ try:
     svc13e.link_evidence_requirement("EV-13E", rids13d[0], actor="QA")
 finally:
     repo13e.close()
-b13e = app.compliance_decide_coverage_ui(str(proj13d), scope13d, rids13d[0], "Coperto", "Alessandro", "")
+b13e = app.compliance_decide_coverage_ui(str(proj13d), scope13d, rids13d[0], "COVERED", "Alessandro", "")
 check("group13e: the retry succeeds without ever reselecting 'Coperto'", "✅" in b13e[IDX_COV_MSG], b13e[IDX_COV_MSG])
 check("group13e: on SUCCESS the coverage Radio resets to unselected",
       b13e[IDX_COV_RADIO].get("value") is None, b13e[IDX_COV_RADIO])
@@ -530,20 +542,20 @@ app.compliance_open_requirement_ui(str(proj14), scope14, f"{rids14[0]} — Synth
 # covered by group13d/13). Now the user picks a candidate and clicks
 # "Collega come evidenza" -- simulating the real Gradio wiring, which
 # passes the CURRENT (still-selected) Radio values as extra inputs.
-app.compliance_decide_coverage_ui(str(proj14), scope14, rids14[0], "Coperto", "Alessandro", "")
+app.compliance_decide_coverage_ui(str(proj14), scope14, rids14[0], "COVERED", "Alessandro", "")
 candidates = cv.evidence_candidates(IndustrialRepository(cv.ccms_db_path(proj14)))
 block_candidate = next(c for c in candidates if c["kind"] == "block")
 candidate_label = f"{block_candidate['kind']}:{block_candidate['object_id']}:{block_candidate['version']} — {block_candidate['label']}"
 b14 = app.compliance_link_evidence_ui(str(proj14), scope14, rids14[0], candidate_label, "Alessandro",
-                                      cur_applic_radio=None, cur_cov_radio="Coperto")
+                                      cur_applic_radio=None, cur_cov_radio="COVERED")
 check("group14: linking evidence succeeds", "✅" in b14[IDX_EV_MSG], b14[IDX_EV_MSG])
 check("group14: the pending 'Coperto' choice SURVIVES the evidence-link action -- this is the real bug found live: "
       "linking evidence used to silently reset the coverage Radio to None",
-      b14[IDX_COV_RADIO].get("value") == "Coperto", b14[IDX_COV_RADIO])
+      b14[IDX_COV_RADIO].get("value") == "COVERED", b14[IDX_COV_RADIO])
 
 # Now the user confirms Covered WITHOUT ever reselecting the Radio --
 # exactly the real acceptance path -- and it must succeed.
-b14b = app.compliance_decide_coverage_ui(str(proj14), scope14, rids14[0], "Coperto", "Alessandro", "")
+b14b = app.compliance_decide_coverage_ui(str(proj14), scope14, rids14[0], "COVERED", "Alessandro", "")
 check("group14: confirming Covered after the preserved selection succeeds without reselecting",
       "✅" in b14b[IDX_COV_MSG], b14b[IDX_COV_MSG])
 repo14b = IndustrialRepository(cv.ccms_db_path(proj14))
@@ -557,14 +569,14 @@ finally:
 # reset a pending Not-applicable choice either.
 proj14c, scope14c, rids14c = _seed_scope(_new_project("g14c_link_evidence_preserves_applicability_radio"))
 app.compliance_open_requirement_ui(str(proj14c), scope14c, f"{rids14c[0]} — Synthetic requirement 1")
-app.compliance_decide_applicability_ui(str(proj14c), scope14c, rids14c[0], "Non applicabile", "Alessandro", "", "")
+app.compliance_decide_applicability_ui(str(proj14c), scope14c, rids14c[0], "NOT_APPLICABLE", "Alessandro", "", "")
 candidates_c = cv.evidence_candidates(IndustrialRepository(cv.ccms_db_path(proj14c)))
 block_candidate_c = next(c for c in candidates_c if c["kind"] == "block")
 label_c = f"{block_candidate_c['kind']}:{block_candidate_c['object_id']}:{block_candidate_c['version']} — {block_candidate_c['label']}"
 b14c = app.compliance_link_evidence_ui(str(proj14c), scope14c, rids14c[0], label_c, "Alessandro",
-                                       cur_applic_radio="Non applicabile", cur_cov_radio=None)
+                                       cur_applic_radio="NOT_APPLICABLE", cur_cov_radio=None)
 check("group14c: a pending 'Non applicabile' choice also survives an unrelated evidence-link action",
-      b14c[IDX_APPLIC_RADIO].get("value") == "Non applicabile", b14c[IDX_APPLIC_RADIO])
+      b14c[IDX_APPLIC_RADIO].get("value") == "NOT_APPLICABLE", b14c[IDX_APPLIC_RADIO])
 
 print(f"compliance UI build: {app.PRODUCT_BUILD if hasattr(app,'PRODUCT_BUILD') else 'n/a'}")
 import json

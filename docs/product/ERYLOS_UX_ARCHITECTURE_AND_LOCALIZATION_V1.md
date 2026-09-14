@@ -199,6 +199,12 @@ persistente.
 
 ## 3. Audit terminologico e di lingua
 
+> **SUPERATO in parte.** Le righe che mantenevano *Workflow*, *Preflight*,
+> *Template* e *Batch* in inglese sono state corrette da
+> `ERYLOS_TERMINOLOGY_POLICY_V1.md`, che è la fonte vincolante: la
+> familiarità di un termine nel software non è una ragione sufficiente per
+> non tradurlo. Il resto di questa sezione resta valido.
+
 Principio adottato: **una lingua alla volta**. Nessuna etichetta doppia
 tipo `Conformità / Compliance`. Italiano di default, inglese selezionabile
 in seguito.
@@ -213,9 +219,9 @@ l'utente esperto.
 | Compliance | **Conformità** | Compliance | No | Termine giuridico italiano esatto e universalmente compreso nel settore macchine. È anche l'unica voce inglese in una sidebar italiana. |
 | Release (sezione) | **Rilascio** | Release | No | «Rilascio controllato» è italiano tecnico corrente. Mantenere «release» nei soli dettagli tecnici. |
 | Publishing | **Pubblicazione** | Publishing | No | Già usato altrove nel prodotto («Anteprima pubblicazione»): l'incoerenza è interna. |
-| Preflight | *Preflight* | Preflight | **Sì** | Termine standard di prestampa usato verbatim in italiano professionale. «Prevolo»/«controllo preliminare» sarebbe più oscuro, non meno. |
-| Workflow | *Workflow* | Workflow | **Sì** | Entrato nell'italiano aziendale. «Flusso di lavoro» è corretto ma più lungo e meno preciso in contesto software. |
-| Template | *Template* | Template | **Sì** | Standard nel settore documentale italiano. «Modello» è ambiguo (confondibile con «modello di prodotto», concetto già presente nei pacchetti normativi). |
+| Preflight | **Controllo pre-esportazione** / **Verifica di pubblicazione** | Preflight | No | *Corretto dalla politica V1*, secondo il contesto. |
+| Workflow | **Flusso di lavoro** | Workflow | No | *Corretto dalla politica V1.* Applicato al kicker di sezione. |
+| Template | **Modello documento** / **Modello di impaginazione** | Template | No | *Corretto dalla politica V1*: la forma estesa risolve l'ambiguità di «modello». |
 | Backup | *Backup* | Backup | **Sì** | Standard assoluto. |
 | Evidence | **Evidenza** | Evidence | No | Già implementato correttamente in Conformità. |
 | Coverage | **Copertura** | Coverage | No | Già implementato. |
@@ -236,8 +242,10 @@ l'utente esperto.
 | Draft | **Bozza** | Draft | No | Standard italiano. |
 | Preview | **Anteprima** | Preview | No | Già usato. |
 | Export | **Esporta / Esportazione** | Export | No | Già usato. |
-| Batch | *Batch* | Batch | **Sì** | Standard tecnico; «lotto» è ambiguo in contesto produttivo macchine. |
-| XLIFF / TM / QA | *invariati* | — | **Sì** | Standard di settore della traduzione. |
+| Batch | **Elaborazione in serie** | Batch | No | *Corretto dalla politica V1*; evita «lotto», ambiguo in contesto macchine. |
+| XLIFF | *invariato* | — | **Sì** | Standard di settore. |
+| TM | **Memoria di traduzione (TM)** | Translation memory | No | *Politica V1*: forma estesa con sigla. |
+| QA | **QA** (specialisti) / **Controllo qualità** (UI generale) | QA | Parziale | *Politica V1*, secondo il pubblico. |
 | WORKSPACE / WORKFLOW (kicker) | **AREA DI LAVORO / FLUSSO** | Workspace / Workflow | No | Oggi incoerenti tra loro e in inglese in un'interfaccia italiana. |
 
 ### 3.1 Nomi di sezione proposti

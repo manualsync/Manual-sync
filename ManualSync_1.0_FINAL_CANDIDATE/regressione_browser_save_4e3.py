@@ -21,7 +21,10 @@ values -- the defect lived entirely in WHERE the user could see them.
 
 Prerequisites (deliberately NOT automated -- one server, one browser):
   * the app already running on http://127.0.0.1:7860
-  * the active project = "4E3 Rich Text Manual Acceptance"
+  * the active project = a DISPOSABLE clone, named "ZZ_..."
+    This harness edits content. acceptance_guard refuses to let it run
+    against the canonical demo or any other real project, and reports the
+    overlay delta it wrote. Build a clone with canonical_demo.py.
   * Chrome installed at the standard Windows location
 
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_save_4e3.py
@@ -44,11 +47,22 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from acceptance_guard import guarded_start, overlay_snapshot, report_delta
 import authoring_view as av  # noqa: E402
 
 APP_URL = "http://127.0.0.1:7860/"
 CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-PROJECT = str(Path.home() / "ManualSyncData" / "Projects" / "4E3_Rich_Text_Manual_Acceptance")
+# Resolved at RUN time by the acceptance guard -- see main(). It used to
+# be hardcoded to 4E3_Rich_Text_Manual_Acceptance, and that is precisely how
+# a reference demo acquired an extra decision nobody asked for: a harness
+# that edits content pointed at the project everyone else treated as a
+# baseline. This harness writes block versions and audit events, so it may
+# only run against a disposable clone.
+#
+# Resolved in main() rather than here so that merely IMPORTING this module
+# -- which regressione_browser_export_4f1.py does, for Browser and APP_URL
+# -- never trips the guard.
+PROJECT = ""
 PLAIN_BLK = "BLK-0FF3A85E07"
 RICH_BLK = "BLK-F302B2639A"
 BASELINE_TEXT = "Prima di iniziare, verificare che la pompa sia scollegata."
@@ -295,6 +309,10 @@ def open_block(br, block_id):
 
 
 def main():
+    global PROJECT
+    target, overlay_before = guarded_start()
+    PROJECT = str(target)
+
     baseline = reset_fixture()
     print("=" * 78)
     print(f"FIXTURE BASELINE: version={baseline['version']} format={baseline['format']} "
@@ -506,6 +524,11 @@ def main():
           final_plain["text"] == BASELINE_TEXT and final_plain["format"] == "plain"
           and final_rich["text"] == RICH_BASELINE and final_rich["format"] == "rich",
           (final_plain, final_rich))
+
+    # What this run actually wrote. It is NOT zero -- this harness edits
+    # content on purpose -- but it must be visible, and reset_fixture()
+    # must have put the content back.
+    report_delta(overlay_before, overlay_snapshot(Path(PROJECT)))
 
     print("\n" + json.dumps({"pass": sum(1 for r in results if r["status"] == "PASS"), "tests": len(results)}))
 

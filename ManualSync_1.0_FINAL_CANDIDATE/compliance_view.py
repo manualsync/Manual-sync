@@ -25,20 +25,52 @@ from typing import Any
 from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
 import compliance_starter_packs as csp
+import i18n
 
-APPLIES_LABELS = {
-    "APPLIES": "Si applica",
-    "NOT_APPLICABLE": "Non applicabile",
-    "TO_VERIFY": "Da verificare",
-}
-APPLIES_LABELS_REVERSE = {v: k for k, v in APPLIES_LABELS.items()}
+# Decision vocabularies. The CODES are the engine's persisted enums and are
+# the values the UI actually carries: a Gradio Radio takes (label, value)
+# pairs, so the widget shows a word and submits a code.
+#
+# The reverse mapping this replaces -- label -> code -- could not survive a
+# language switch: the radio would show "Applies" while the lookup table
+# only knew "Si applica", and a decision would silently fail to record.
+# Translated text must never be a key into anything.
+APPLICABILITY_CODES = ("APPLIES", "NOT_APPLICABLE", "TO_VERIFY")
+COVERAGE_CODES = ("COVERED", "TO_VERIFY", "MISSING")
 
-COVERAGE_LABELS = {
-    "COVERED": "Coperto",
-    "TO_VERIFY": "Da verificare",
-    "MISSING": "Mancante",
-}
-COVERAGE_LABELS_REVERSE = {v: k for k, v in COVERAGE_LABELS.items()}
+_APPLICABILITY_KEYS = {"APPLIES": "applicability.applies",
+                       "NOT_APPLICABLE": "applicability.not_applicable",
+                       "TO_VERIFY": "applicability.to_verify"}
+_COVERAGE_KEYS = {"COVERED": "coverage.covered",
+                  "TO_VERIFY": "coverage.to_verify",
+                  "MISSING": "coverage.missing"}
+
+
+def applicability_label(code: str, lang: str | None = None) -> str:
+    key = _APPLICABILITY_KEYS.get(str(code or ""))
+    return i18n.translate(key, lang) if key else str(code or "")
+
+
+def coverage_label(code: str, lang: str | None = None) -> str:
+    key = _COVERAGE_KEYS.get(str(code or ""))
+    return i18n.translate(key, lang) if key else str(code or "")
+
+
+def applicability_choices(lang: str | None = None) -> list[tuple[str, str]]:
+    """(label, code) pairs for a Radio. Gradio submits the code."""
+    return [(applicability_label(c, lang), c) for c in APPLICABILITY_CODES]
+
+
+def coverage_choices(lang: str | None = None) -> list[tuple[str, str]]:
+    return [(coverage_label(c, lang), c) for c in COVERAGE_CODES]
+
+
+def applicability_labels(lang: str | None = None) -> dict[str, str]:
+    return {c: applicability_label(c, lang) for c in APPLICABILITY_CODES}
+
+
+def coverage_labels(lang: str | None = None) -> dict[str, str]:
+    return {c: coverage_label(c, lang) for c in COVERAGE_CODES}
 
 # Requirement list order: what needs a decision first floats to the top.
 _STATUS_SORT_KEY = {"Missing": 0, "To verify": 1, "Covered": 2, "Not applicable": 3}
@@ -49,27 +81,43 @@ _STATUS_SORT_KEY = {"Missing": 0, "To verify": 1, "Covered": 2, "Not applicable"
 # reads, at the last possible moment. An Italian product must not show an
 # Italian user "To verify" next to "Da valutare" and expect them to
 # understand these are the same kind of thing.
-STATUS_LABELS = {
-    "Covered": "Coperto",
-    "To verify": "Da verificare",
-    "Missing": "Mancante",
-    "Not applicable": "Non applicabile",
+# Engine word -> catalog key. The LEFT side is the engine's stable
+# vocabulary and never moves; only the right side is looked up per
+# language. Nothing here is ever used as a dictionary key, a query value
+# or a comparison target -- these are display words, produced last.
+_STATUS_KEYS = {
+    "Covered": "status.covered",
+    "To verify": "status.to_verify",
+    "Missing": "status.missing",
+    "Not applicable": "status.not_applicable",
 }
 
-SCOPE_STATUS_LABELS = {"ACTIVE": "attivo", "ARCHIVED": "archiviato", "DRAFT": "bozza"}
+_SCOPE_STATUS_KEYS = {"ACTIVE": "status.active", "ARCHIVED": "status.archived",
+                      "DRAFT": "status.draft"}
 
 
-def status_label(status: str) -> str:
-    """The Italian label for an engine status. Unknown values pass through
+def status_labels(lang: str | None = None) -> dict[str, str]:
+    """Engine status -> label, in one language."""
+    return {status: i18n.translate(key, lang) for status, key in _STATUS_KEYS.items()}
+
+
+def scope_status_labels(lang: str | None = None) -> dict[str, str]:
+    return {code: i18n.translate(key, lang) for code, key in _SCOPE_STATUS_KEYS.items()}
+
+
+def status_label(status: str, lang: str | None = None) -> str:
+    """The label for an engine status. Unknown values pass through
     unchanged rather than being swallowed -- a status nobody translated
     should be visible, not silently blank."""
-    return STATUS_LABELS.get(str(status or ""), str(status or ""))
+    key = _STATUS_KEYS.get(str(status or ""))
+    return i18n.translate(key, lang) if key else str(status or "")
 
-_EVIDENCE_KIND_LABELS = {
-    "topic": "Sezione", "block": "Blocco", "table": "Tabella", "figure": "Figura",
-    "external_file": "File esterno", "customer_document": "Documento cliente",
-    "human_attestation": "Attestazione umana",
-}
+_EVIDENCE_KINDS = ("topic", "block", "table", "figure", "external_file",
+                   "customer_document", "human_attestation")
+
+
+def evidence_kind_labels(lang: str | None = None) -> dict[str, str]:
+    return {k: i18n.translate(f"evidence.kind.{k}", lang) for k in _EVIDENCE_KINDS}
 
 
 def ccms_db_path(project_dir: str | Path) -> Path:
@@ -98,7 +146,9 @@ def scope_options(svc: ComplianceService, publication_id: str) -> list[tuple[str
         bits = [name]
         if r["jurisdiction"] and r["title"]:
             bits.append(str(r["jurisdiction"]))
-        status = SCOPE_STATUS_LABELS.get(str(r["status"] or ""), str(r["status"] or ""))
+        _code = str(r["status"] or "")
+        status = (i18n.t(_SCOPE_STATUS_KEYS[_code]) if _code in _SCOPE_STATUS_KEYS
+                  else _code)
         if status and str(r["status"]) != "ACTIVE":
             # Only a NON-active scope is worth annotating: tagging every
             # normal scope "(attivo)" is noise, but hiding that one is
@@ -153,34 +203,35 @@ def _explain_status(svc: ComplianceService, scope_id: str, requirement_id: str, 
     never decides the status itself."""
     if status == "Covered":
         n = len(svc.evidence_for_requirement(requirement_id))
-        return f"{n} evidenza collegata" if n == 1 else f"{n} evidenze collegate"
+        return (i18n.t("reason.evidence.one", n=n) if n == 1
+                else i18n.t("reason.evidence.many", n=n))
     if status == "Not applicable":
         ap = svc.applicability_row(scope_id, requirement_id)
         return (ap or {}).get("justification") or ""
     if status == "Missing":
         asm = svc.assessment_row(scope_id, requirement_id)
         comment = (asm or {}).get("comment") or ""
-        return comment.strip() or "Nessuna evidenza ancora individuata"
+        return comment.strip() or i18n.t("reason.no_evidence")
 
     # "To verify" -- explain WHY, in the same order compute_status() checks.
     req = svc.requirement_row(requirement_id)
     ap = svc.applicability_row(scope_id, requirement_id)
     if not ap:
-        return "Applicabilità non ancora valutata"
+        return i18n.t("reason.applicability.not_assessed")
     if int(ap["requirement_version"]) != int(req["version"]):
-        return "Il testo del requisito è cambiato dopo l'ultima decisione: da riconfermare"
+        return i18n.t("reason.requirement_changed")
     if ap["applies"] == "TO_VERIFY":
-        return "Applicabilità ancora da confermare"
+        return i18n.t("reason.applicability.unconfirmed")
     if ap["applies"] == "APPLIES" and not svc.requirement_is_current(requirement_id):
-        return "Il riferimento normativo collegato è stato aggiornato: da rivedere"
+        return i18n.t("reason.instrument_updated")
     asm = svc.assessment_row(scope_id, requirement_id)
     if not asm:
-        return "Copertura non ancora valutata"
+        return i18n.t("reason.coverage.not_assessed")
     if int(asm["requirement_version_at_assessment"]) != int(req["version"]):
-        return "Il testo del requisito è cambiato dopo l'ultima valutazione: da rivedere"
+        return i18n.t("reason.requirement_changed_after_assessment")
     if asm["status"] == "COVERED":
-        return "L'evidenza collegata non è più aggiornata: da rivedere"
-    return "Da verificare"
+        return i18n.t("reason.evidence_stale")
+    return i18n.t("status.to_verify")
 
 
 # ---------------------------------------------------------------------
@@ -197,16 +248,14 @@ def _explain_status(svc: ComplianceService, scope_id: str, requirement_id: str, 
 # No function here ever concludes that anything is legally compliant.
 # ---------------------------------------------------------------------
 
-COVERAGE_VIEW_TITLE = "Copertura documentale"
-COVERAGE_RATIO_LABEL = "Requisiti documentali con evidenza"
+# The bucket IDENTIFIERS are internal and stable; only their labels are
+# localized. _coverage_bucket() returns one of these strings and callers
+# compare against them, so they must never become translated text.
+BUCKET_KEYS = ("covered", "partial", "no_evidence", "not_applicable", "unassessed")
 
-_BUCKET_LABELS = {
-    "covered": "Coperti da evidenza",
-    "partial": "Copertura parziale",
-    "no_evidence": "Applicabili senza evidenza",
-    "not_applicable": "Non applicabili",
-    "unassessed": "Da valutare",
-}
+
+def bucket_labels(lang: str | None = None) -> dict[str, str]:
+    return {k: i18n.translate(f"conformity.bucket.{k}", lang) for k in BUCKET_KEYS}
 
 
 def _coverage_bucket(svc: ComplianceService, scope_id: str, requirement_id: str,
@@ -240,8 +289,8 @@ def documentation_coverage(svc: ComplianceService, scope_id: str | None) -> dict
     coverage), and is labelled "Requisiti documentali con evidenza" --
     never a conformity percentage."""
     if not scope_id:
-        return {"has_scope": False, "title": COVERAGE_VIEW_TITLE}
-    buckets = {k: 0 for k in _BUCKET_LABELS}
+        return {"has_scope": False, "title": i18n.t("conformity.coverage.view_title")}
+    buckets = {k: 0 for k in BUCKET_KEYS}
     needs_review = 0
     unverified = 0
     rows = []
@@ -272,7 +321,7 @@ def documentation_coverage(svc: ComplianceService, scope_id: str | None) -> dict
     ratio = round(100 * buckets["covered"] / applicable) if applicable else None
     return {
         "has_scope": True,
-        "title": COVERAGE_VIEW_TITLE,
+        "title": i18n.t("conformity.coverage.view_title"),
         "scope": svc.scope_row(scope_id),
         "total": total,
         "assessed": assessed,
@@ -285,18 +334,20 @@ def documentation_coverage(svc: ComplianceService, scope_id: str | None) -> dict
         "needs_review": needs_review,
         "unverified_requirements": unverified,
         "all_sources_verified": unverified == 0,
-        "ratio_label": COVERAGE_RATIO_LABEL,
+        "ratio_label": i18n.t("conformity.coverage.ratio_label"),
         "ratio_percent": ratio,
         "rows": rows,
     }
 
 
-_NEXT_STEP = {
-    "unassessed": "Decidi se il requisito si applica a questo progetto.",
-    "no_evidence": "Collega il contenuto del manuale che risponde a questo requisito.",
-    "partial": "Verifica l'evidenza collegata e conferma la copertura.",
-    "review": "Riconferma la decisione: qualcosa è cambiato dopo l'ultima valutazione.",
-}
+NEXT_STEP_KEYS = ("unassessed", "no_evidence", "partial", "review")
+
+
+def next_step_label(step_key: str, lang: str | None = None) -> str:
+    """The suggested next step. An unrecognised key falls back to "review",
+    which is the only advice that is always safe: look at it again."""
+    key = step_key if step_key in NEXT_STEP_KEYS else "review"
+    return i18n.translate(f"conformity.next_step.{key}", lang)
 
 
 def to_complete_rows(svc: ComplianceService, scope_id: str | None) -> list[dict[str, Any]]:
@@ -332,10 +383,10 @@ def to_complete_rows(svc: ComplianceService, scope_id: str | None) -> list[dict[
             "source_url": req.get("source_url") or "",
             "status": status,
             "bucket": bucket,
-            "bucket_label": _BUCKET_LABELS[bucket],
+            "bucket_label": i18n.t(f"conformity.bucket.{bucket}"),
             "evidence_count": evidence_count,
             "reason": _explain_status(svc, scope_id, rid, status),
-            "next_step": _NEXT_STEP.get(step_key, _NEXT_STEP["review"]),
+            "next_step": next_step_label(step_key),
         })
     order = {"no_evidence": 0, "partial": 1, "unassessed": 2}
     out.sort(key=lambda r: (order.get(r["bucket"], 9), r["title"]))
@@ -459,7 +510,8 @@ def link_ccms_object_as_evidence(svc: ComplianceService, kind: str, object_id: s
 
 
 def evidence_label(item: dict[str, Any]) -> str:
-    kind_label = _EVIDENCE_KIND_LABELS.get(item["evidence_kind"], item["evidence_kind"])
+    _kind = item["evidence_kind"]
+    kind_label = (i18n.t(f"evidence.kind.{_kind}") if _kind in _EVIDENCE_KINDS else _kind)
     if item["evidence_kind"] in ("external_file", "customer_document", "human_attestation"):
         body = item.get("description") or item.get("external_ref") or "(senza descrizione)"
     else:
@@ -482,11 +534,11 @@ UPDATE_NONE_MESSAGE = "Il pacchetto è già aggiornato all'ultima revisione veri
 
 # What each change type is called for a user who has never read the word
 # "diff" in their life.
-CHANGE_LABELS = {
-    "added": "Aggiunto",
-    "changed": "Aggiornato",
-    "retired": "Ritirato",
-}
+CHANGE_KINDS = ("added", "changed", "retired")
+
+
+def change_labels(lang: str | None = None) -> dict[str, str]:
+    return {k: i18n.translate(f"pack.change.{k}", lang) for k in CHANGE_KINDS}
 
 _CHANGE_EXPLANATION = {
     "added": "Nuovo obbligo documentale introdotto nel pacchetto.",
@@ -559,22 +611,22 @@ def pack_update_preview(svc: ComplianceService, pack: dict[str, Any]) -> dict[st
     for rid in diff["added"]:
         req = by_id[rid]
         rows.append({"title": req["title"], "reference": req["article_ref"],
-                     "change": CHANGE_LABELS["added"],
+                     "change": i18n.t("pack.change.added"),
                      "detail": _CHANGE_EXPLANATION["added"]})
     for rid in diff["changed_substantive"]:
         req = by_id[rid]
         rows.append({"title": req["title"], "reference": req["article_ref"],
-                     "change": CHANGE_LABELS["changed"],
+                     "change": i18n.t("pack.change.changed"),
                      "detail": _CHANGE_EXPLANATION["substantive"]})
     for rid in diff["changed_editorial"]:
         req = by_id[rid]
         rows.append({"title": req["title"], "reference": req["article_ref"],
-                     "change": CHANGE_LABELS["changed"],
+                     "change": i18n.t("pack.change.changed"),
                      "detail": _CHANGE_EXPLANATION["editorial"]})
     for rid in diff["retired"]:
         cur = installed_by_id.get(rid, {})
         rows.append({"title": cur.get("title", ""), "reference": cur.get("article_ref", ""),
-                     "change": CHANGE_LABELS["retired"],
+                     "change": i18n.t("pack.change.retired"),
                      "detail": _CHANGE_EXPLANATION["retired"]})
     return {
         "installed": True,
@@ -603,3 +655,33 @@ def apply_pack_update(svc: ComplianceService, pack: dict[str, Any], scope_id: st
     result["message"] = (UPDATE_NONE_MESSAGE if result["changed_nothing"]
                          else UPDATE_APPLIED_MESSAGE)
     return result
+
+
+# ---------------------------------------------------------------------
+# Backwards-compatible module attributes.
+#
+# These used to be plain dicts/strings evaluated at import time. They are
+# still read as attributes by app.py and by the regression suites, but a
+# value frozen at import cannot follow a language switch -- so they are
+# resolved on access instead, in whatever language is selected now.
+# PEP 562 module __getattr__ is only consulted for names that are NOT
+# defined normally, which is exactly the behaviour wanted here.
+# ---------------------------------------------------------------------
+_DYNAMIC_ATTRS = {
+    "STATUS_LABELS": status_labels,
+    "SCOPE_STATUS_LABELS": scope_status_labels,
+    "APPLIES_LABELS": applicability_labels,
+    "COVERAGE_LABELS": coverage_labels,
+    "CHANGE_LABELS": change_labels,
+    "BUCKET_LABELS": bucket_labels,
+    "EVIDENCE_KIND_LABELS": evidence_kind_labels,
+    "COVERAGE_VIEW_TITLE": lambda: i18n.t("conformity.coverage.view_title"),
+    "COVERAGE_RATIO_LABEL": lambda: i18n.t("conformity.coverage.ratio_label"),
+}
+
+
+def __getattr__(name: str):
+    resolver = _DYNAMIC_ATTRS.get(name)
+    if resolver is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return resolver()

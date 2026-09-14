@@ -16,8 +16,10 @@ can SEE and CLICK -- which is exactly what this gate checks.
 Reuses the CDP client from regressione_browser_save_4e3.py (stdlib-only,
 no selenium/playwright, no browser download).
 
-Prerequisites: app running on http://127.0.0.1:7860 with the
-"4E3 Rich Text Manual Acceptance" project active.
+Prerequisites: app running on http://127.0.0.1:7860, with any project
+that has content to export. The project is read from the app's own
+active-project pointer rather than hardcoded, and this gate asserts it
+wrote nothing: exporting is a READ.
 
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_export_4f1.py
 """
@@ -31,11 +33,14 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from acceptance_guard import active_project_dir, overlay_snapshot, report_delta  # noqa: E402
 from regressione_browser_save_4e3 import Browser, APP_URL  # noqa: E402
 
 import authoring_view as av  # noqa: E402
 
-PROJECT = Path.home() / "ManualSyncData" / "Projects" / "4E3_Rich_Text_Manual_Acceptance"
+# Whatever the app is actually pointed at. Hardcoding one project here is
+# how a harness ends up silently operating on somebody else's baseline.
+PROJECT = active_project_dir()
 PROFILE_LABEL = "EU Service"
 
 results: list[dict] = []
@@ -120,6 +125,13 @@ def _card_links(br) -> dict:
 
 
 def main():
+    # Export is a READ of the project: it produces files under Exports/ and
+    # must leave project data untouched. This harness therefore does not
+    # demand a disposable clone -- it proves it was read-only instead, by
+    # reporting an overlay delta that has to be zero.
+    target = active_project_dir()
+    overlay_before = overlay_snapshot(target)
+
     versions_before = _db_versions()
     br = Browser()
     try:
@@ -266,6 +278,9 @@ def main():
     check("e2e21 (item 17): exporting through the UI mutated no content version",
           _db_versions() == versions_before, None)
 
+    _delta = report_delta(overlay_before, overlay_snapshot(target))
+    check("export-readonly: exporting wrote nothing to project data",
+          not any(_delta.values()), _delta)
     print("\n" + json.dumps({"pass": sum(1 for r in results if r["status"] == "PASS"),
                              "tests": len(results)}))
 

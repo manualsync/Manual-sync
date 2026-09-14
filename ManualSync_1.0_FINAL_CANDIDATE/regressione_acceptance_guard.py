@@ -216,5 +216,42 @@ with tempfile.TemporaryDirectory() as tmp:
           and "40%" in ag.RETIRED_DEMOS["4E3_Rich_Text_Manual_Acceptance"],
           sorted(ag.RETIRED_DEMOS))
 
+    # ---------------------------------------------------------------
+    # 7. The rule applies to whatever gets committed next.
+    #
+    # Browser acceptance harnesses currently live in a scratch folder and
+    # are not tracked. The moment one IS tracked, it must go through this
+    # guard -- otherwise the exact incident this module exists to prevent
+    # simply happens again from a file nobody thought to check. This test
+    # is a tripwire for that future commit, not a check on today's tree.
+    # ---------------------------------------------------------------
+    HERE = Path(__file__).resolve().parent
+    DRIVES_BROWSER = ("cdp", "Input.dispatchMouseEvent", "127.0.0.1:7860",
+                      "Page.navigate", "captureScreenshot")
+    # Broad on purpose. An earlier, narrower list (service-call names only)
+    # gave a clean pass to a harness whose whole job is clicking "Salva" --
+    # a false negative in exactly the tripwire meant to prevent one.
+    MUTATES = ("set_applicability", "set_assessment", "link_evidence", "add_evidence",
+               "import_requirement_pack", "create_topic", "add_block", "save",
+               "Salva", "Conferma", "reset_fixture", "dispatchKeyEvent")
+
+    harnesses, unguarded = [], []
+    for path in sorted(HERE.glob("*.py")):
+        if path.name in ("acceptance_guard.py", Path(__file__).name):
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not any(marker in text for marker in DRIVES_BROWSER):
+            continue
+        harnesses.append(path.name)
+        if any(marker in text for marker in MUTATES) and "acceptance_guard" not in text:
+            unguarded.append(path.name)
+
+    check("track1: every TRACKED browser harness that can mutate imports the guard",
+          not unguarded, unguarded)
+    check("track2: the guard is importable from the repository, so a harness anywhere "
+          "can reach it",
+          (HERE / "acceptance_guard.py").exists() and callable(ag.guarded_start))
+    print(f"   tracked browser harnesses scanned: {harnesses or 'none yet'}")
+
 print(json.dumps({"pass": sum(1 for r in results if r["status"] == "PASS"),
                   "tests": len(results)}))

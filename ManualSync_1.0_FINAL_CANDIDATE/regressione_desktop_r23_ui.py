@@ -8,7 +8,12 @@ def ck(name, cond, detail=''):
     checks.append((name,bool(cond),detail))
 
 ck('Footer Gradio disabilitato', 'footer_links=[]' in src)
-ck('Home inizialmente attiva', 'nav_home=gr.Button("⌂   Home",variant="primary")' in src)
+# Localization Foundation V1: the label comes from the catalog (and the
+# section is now "Panoramica"/"Overview"), so this checks what the test
+# actually cares about -- the landing entry is the one built active.
+ck('Home inizialmente attiva',
+   'nav_home=LOC.button(lambda: f"⌂   {t(' in src and 'variant="primary")' in
+   src.split('nav_home=LOC.button(')[1][:90])
 ck('Navigazione usa stato active dinamico', "gr.update(variant='primary' if item==tab_id else 'secondary')" in src)
 # Milestone 3.5B added the Compliance tab/nav entry to the shipped, checkpointed
 # product (published at e2fde61) -- this expectation was stale against that
