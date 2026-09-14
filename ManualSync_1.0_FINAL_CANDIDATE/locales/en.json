@@ -175,5 +175,8 @@
   "error.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED": "Block type not creatable from the editor: {block_type!r} (allowed: {allowed}).",
   "error.ERR_AUTHORING_ASSET_FILE_MISSING": "File not found: {path}",
   "error.ERR_AUTHORING_TOPIC_ID_REQUIRED": "topic_id is required",
-  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind must be topic or component"
+  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind must be topic or component",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED": "Enter the operator name: every content change is recorded against whoever makes it.",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS": "Enter the operator name: every change to the variant configuration is recorded against whoever makes it.",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL": "Enter the operator name: the approval is recorded against whoever grants it."
 }

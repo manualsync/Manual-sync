@@ -175,5 +175,8 @@
   "error.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED": "Tipo blocco non creabile dall'editor: {block_type!r} (ammessi: {allowed}).",
   "error.ERR_AUTHORING_ASSET_FILE_MISSING": "File non trovato: {path}",
   "error.ERR_AUTHORING_TOPIC_ID_REQUIRED": "topic_id obbligatorio",
-  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind deve essere topic o component"
+  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind deve essere topic o component",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED": "Indica il nome dell'operatore: ogni modifica al contenuto viene registrata a nome di chi la esegue.",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS": "Indica il nome dell'operatore: ogni modifica alla configurazione delle varianti viene registrata a nome di chi la esegue.",
+  "error.ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL": "Indica il nome dell'operatore: l'approvazione viene registrata a nome di chi la concede."
 }

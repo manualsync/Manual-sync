@@ -197,9 +197,34 @@ ERR_AUTHORING_ASSET_FILE_MISSING = "ERR_AUTHORING_ASSET_FILE_MISSING"
 ERR_AUTHORING_TOPIC_ID_REQUIRED = "ERR_AUTHORING_TOPIC_ID_REQUIRED"
 ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED = "ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED"
 
-#: The Authoring/Contenuti batch. Kept separate from MIGRATED_CODES so a
-#: suite can still assert which layer each code belongs to.
-AUTHORING_CODES = (
+# ---------------------------------------------------------------------
+# Authoring / Contenuti — "an operator must be named" (32 raises).
+#
+# These used to be 22 slightly different sentences for ONE rule, each
+# repeating the button the user had just pressed ("per salvare un topic",
+# "per un revert"). That clause carried nothing actionable: the reason and
+# the remedy are identical every time. They collapse to three codes, split
+# only where the meaning genuinely differs -- editing content, changing
+# variant configuration, and granting an approval are three different
+# kinds of act, and an approval in particular is a governance step this
+# product deliberately never performs automatically.
+#
+# The Italian wording is normalized here ON PURPOSE: "actor" was the
+# internal parameter name leaking onto the screen. The user-facing term is
+# "operatore", matching the workspace context bar that asks for it.
+# ---------------------------------------------------------------------
+ERR_AUTHORING_ACTOR_REQUIRED = "ERR_AUTHORING_ACTOR_REQUIRED"
+ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS = "ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS"
+ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL = "ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL"
+
+ACTOR_CODES = (
+    ERR_AUTHORING_ACTOR_REQUIRED,
+    ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS,
+    ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL,
+)
+
+#: Batch 1: repository and object validation.
+AUTHORING_OBJECT_CODES = (
     ERR_AUTHORING_REPOSITORY_MISSING,
     ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED,
     ERR_AUTHORING_TOPIC_TITLE_REQUIRED,
@@ -208,6 +233,11 @@ AUTHORING_CODES = (
     ERR_AUTHORING_TOPIC_ID_REQUIRED,
     ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED,
 )
+
+#: Everything migrated out of Authoring/Contenuti so far. Kept separate
+#: from MIGRATED_CODES so a suite can still assert which layer a code
+#: belongs to, and split by batch so each gate can name its own.
+AUTHORING_CODES = AUTHORING_OBJECT_CODES + ACTOR_CODES
 
 #: Every code migrated so far, whatever the layer.
 ALL_CODES = MIGRATED_CODES + AUTHORING_CODES

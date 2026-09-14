@@ -56,15 +56,17 @@ def check(name, cond, detail=""):
 # =====================================================================
 # 1. The domain raises CODES now
 # =====================================================================
-check("mig1: the batch declares exactly seven codes", len(de.AUTHORING_CODES) == 7,
-      de.AUTHORING_CODES)
+# This gate's batch is AUTHORING_OBJECT_CODES; later batches (the actor
+# normalization) add their own tuple and are asserted by their own suite.
+check("mig1: this batch declares exactly seven codes",
+      len(de.AUTHORING_OBJECT_CODES) == 7, de.AUTHORING_OBJECT_CODES)
 check("mig2: they are separate from the compliance batch",
       not (set(de.AUTHORING_CODES) & set(de.MIGRATED_CODES)))
 check("mig3: ALL_CODES is the union", set(de.ALL_CODES)
       == set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES))
 
 SRC = {m: (HERE / m).read_text(encoding="utf-8") for m in MODULES}
-for code in de.AUTHORING_CODES:
+for code in de.AUTHORING_OBJECT_CODES:
     check(f"mig4[{code}]: is raised in an Authoring module",
           any(f"de.{code}" in s for s in SRC.values()), code)
 
@@ -129,7 +131,7 @@ check("txt2: and never the bare code",
               for c in PARAMS))
 
 # English exists and is a real translation.
-for code in de.AUTHORING_CODES:
+for code in de.AUTHORING_OBJECT_CODES:
     it = i18n.translate(f"error.{code}", "it")
     en = i18n.translate(f"error.{code}", "en")
     check(f"txt3[{code}]: has a distinct English entry", it != en, (it, en))
@@ -203,11 +205,18 @@ with tempfile.TemporaryDirectory() as tmp:
     check("svc11: still a ValueError for existing callers", isinstance(exc, ValueError))
 
     # ---- NOT migrated: must behave exactly as before -------------------
-    exc = raised(svc.create_topic_in_publication, "PUB-MAIN", "Titolo", actor="")
-    check("keep1: 'actor è obbligatorio ...' is NOT migrated in this batch",
-          isinstance(exc, ValueError) and not isinstance(exc, de.DomainError), repr(exc))
-    check("keep2: and still renders its own Italian sentence unchanged",
-          app.ui_error_text(exc) == "actor è obbligatorio per creare un topic.",
+    # The actor raises were migrated by a LATER gate (actor normalization),
+    # which owns their assertions. What this suite still guards is that a
+    # raise outside both batches is untouched: an archived topic.
+    archived = repo.create_topic("T-ARCH", "Archiviato", "", source_lang="it-IT",
+                                 status="Draft")
+    repo.archive_topic(archived, actor="QA") if hasattr(repo, "archive_topic") else None
+    exc = raised(svc.save_topic, "T-NOPE", title="X", expected_version=1, actor="QA")
+    check("keep1: a raise outside both batches is still a plain builtin",
+          exc is not None and not isinstance(exc, de.DomainError), repr(exc))
+    check("keep2: and still renders its own Italian text, not a catalog sentence",
+          "ERR_" not in app.ui_error_text(exc)
+          and i18n.t("error.unknown") not in app.ui_error_text(exc),
           app.ui_error_text(exc))
     check("keep3: an ArchivedObjectError is untouched too",
           "ArchivedObjectError" in SRC["authoring_service.py"]

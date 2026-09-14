@@ -201,7 +201,7 @@ class AuthoringService:
                                         allowed=sorted(_EDITABLE_KINDS))
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un draft recovery.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute(
             """INSERT INTO authoring_drafts(kind,object_id,base_version,payload_json,actor,session_id,dirty,updated_at)
@@ -339,7 +339,7 @@ class AuthoringService:
                    expected_version: int, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per salvare un topic.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -410,7 +410,7 @@ class AuthoringService:
                    expected_version: int, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per salvare un block.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -650,7 +650,7 @@ class AuthoringService:
                                    actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare una dimensione.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         dimension_id = str(dimension_id or "").strip()
         name = str(name or "").strip()
         if not dimension_id or not re.fullmatch(r"[a-z0-9_]+", dimension_id):
@@ -677,7 +677,7 @@ class AuthoringService:
         every authored condition_json) never changes."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per rinominare una dimensione.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone()
         if not row:
             raise KeyError(dimension_id)
@@ -704,7 +704,7 @@ class AuthoringService:
         for NEW conditions in the Studio UI."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM condition_dimensions WHERE dimension_id=?", (dimension_id,)).fetchone()
         if not row:
             raise KeyError(dimension_id)
@@ -735,7 +735,7 @@ class AuthoringService:
                                actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare un valore.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         value_id = str(value_id or "").strip()
         label = str(label or "").strip()
         if not value_id or not re.fullmatch(r"[a-z0-9_]+", value_id):
@@ -763,7 +763,7 @@ class AuthoringService:
                                actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM condition_values WHERE value_id=?", (value_id,)).fetchone()
         if not row:
             raise KeyError(value_id)
@@ -784,7 +784,7 @@ class AuthoringService:
     def set_condition_value_active(self, value_id: str, active: bool, *, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM condition_values WHERE value_id=?", (value_id,)).fetchone()
         if not row:
             raise KeyError(value_id)
@@ -875,7 +875,7 @@ class AuthoringService:
                                actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare un profilo.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         profile_id = str(profile_id or "").strip()
         name = str(name or "").strip()
         if not profile_id:
@@ -895,7 +895,7 @@ class AuthoringService:
                                dimension_values: dict[str, str] | None = None, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per modificare un profilo.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
         if not row:
             raise KeyError(profile_id)
@@ -913,7 +913,7 @@ class AuthoringService:
     def set_variant_profile_active(self, profile_id: str, active: bool, *, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_SETTINGS)
         row = self.conn.execute("SELECT * FROM profiles WHERE profile_id=?", (profile_id,)).fetchone()
         if not row:
             raise KeyError(profile_id)
@@ -1082,7 +1082,7 @@ class AuthoringService:
         actor)."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un reorder.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         if len(ordered_block_ids) != len(set(ordered_block_ids)):
             raise ValueError("L'ordine proposto contiene ID di blocco duplicati.")
         now = _now()
@@ -1142,7 +1142,7 @@ class AuthoringService:
         one's."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un reorder.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         if len(ordered_topic_ids) != len(set(ordered_topic_ids)):
             raise ValueError("L'ordine proposto contiene ID di topic duplicati.")
         now = _now()
@@ -1196,7 +1196,7 @@ class AuthoringService:
     def archive_topic(self, topic_id: str, *, actor: str) -> None:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per archiviare.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1223,7 +1223,7 @@ class AuthoringService:
         otherwise collide with the renumbered active range in any of them."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per ripristinare.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
@@ -1271,7 +1271,7 @@ class AuthoringService:
     def archive_block(self, block_id: str, *, actor: str) -> None:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per archiviare.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1304,7 +1304,7 @@ class AuthoringService:
         different spot is wanted -- that is what reorder_blocks() is for."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per ripristinare.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute("SELECT archived_at,position,topic_id FROM content_blocks WHERE block_id=?", (block_id,)).fetchone()
@@ -1340,7 +1340,7 @@ class AuthoringService:
     def revert_topic_to_version(self, topic_id: str, version: int, *, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un revert.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1393,7 +1393,7 @@ class AuthoringService:
     def revert_block_to_version(self, block_id: str, version: int, *, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un revert.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1464,7 +1464,7 @@ class AuthoringService:
     def bulk_approve_publication(self, publication_id: str, *, actor: str) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per approvare.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED_APPROVAL)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1527,7 +1527,7 @@ class AuthoringService:
                                     after_topic_id: str | None = None, source_lang: str = "en-US") -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare un topic.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         title = str(title or "").strip()
         if not title:
             raise DomainValidationError(de.ERR_AUTHORING_TOPIC_TITLE_REQUIRED)
@@ -1579,7 +1579,7 @@ class AuthoringService:
                               after_block_id: str | None = None, text_format: str = "plain") -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare un blocco.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         bt = str(block_type or "").strip().lower()
         if bt not in EDITABLE_TEXT_BLOCK_TYPES:
             raise DomainValidationError(de.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED,
@@ -1922,7 +1922,7 @@ class AuthoringService:
                    confirm_shared: bool = False, expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per salvare una tabella.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         if columns is not None and not columns:
             raise ValueError("La tabella deve avere almeno una colonna.")
         now = _now()
@@ -1982,7 +1982,7 @@ class AuthoringService:
                               header_rows: int = 1, after_block_id: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare una tabella.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         columns = [str(c) for c in columns] if columns else ["Colonna 1", "Colonna 2"]
         rows = [[c for c in r] for r in rows] if rows else [["" for _ in columns]]
         topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
@@ -2036,7 +2036,7 @@ class AuthoringService:
                                 expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un revert.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2137,7 +2137,7 @@ class AuthoringService:
         from the one the user actually previewed the impact of."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare una copia locale.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2221,7 +2221,7 @@ class AuthoringService:
                     expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per salvare una figura.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2291,7 +2291,7 @@ class AuthoringService:
         alt-text edit (see save_figure/_guard_table_or_figure_editable)."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per sostituire un'immagine.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         if not self.conn.execute("SELECT 1 FROM figures WHERE figure_id=?", (figure_id,)).fetchone():
             raise KeyError(figure_id)
         materialized_path = self._materialize_uploaded_asset(source_file_path)
@@ -2309,7 +2309,7 @@ class AuthoringService:
                                after_block_id: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per aggiungere una figura.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         if not topic_row:
             raise KeyError(topic_id)
@@ -2369,7 +2369,7 @@ class AuthoringService:
                                  expected_impact_token: str | None = None) -> dict[str, Any]:
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per un revert.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -2467,7 +2467,7 @@ class AuthoringService:
         disk."""
         actor = str(actor or "").strip()
         if not actor:
-            raise ValueError("actor è obbligatorio per creare una copia locale.")
+            raise DomainValidationError(de.ERR_AUTHORING_ACTOR_REQUIRED)
         now = _now()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
