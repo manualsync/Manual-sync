@@ -152,11 +152,28 @@ check("group2: dashboard reflects Covered=1 from the backend summary", f"<b>{bac
 check("group2: dashboard reflects Missing=1 from the backend summary", backend_summary['counts']['Missing'] == 1, backend_summary)
 check("group2: dashboard reflects Not applicable=1 from the backend summary", backend_summary['counts']['Not applicable'] == 1, backend_summary)
 check("group2: dashboard reflects To verify=1 (REQ-SYNTH-4, never touched) from the backend summary", backend_summary['counts']['To verify'] == 1, backend_summary)
-check("group2: requirement table row count equals backend total", len(bundle2[IDX_TABLE]) == backend_summary["total"] == 4, (len(bundle2[IDX_TABLE]), backend_summary))
-statuses_in_table = list(bundle2[IDX_TABLE]["Stato"])
+# UX Gate 1: the working list defaults to "Da completare" -- the only view
+# that answers "what should I do now?". The full set is one click away, so
+# both are asserted: nothing is lost, it is just not all shown at once.
+_all_rows = app.compliance_list_ui(str(proj2), scope2, "", "Tutti")
+check("group2: the full list still reflects the backend total exactly -- filtering hides "
+      "nothing permanently",
+      len(_all_rows) == backend_summary["total"] == 4, (len(_all_rows), backend_summary))
+statuses_in_table = list(_all_rows["Stato"])
 check("group2: table sort order is Missing, To verify, Covered, Not applicable -- shown to an "
       "Italian user in Italian, ordered by what still needs a decision",
       statuses_in_table == ["Mancante", "Da verificare", "Coperto", "Non applicabile"], statuses_in_table)
+check("group2: the DEFAULT working list shows only what still needs a human -- the covered and "
+      "the not-applicable requirement drop out of it",
+      list(bundle2[IDX_TABLE]["Stato"]) == ["Mancante", "Da verificare"],
+      list(bundle2[IDX_TABLE]["Stato"]))
+check("group2: the 'Coperti' and 'Non applicabili' filters each return their own requirement",
+      list(app.compliance_list_ui(str(proj2), scope2, "", "Coperti")["Stato"]) == ["Coperto"]
+      and list(app.compliance_list_ui(str(proj2), scope2, "", "Non applicabili")["Stato"])
+      == ["Non applicabile"], None)
+check("group2: search narrows the list by title or reference without changing the filter",
+      len(app.compliance_list_ui(str(proj2), scope2, "zzz-nessun-match", "Tutti")) == 0
+      and len(app.compliance_list_ui(str(proj2), scope2, "Synthetic", "Tutti")) >= 1, None)
 check("group2: the mandatory non-certification disclaimer is present", "conformità legale" in dash2, dash2)
 
 # ------------------------------------------------------------------
@@ -283,8 +300,16 @@ bundle9 = app.compliance_switch_scope_ui(str(proj9), scope9)
 check("group9: the requirement table shows 'Da verificare' (the Italian label for the engine's "
       "'To verify'), not a 5th 'Stale' label",
       list(bundle9[IDX_TABLE]["Stato"]) == ["Da verificare"], list(bundle9[IDX_TABLE]["Stato"]))
-check("group9: the essential reason explains it's a staleness issue, in plain language",
-      "cambiato" in bundle9[IDX_TABLE]["Motivo"].iloc[0], bundle9[IDX_TABLE]["Motivo"].iloc[0])
+# UX Gate 1 moved "Motivo" out of the scannable list and into the
+# requirement detail, where the decision controls are. The reason must
+# still reach the user in plain language -- it is now next to the decision
+# it explains rather than in a column being skimmed.
+_open9 = app.compliance_open_requirement_ui(str(proj9), scope9, rids9[0])
+check("group9: the essential reason explains it's a staleness issue, in plain language, and is "
+      "shown in the requirement detail beside the decision it affects",
+      any("cambiato" in str(x) for x in (_open9[IDX_HEADER], _open9[IDX_APPLIC_CUR],
+                                         _open9[IDX_COV_CUR])),
+      (_open9[IDX_HEADER], _open9[IDX_APPLIC_CUR]))
 check("group9: no status value ANYWHERE in the table is the literal word 'Stale'",
       not any("stale" in str(s).lower() for s in bundle9[IDX_TABLE]["Stato"]), list(bundle9[IDX_TABLE]["Stato"]))
 
@@ -301,8 +326,16 @@ finally:
     repo10a.close()
 # A brand-new repo/service pair -- nothing shared with the write above.
 bundle10 = app.compliance_switch_scope_ui(str(proj10), scope10)
+# A requirement ruled NOT APPLICABLE is a decision already taken, so it is
+# correctly absent from the "Da completare" default. Persistence is
+# checked where the requirement now lives.
+_all10 = app.compliance_list_ui(str(proj10), scope10, "", "Tutti")
 check("group10: the decision persisted across a fresh ComplianceService instance (simulated reload)",
-      "Non applicabile" in list(bundle10[IDX_TABLE]["Stato"]), list(bundle10[IDX_TABLE]["Stato"]))
+      "Non applicabile" in list(_all10["Stato"]), list(_all10["Stato"]))
+check("group10b: and it is correctly OUT of the 'Da completare' working list -- a decision "
+      "already taken is not outstanding work",
+      "Non applicabile" not in list(bundle10[IDX_TABLE]["Stato"]),
+      list(bundle10[IDX_TABLE]["Stato"]))
 
 # ------------------------------------------------------------------
 # Group 11: no partial mutation survives a rejected decision -- audit
@@ -343,8 +376,12 @@ finally:
 # browser session, which cannot be driven deterministically for a
 # client-reconnect scenario from a plain regression script.
 # ------------------------------------------------------------------
+# UX Gate 1 renamed the section to its Italian name. The guard keys off
+# the tab LABEL, so it moves with the rename -- the structural contract it
+# protects (exactly one select, bound to compliance_load_ui, 2 in / 18 out)
+# is unchanged.
 _cp_tab_component = next(c for c in app.demo.config["components"]
-                         if c["type"] == "tabitem" and c.get("props", {}).get("label") == "Compliance")
+                         if c["type"] == "tabitem" and c.get("props", {}).get("label") == "Conformità")
 _select_deps = [d for d in app.demo.config["dependencies"]
                if (_cp_tab_component["id"], "select") in [tuple(t) for t in d.get("targets", [])]]
 check("group12: the Compliance tab has exactly one 'select' event wired (no duplicate/missing binding)",

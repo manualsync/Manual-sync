@@ -360,7 +360,7 @@ body,.gradio-container{background:var(--ui-bg)!important;color:var(--ui-ink)!imp
 .gradio-container{max-width:none!important;padding:0!important}
 footer{display:none!important}
 /* R23: sidebar unica. Nasconde in modo robusto la tab-strip tecnica di Gradio. */
-.tab-nav,#workspace-tabs .tab-nav,#workspace-tabs>div>.tab-nav,#workspace-tabs [role="tablist"],#workspace-tabs button[role="tab"]{display:none!important;height:0!important;min-height:0!important;max-height:0!important;overflow:hidden!important;border:0!important;margin:0!important;padding:0!important;opacity:0!important;pointer-events:none!important}
+#workspace-tabs>div>.tab-nav,#workspace-tabs>div>[role="tablist"]{display:none!important;height:0!important;min-height:0!important;max-height:0!important;overflow:hidden!important;border:0!important;margin:0!important;padding:0!important;opacity:0!important;pointer-events:none!important}
 /* R23.2: Gradio Tabs crea un menu overflow (ellipsis) quando la tab-strip e nascosta. Nascondiamo anche quel controllo tecnico. */
 #workspace-tabs .overflow-menu{display:none!important;visibility:hidden!important;width:0!important;height:0!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;pointer-events:none!important}
 #ms-sidebar{background:#fff!important;border-right:1px solid var(--ui-line)!important;padding:12px 10px!important;width:210px!important;min-width:210px!important;height:100vh!important;max-height:100vh!important;overflow:hidden!important;display:flex!important;flex-direction:column!important}
@@ -374,7 +374,7 @@ footer{display:none!important}
 #ms-sidebar button.secondary{background:transparent!important;color:#344054!important}
 .ms-side-section{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:#98a2b3;font-weight:800;padding:10px 8px 4px}
 .ms-side-user{margin-top:14px;border-top:1px solid var(--ui-line);padding:14px 8px 2px;display:flex;gap:10px;align-items:center}.ms-avatar{width:32px;height:32px;border-radius:50%;background:#175cd3;color:white;display:flex;align-items:center;justify-content:center;font-weight:800}.ms-user-name{font-weight:700;font-size:12px}.ms-user-role{font-size:10px;color:var(--ui-muted)}
-#workspace-tabs{padding:0 24px 28px!important;max-width:1460px!important;margin:0 auto!important;width:100%!important}
+#workspace-tabs{padding:0 24px 28px!important;max-width:1860px!important;margin:0 auto!important;width:100%!important}
 .ms-pagehead{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 2px 11px;border-bottom:1px solid #eaecf0;margin-bottom:13px}.ms-pagehead h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.025em}.ms-pagehead p{margin:5px 0 0;color:var(--ui-muted);font-size:13px}.ms-page-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#98a2b3;font-weight:800;margin-bottom:5px}
 .ms-panel{background:#fff;border:1px solid var(--ui-line);border-radius:15px;padding:18px;box-shadow:0 1px 2px rgba(16,24,40,.03)}.ms-panel + .ms-panel{margin-top:14px}.ms-section-title{font-size:15px;font-weight:800;margin:0 0 4px}.ms-section-sub{font-size:12px;color:var(--ui-muted);margin-bottom:14px}
 .ms-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}.ms-kpi{background:#fbfcfe;border:1px solid var(--ui-line);border-radius:12px;padding:10px 12px;min-height:76px}.ms-kpi-label{font-size:10.5px;color:var(--ui-muted);font-weight:750}.ms-kpi b{display:block;font-size:22px;line-height:1.1;margin-top:5px;letter-spacing:-.03em}.ms-kpi small{color:#98a2b3;font-size:9.5px}
@@ -509,9 +509,21 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    wrap, so the columns simply wrap a few pixels earlier instead of a
    scrollbar appearing under five columns that already fit. */
 .ms-cp-grid table.table{overflow-x:hidden!important}
+/* ...and only the HEADER of that pair is a real <table>. Gradio 6.5 paints
+   the BODY as a virtualised list of divs (.virtual-row/.body-cell), so
+   every rule above written against td/tr styles the header and the one
+   empty spacer row only -- which is why the requirement list was still
+   rendering in Gradio's monospace data font while its header was not. */
+/* NOT font-family:inherit here: the virtualised body sits inside a Gradio
+   container that itself declares the monospace data font, so "inherit"
+   resolves back to monospace. Name Gradio's own body-font variable. */
+.ms-cp-grid .body-cell,.ms-cp-grid .body-cell span,.ms-cp-grid .cell-wrap{
+  font-family:var(--font)!important;font-size:12.5px!important;line-height:1.45!important;
+  font-variant-numeric:normal!important;white-space:normal!important;overflow-wrap:anywhere}
+.ms-cp-grid .body-cell{vertical-align:top;padding:7px 10px!important}
 /* A clickable row has to look clickable, or nobody clicks it. */
-.ms-cp-grid-click tbody tr{cursor:pointer}
-.ms-cp-grid-click tbody tr:hover td{background:var(--ui-primary-soft)}
+.ms-cp-grid-click .virtual-row{cursor:pointer}
+.ms-cp-grid-click .virtual-row:hover .body-cell{background:var(--ui-primary-soft)}
 /* An empty status/preview panel must not reserve a band of blank page
    between the pack strip and "Copertura documentale". Gradio wraps HTML
    output in a padded container that is never :empty even with no content,
@@ -520,6 +532,63 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-cp-collapsible:has(.ms-export-card),
 .ms-cp-collapsible:has(.ms-cp-notice),
 .ms-cp-collapsible:has(.ms-cp-table){display:block!important}
+/* UX Gate 1 — persistent workspace context bar. Sits above the tabs, so
+   project / publication / operator are answered once and stay answered. */
+.ms-ctxbar{align-items:flex-end!important;gap:18px!important;background:var(--ui-surface);
+  border:1px solid var(--ui-line);border-radius:12px;padding:10px 16px;margin:0 0 10px}
+.ms-ctx-project{min-width:220px;font-size:13px;line-height:1.35}
+.ms-ctx-label{color:var(--ui-muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+.ms-ctx-sub{color:var(--ui-muted);font-size:11.5px}
+/* Status filter reads as a segmented control, not a form question. */
+.ms-cp-filter .wrap{gap:4px!important}
+.ms-cp-filter label{font-size:12px!important;padding:4px 10px!important}
+/* The requirement detail column keeps its own scroll, so a long detail
+   never pushes the list out of view -- the whole point of the gate. */
+.ms-cp-detail{max-height:78vh;overflow-y:auto}
+/* Header pieces, sized so the requirement list starts inside the first
+   screen at 1920x1080 instead of at y=1093. */
+.ms-cp-topbar{align-items:flex-end!important;gap:14px!important}
+.ms-pagehead-tight{margin:0!important;padding:0!important}
+.ms-pagehead-tight h1{margin:0!important;font-size:20px!important}
+.ms-cp-statusbar{display:flex;flex-wrap:wrap;gap:20px;align-items:baseline;
+  background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:10px;
+  padding:8px 14px;font-size:12px}
+.ms-cp-stat span{color:var(--ui-muted);margin-right:5px}
+.ms-cp-stat b{font-size:13px}
+.ms-cp-packline{font-size:12px;color:var(--ui-muted);padding:2px 2px 0}
+.ms-cp-packline b{color:var(--ui-text)}
+.ms-cp-listhint{margin:0 0 4px!important}
+/* Empty detail state. Without this the decision form rendered its radios,
+   textboxes and buttons at full height with nothing selected -- 743px of
+   blank surface that read as a broken screen rather than an invitation.
+   Collapsing it in CSS keeps the positional output bundle untouched,
+   which several callbacks and a structural guard depend on. */
+.ms-cp-detail:has(.ms-cp-empty) .ms-cp-detail-form{display:none!important}
+.ms-cp-detail:has(.ms-cp-empty){min-height:0!important}
+.ms-cp-empty{display:flex;gap:12px;align-items:center;color:var(--ui-muted);
+  font-size:13px;padding:26px 18px;border:1px dashed var(--ui-line);border-radius:10px;
+  background:var(--ui-surface-2)}
+.ms-cp-empty-icon{font-size:20px;opacity:.55}
+.ms-cp-listbar{align-items:center!important;gap:10px!important;margin-bottom:4px}
+/* Sub-tabs inside Conformità need an explicit rule for TWO reasons, both
+   found by measuring the live page rather than by reading the markup:
+   1. the app suppresses Gradio's own tab bar at the top level in favour
+      of the custom sidebar, and that rule was written unscoped;
+   2. Gradio 6.5.1 puts `.tab-container.visually-hidden` on a tab strip it
+      decides does not fit, expecting its `.overflow-menu` to take over --
+      and this app hides `.overflow-menu` globally too. The net effect was
+      a tab strip 1px tall: clickable by script, invisible to a human.
+   Scoping (1) is the whole fix. Gradio renders TWO tab containers per tab
+   strip -- a real one and a `.visually-hidden` ghost it measures widths
+   against -- so un-hiding `.visually-hidden` as well made every sub-tab
+   label appear twice on screen. The ghost must stay hidden. */
+#cp-subtabs .tab-container.visually-hidden{display:none!important}
+#cp-subtabs .tab-nav{display:flex!important;gap:2px;height:auto!important;max-height:none!important;
+  opacity:1!important;pointer-events:auto!important;overflow:visible!important;
+  border-bottom:1px solid var(--ui-line)!important;margin:0 0 10px!important}
+#cp-subtabs button[role="tab"]{display:inline-block!important;height:auto!important;
+  max-height:none!important;opacity:1!important;pointer-events:auto!important;
+  padding:7px 14px!important;font-size:13px!important;font-weight:600}
 .ms-cp-table{width:100%;border-collapse:collapse;margin:10px 0 2px;font-size:11.5px;display:block;
   max-height:320px;overflow:auto}
 .ms-cp-table th{text-align:left;color:var(--ui-muted);font-weight:600;padding:4px 6px;
@@ -595,7 +664,7 @@ def _project_card(project_dir: str | None) -> str:
         next_action="Il contenuto importato non è ancora stato revisionato. <b>Rivedi il contenuto importato</b> prima di procedere."
     else:
         next_action="Il workflow operativo non ha blocchi aperti. Prossimo step: <b>Release → verifica readiness</b>."
-    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>PROGETTO ATTIVO</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{h.get('client','')} · {h.get('manual_code','')} · Rev. {h.get('revision','')}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>Pubblicazioni</div><b>{h['publications']}</b><small>nel progetto</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Blocchi</div><b>{h['blocks']}</b><small>contenuto strutturato</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Job aperti</div><b>{open_jobs}</b><small>workflow traduzione</small></div><div class='ms-kpi'><div class='ms-kpi-label'>QA bloccati</div><b>{h['qa_blocked']}</b><small>richiedono intervento</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>Azione consigliata</b><br>{next_action}</div></div><div class='ms-path'>Percorso progetto · {project_dir}</div></div>"""
+    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>PROGETTO ATTIVO</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{_project_meta_line(h)}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>Pubblicazioni</div><b>{h['publications']}</b><small>nel progetto</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Blocchi</div><b>{h['blocks']}</b><small>contenuto strutturato</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Job aperti</div><b>{open_jobs}</b><small>workflow traduzione</small></div><div class='ms-kpi'><div class='ms-kpi-label'>QA bloccati</div><b>{h['qa_blocked']}</b><small>richiedono intervento</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>Azione consigliata</b><br>{next_action}</div></div></div>"""
 
 def _sidebar_context(project_dir: str | None) -> str:
     if not project_dir:
@@ -607,6 +676,37 @@ def _sidebar_context(project_dir: str | None) -> str:
         return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{name}</div><div class='ctx-sub'>{client}</div></div>"
     except Exception:
         return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{Path(project_dir).name}</div><div class='ctx-sub'>Workspace locale</div></div>"
+
+def _project_meta_line(h: dict) -> str:
+    """Client · code · revision, with the separators dropped for whatever
+    is missing. It used to render as a bare "· · Rev." on any project
+    without that metadata -- punctuation around nothing."""
+    bits = [str(h.get("client") or "").strip(), str(h.get("manual_code") or "").strip()]
+    rev = str(h.get("revision") or "").strip()
+    if rev:
+        bits.append(f"Rev. {rev}")
+    return " · ".join(b for b in bits if b)
+
+
+def _workspace_context_html(project_dir: str | None) -> str:
+    """The project half of the persistent context bar.
+
+    Human name only. The filesystem path is deliberately NOT here: it was
+    printed in full on Home as an absolute filesystem path, which is the
+    same class of internal detail the export cards were cleaned of in 4F.1."""
+    if not project_dir:
+        return ("<div class='ms-ctx-project'><div class='ms-ctx-label'>Progetto</div>"
+                "<b>Nessun progetto attivo</b></div>")
+    try:
+        h = project_health(project_dir)
+        name = h.get("project_name") or Path(project_dir).name
+        client = h.get("client") or ""
+    except Exception:
+        name, client = Path(project_dir).name, ""
+    sub_line = f"<div class='ms-ctx-sub'>{html.escape(str(client))}</div>" if client else ""
+    return (f"<div class='ms-ctx-project'><div class='ms-ctx-label'>Progetto</div>"
+            f"<b>{html.escape(str(name))}</b>{sub_line}</div>")
+
 
 def _existing_project_by_name(project_name: str):
     """Return an existing ManualSync project with the same logical name.
@@ -3817,10 +3917,10 @@ def _compliance_readiness_html(compliance: dict | None) -> str:
     the release snapshot use, never a second Compliance dashboard. No
     active scope -> a neutral note, never a false green checkmark."""
     if not compliance or not compliance.get("compliance_applicable"):
-        return "<div class='ms-muted' style='margin-top:10px;font-size:12px'>Compliance non configurata per questa publication.</div>"
+        return "<div class='ms-muted' style='margin-top:10px;font-size:12px'>Conformità non configurata per questa pubblicazione.</div>"
     c = compliance["counts"]
-    status = ("<span class='ms-ok'>Compliance: pronta</span>" if compliance["compliance_ready"]
-              else "<span class='ms-block'>Compliance: richiede intervento</span>")
+    status = ("<span class='ms-ok'>Conformità: pronta</span>" if compliance["compliance_ready"]
+              else "<span class='ms-block'>Conformità: richiede intervento</span>")
     counts_line = (f"Coperti {c['Covered']} · Da verificare {c['To verify']} · Mancanti {c['Missing']} · "
                    f"Non applicabili {c['Not applicable']} ({compliance['active_scope_count']} scope attivi)")
     items = compliance.get("blocking_items") or []
@@ -3834,7 +3934,7 @@ def _compliance_readiness_html(compliance: dict | None) -> str:
     return (
         f"<div style='margin-top:10px'><b>{status}</b><br>"
         f"<span class='ms-muted'>{counts_line}</span>{blockers_html}"
-        "<div class='ms-muted' style='margin-top:6px;font-size:12px'>Stato rispetto agli scope Compliance "
+        "<div class='ms-muted' style='margin-top:6px;font-size:12px'>Stato rispetto ai perimetri normativi "
         "configurati: non è una dichiarazione di conformità legale o certificazione.</div></div>"
     )
 
@@ -3922,7 +4022,7 @@ def release_ui(project_dir, publication_id, target_langs, released_by, release_i
     mode_label='COLLAUDO INTERNO' if mode=='test' else 'PRODUZIONE CLIENTE'
     msg=f"✅ Release **{mode_label}** **{r['release_id']}** creata. Snapshot immutabili e checksum inclusi."
     if r.get('readiness', {}).get('compliance', {}).get('compliance_applicable'):
-        msg += " Snapshot Compliance dello scope attivo incluso e hashato."
+        msg += " Snapshot di conformità del perimetro attivo incluso e hashato."
     return msg, str(r['release_zip']), gr.update(value=_friendly_release_artifacts(r['artifacts']), visible=True)
 
 # ============================================================================
@@ -3946,6 +4046,12 @@ _COMPLIANCE_STATUS_COLOR = {"Covered": "#067647", "To verify": "#b54708", "Missi
 # The human-facing legal reference stays, which is what an auditor
 # actually asks for.
 _COMPLIANCE_TABLE_COLS = ["Titolo", "Riferimento", "Stato", "Motivo", "Evidenza"]
+# UX Gate 1: the WORKING list is narrower than the full table. "Motivo"
+# explains a status in prose and belongs beside the decision controls, not
+# in a column the user scans -- it was also the widest column, which is
+# what made the old full-width table unreadable at list size.
+_COMPLIANCE_LIST_COLS = ["Titolo", "Riferimento", "Stato", "Evidenza"]
+_COMPLIANCE_FILTERS = ("Da completare", "Tutti", "Coperti", "Non applicabili")
 _COMPLIANCE_EVIDENCE_COLS = ["Tipo", "Riferimento", "Aggiornata", "Collegata da"]
 _COMPLIANCE_DISCLAIMER = (
     "<div class='ms-muted' style='margin-top:8px;font-size:12px'>Stato della documentazione rispetto al perimetro "
@@ -3970,15 +4076,20 @@ def _compliance_dashboard_html(d: dict) -> str:
     c = d["counts"]; scope = d.get("scope") or {}
     title = scope.get("title") or scope.get("scope_id") or "Scope"
     jurisdiction = f" · {scope['jurisdiction']}" if scope.get("jurisdiction") else ""
+    # UX Gate 1: one compact strip, not a card. The numbers and the
+    # non-certification disclaimer are unchanged -- only the chrome around
+    # them went, because 185px of header is 185px the requirement list
+    # does not get on a 1080px screen.
     parts = [
-        f"<div class='ms-card'><h3 style='margin-top:0'>{html.escape(str(title))}{html.escape(jurisdiction)}</h3>",
-        "<div class='ms-kpis'>",
-        f"<div class='ms-kpi'><span>Coperti</span><b>{c['Covered']}</b></div>",
-        f"<div class='ms-kpi'><span>Da verificare</span><b>{c['To verify']}</b></div>",
-        f"<div class='ms-kpi'><span>Mancanti</span><b>{c['Missing']}</b></div>",
-        f"<div class='ms-kpi'><span>Non applicabili</span><b>{c['Not applicable']}</b></div>",
+        "<div class='ms-cp-statusbar'>",
+        f"<div class='ms-cp-stat'><span>Perimetro</span><b>{html.escape(str(title))}"
+        f"{html.escape(jurisdiction)}</b></div>",
+        f"<div class='ms-cp-stat'><span>Coperti</span><b>{c['Covered']}</b></div>",
+        f"<div class='ms-cp-stat'><span>Da verificare</span><b>{c['To verify']}</b></div>",
+        f"<div class='ms-cp-stat'><span>Mancanti</span><b>{c['Missing']}</b></div>",
+        f"<div class='ms-cp-stat'><span>Non applicabili</span><b>{c['Not applicable']}</b></div>",
+        f"<div class='ms-cp-stat'><span>Totale</span><b>{d['total']}</b></div>",
         "</div>",
-        f"<div class='ms-muted'>Requisiti nel perimetro: {d['total']}</div>",
     ]
     stale_bits = []
     if d.get("stale_requirements"):
@@ -3990,9 +4101,8 @@ def _compliance_dashboard_html(d: dict) -> str:
         stale_bits.append(f"{n} collegamento a uno standard da riconfermare (versione aggiornata)" if n == 1
                           else f"{n} collegamenti a standard da riconfermare (versione aggiornata)")
     if stale_bits:
-        parts.append("<div class='ms-prod' style='margin-top:10px'>" + " · ".join(stale_bits) + "</div>")
+        parts.append("<div class='ms-prod' style='margin-top:6px'>" + " · ".join(stale_bits) + "</div>")
     parts.append(_COMPLIANCE_DISCLAIMER)
-    parts.append("</div>")
     return "".join(parts)
 
 def _compliance_requirement_table(rows: list[dict]) -> pd.DataFrame:
@@ -4033,7 +4143,8 @@ def _fmt_ts(ts: str | None) -> str:
 
 def _compliance_detail_placeholder() -> tuple:
     return (
-        "<div class='ms-muted'>Seleziona un requisito dalla lista qui sopra per vederne il dettaglio.</div>",
+        "<div class='ms-cp-empty'><div class='ms-cp-empty-icon'>☑</div>"
+        "<div>Seleziona un requisito dall'elenco per visualizzarne e modificarne i dettagli.</div></div>",
         "<div class='ms-muted'>—</div>", gr.update(value=None),
         "", "<div class='ms-muted'>—</div>", gr.update(value=None),
         pd.DataFrame(columns=_COMPLIANCE_EVIDENCE_COLS),
@@ -4108,7 +4219,7 @@ def _compliance_render_open_requirement(svc, repo, scope_id: str, rid: str, *, a
 def _compliance_full_bundle_empty() -> tuple:
     return (
         _compliance_dashboard_html({"has_scope": False}),
-        pd.DataFrame(columns=_COMPLIANCE_TABLE_COLS),
+        pd.DataFrame(columns=_COMPLIANCE_LIST_COLS),
         gr.update(choices=[], value=None),
         *_compliance_detail_placeholder(),
     )
@@ -4118,7 +4229,13 @@ def _compliance_full_bundle(svc, repo, scope_id: str | None, rid: str | None, *,
                             applic_radio_value: str | None = None, cov_radio_value: str | None = None) -> tuple:
     dash = _compliance_dashboard_html(cv.dashboard(svc, scope_id))
     rows = cv.requirement_list_rows(svc, scope_id) if scope_id else []
-    table = _compliance_requirement_table(rows)
+    # The bundle refreshes the WORKING list after any decision, using the
+    # default filter. Every binding that can change a status chains
+    # compliance_list_ui afterwards with the filter the user actually has
+    # selected, so their choice wins -- this only guarantees the list is
+    # never left stale by a decision.
+    table = (_compliance_list_table(_compliance_filtered_rows(svc, scope_id, "", "Da completare"))
+             if scope_id else pd.DataFrame(columns=_COMPLIANCE_LIST_COLS))
     dd = gr.update(choices=_requirement_dropdown_choices(rows), value=_requirement_label_for(rows, rid))
     if scope_id and rid:
         try:
@@ -4367,22 +4484,40 @@ def _pack_state_html(status: dict) -> str:
         return ("<div class='ms-cp-notice'><b>Nessun pacchetto di requisiti in questo progetto.</b><br>"
                 "Apri «Aggiungi un pacchetto di requisiti» in fondo a questa pagina per partire da un "
                 "elenco curato di obblighi documentali.</div>")
+    # One line in the header. The full provenance (verified source text,
+    # applicability scope) moved to "Aggiornamenti normativi", where the
+    # question it answers is actually being asked.
     head = (
-        "<div class='ms-cp-packbar'>"
-        f"<div><div class='ms-cp-packbar-label'>Pacchetto attivo</div>"
-        f"<b>{html.escape(status['pack_name'])}</b></div>"
-        f"<div><div class='ms-cp-packbar-label'>Versione nel progetto</div>"
-        f"<b>{html.escape(status['current_pack_version'] or '—')}</b></div>"
-        f"<div><div class='ms-cp-packbar-label'>Ambito</div>"
-        f"<b>{html.escape(' · '.join(status['groups']) or '—')}</b></div>"
-        f"<div><div class='ms-cp-packbar-label'>Testo ufficiale verificato</div>"
-        f"<b>{html.escape(status['source_version'] or '—')}</b></div>"
+        "<div class='ms-cp-packline'>"
+        f"<span class='ms-cp-packbar-label'>Pacchetto</span> "
+        f"<b>{html.escape(status['pack_name'])}</b>"
+        f" · v{html.escape(status['current_pack_version'] or '—')}"
+        f" · {html.escape(' · '.join(status['groups']) or '—')}"
         "</div>"
     )
     if status.get("update_available"):
         return head + _pack_update_notice_html(status)
-    return head + ("<div class='ms-cp-notice'>Il pacchetto è allineato all'ultima revisione verificata "
-                   "disponibile in ERYLOS.</div>")
+    return head
+
+
+def _pack_provenance_html(status: dict) -> str:
+    """Full provenance for the 'Aggiornamenti normativi' tab: which text,
+    which consolidated version, which scope. Not in the working header --
+    nobody reads a CELEX identifier while deciding applicability -- but
+    never hidden either, because it is the answer to 'why should I trust
+    this obligation?'."""
+    if not status.get("installed"):
+        return ""
+    rows = [
+        ("Pacchetto", status.get("pack_name", "")),
+        ("Versione nel progetto", status.get("current_pack_version") or "—"),
+        ("Ambito", " · ".join(status.get("groups") or []) or "—"),
+        ("Testo ufficiale verificato", status.get("source_version") or "—"),
+    ]
+    cells = "".join(
+        f"<div><div class='ms-cp-packbar-label'>{html.escape(k)}</div>"
+        f"<b>{html.escape(str(v))}</b></div>" for k, v in rows)
+    return f"<div class='ms-cp-packbar'>{cells}</div>"
 
 
 def compliance_pack_state_ui(project_dir):
@@ -4394,15 +4529,17 @@ def compliance_pack_state_ui(project_dir):
     that does nothing, and makes package administration look like the
     main task on a screen whose main task is documentation coverage."""
     if not project_dir:
-        return "", gr.update(visible=False)
+        return "", gr.update(visible=False), ""
     repo, svc = cv.open_service(project_dir)
     try:
         status = cv.pack_update_status(svc, csp.MACHINERY_DOC_PACK)
-        return _pack_state_html(status), gr.update(visible=bool(status.get("update_available")))
+        return (_pack_state_html(status),
+                gr.update(visible=bool(status.get("update_available"))),
+                _pack_provenance_html(status))
     except Exception as e:
         # A failed status CHECK must never block the compliance screen.
         _app_log("Pack state check failed", e)
-        return "", gr.update(visible=False)
+        return "", gr.update(visible=False), ""
     finally:
         repo.close()
 
@@ -4506,7 +4643,56 @@ def compliance_open_requirement_ui(project_dir, scope_id, requirement_label):
     finally:
         repo.close()
 
-def compliance_open_requirement_row_ui(project_dir, scope_id, evt: gr.SelectData):
+def _compliance_list_table(rows: list[dict]) -> pd.DataFrame:
+    """The four-column working list."""
+    if not rows:
+        return pd.DataFrame(columns=_COMPLIANCE_LIST_COLS)
+    return pd.DataFrame([{
+        "Titolo": r["title"], "Riferimento": r.get("reference_short") or r["reference"],
+        "Stato": cv.status_label(r["status"]),
+        "Evidenza": "Sì" if r["has_evidence"] else "No",
+    } for r in rows], columns=_COMPLIANCE_LIST_COLS)
+
+
+def _compliance_filtered_rows(svc, scope_id, search, status_filter):
+    """Rows for the working list, filtered and searched.
+
+    Pure presentation over cv.requirement_list_rows: no engine call is
+    added and no status is recomputed here. "Da completare" reuses
+    cv.to_complete_rows so the list and the Panoramica queue can never
+    disagree about what still needs a human."""
+    rows = cv.requirement_list_rows(svc, scope_id)
+    f = str(status_filter or "Da completare")
+    if f == "Da completare":
+        pending = {r["requirement_id"] for r in cv.to_complete_rows(svc, scope_id)}
+        rows = [r for r in rows if r["requirement_id"] in pending]
+    elif f == "Coperti":
+        rows = [r for r in rows if r["status"] == "Covered"]
+    elif f == "Non applicabili":
+        rows = [r for r in rows if r["status"] == "Not applicable"]
+    q = str(search or "").strip().lower()
+    if q:
+        rows = [r for r in rows
+                if q in (r["title"] or "").lower() or q in (r["reference"] or "").lower()]
+    return rows
+
+
+def compliance_list_ui(project_dir, scope_id, search, status_filter):
+    """Read-only. Rebuilds the working list for the current search/filter."""
+    if not project_dir or not scope_id:
+        return pd.DataFrame(columns=_COMPLIANCE_LIST_COLS)
+    repo, svc = cv.open_service(project_dir)
+    try:
+        return _compliance_list_table(_compliance_filtered_rows(svc, scope_id, search, status_filter))
+    except Exception as e:
+        _app_log("Compliance list filter failed", e)
+        return pd.DataFrame(columns=_COMPLIANCE_LIST_COLS)
+    finally:
+        repo.close()
+
+
+def compliance_open_requirement_row_ui(project_dir, scope_id, search, status_filter,
+                                       evt: gr.SelectData):
     """Opens the requirement whose ROW was clicked in the "Requisiti"
     table.
 
@@ -4520,7 +4706,7 @@ def compliance_open_requirement_row_ui(project_dir, scope_id, evt: gr.SelectData
     row_index = evt.index[0] if isinstance(evt.index, (list, tuple)) else evt.index
     repo, svc = cv.open_service(project_dir)
     try:
-        rows = cv.requirement_list_rows(svc, scope_id)
+        rows = _compliance_filtered_rows(svc, scope_id, search, status_filter)
         if not isinstance(row_index, int) or not (0 <= row_index < len(rows)):
             return _compliance_full_bundle(svc, repo, scope_id, None)
         return _compliance_full_bundle(svc, repo, scope_id, rows[row_index]["requirement_id"])
@@ -4658,7 +4844,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         gr.HTML("<div class='ms-side-section'>Workflow</div>")
         nav_revision=gr.Button("◫   Revisione",variant="secondary")
         nav_authoring=gr.Button("✎   Contenuti",variant="secondary")
-        nav_compliance=gr.Button("☑   Compliance",variant="secondary")
+        nav_compliance=gr.Button("☑   Conformità",variant="secondary")
         nav_translation=gr.Button("⇄   Traduzioni",variant="secondary")
         nav_jobs=gr.Button("▣   Job & fornitori",variant="secondary")
         nav_release=gr.Button("✓   Release",variant="secondary")
@@ -4666,6 +4852,52 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         nav_settings=gr.Button("⚙   Impostazioni",variant="secondary")
         gr.Button("?   Aiuto", interactive=False)
         sidebar_context=gr.HTML(_sidebar_context(INITIAL_PROJECT))
+
+    # ================================================================
+    # UX Gate 1 — persistent workspace context.
+    #
+    # Three coordinates that operational pages kept asking for again and
+    # again, hoisted to shell level so they are chosen ONCE.
+    #
+    # What is here, and why only these three:
+    #   * Progetto      — read-only display of the active project. Already
+    #                     persisted on disk; shown so the user always knows
+    #                     which project an action will affect.
+    #   * Pubblicazione — the manual being worked on. Genuine cross-cutting
+    #                     context: Conformità, publishing and release all
+    #                     key off it.
+    #   * Operatore     — WHO is working. Every compliance decision is
+    #                     audited with an actor, and in a single-user
+    #                     desktop product that actor is the same person all
+    #                     day. It was being re-typed in three separate
+    #                     panels inside Conformità alone.
+    #
+    # What is deliberately NOT here:
+    #   * Profilo di variante — it looks like context but is not: it is a
+    #     RENDERING choice that selects which variant to preview or
+    #     publish, and it has no meaning at all in Conformità (which keys
+    #     off a normative perimeter, not a variant). Putting it in the
+    #     shell would imply it affects every screen. It stays in the
+    #     publishing area where it actually applies.
+    #   * Revisore umano (Lavorazioni) / Release manager (Rilascio) —
+    #     these are ROLE-SPECIFIC approvers on explicit human-approval
+    #     gates, not "who is using the app". Collapsing them into one
+    #     workspace identity would let a QA approval inherit an identity
+    #     the user never re-affirmed for that decision. They keep their
+    #     own fields.
+    #
+    # Persistence: project persists (it already did). Publication and
+    # operator are SESSION state and are never written to disk -- an audit
+    # identity restored silently at the next launch could attribute a new
+    # user's decisions to whoever used the machine last.
+    # ================================================================
+    with gr.Row(elem_classes=["ms-ctxbar"]):
+        ws_project = gr.HTML(_workspace_context_html(INITIAL_PROJECT))
+        cp_pub = gr.Textbox(label="Pubblicazione", value="PUB-MAIN", scale=1,
+                            info="Il manuale su cui stai lavorando.")
+        ws_operator = gr.Textbox(label="Operatore", value="", scale=1,
+                                 placeholder="Nome e cognome",
+                                 info="Registrato su ogni decisione. Non viene salvato su disco.")
 
     with gr.Tabs(selected="home", elem_id="workspace-tabs") as workspace_tabs:
         with gr.Tab("Home", id="home"):
@@ -4758,7 +4990,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 # already know the area existed had no reason to open it.
                 with gr.Column(elem_classes=["ms-quick-card"]):
                     gr.HTML("<div class='ms-quick-icon'>☑</div><div class='ms-quick-title'>Copertura documentale</div><div class='ms-quick-desc'>Requisiti applicabili, evidenze collegate e cosa manca ancora.</div>")
-                    home_compliance=gr.Button("Vai a Compliance",elem_classes=["ms-card-cta"])
+                    home_compliance=gr.Button("Vai a Conformità",elem_classes=["ms-card-cta"])
                 with gr.Column(elem_classes=["ms-quick-card","brand"]):
                     gr.HTML("<div class='ms-quick-icon'>✓</div><div class='ms-quick-title'>Verifica readiness</div><div class='ms-quick-desc'>Controlla i gate e prepara una release controllata.</div>")
                     home_release=gr.Button("Vai a Release",elem_classes=["ms-card-cta"])
@@ -5574,150 +5806,182 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             pv_export_html_btn.click(studio_export_html_ui, [project_state, c_pub, pv_profile],
                                      [pv_export_status])
 
-        with gr.Tab("Compliance", id="compliance") as cp_tab:
-            gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Compliance</h1>"
-                    "<p>Stato della documentazione rispetto ai requisiti normativi configurati per questa "
-                    "pubblicazione — mai una dichiarazione automatica di conformità.</p></div></div>")
-            with gr.Row():
-                # "Aggiorna" was ambiguous on a page that also updates the
-                # starter pack. The callback re-reads the project and
-                # recomputes every derived status, so it is named for that
-                # and kept secondary -- it is a refresh, not the page's
-                # primary action.
-                cp_pub = gr.Textbox(label="Pubblicazione", value="PUB-MAIN",
-                                    info="Il manuale su cui viene valutata la conformità documentale.")
-                cp_scope = gr.Dropdown(label="Perimetro normativo", choices=[], value=None,
-                                       info="L'insieme di obblighi rispetto a cui si misura la copertura.")
-                cp_reload = gr.Button("Ricalcola stato", variant="secondary")
-            cp_dashboard = gr.HTML()
+        with gr.Tab("Conformità", id="compliance") as cp_tab:
+            # ============================================================
+            # UX Gate 1 — Conformità as the reference workspace.
+            #
+            # The page this replaces was 3260px / 3 full screens: the
+            # requirement list sat at y=1614 and its detail panel at
+            # y=2273, so deciding one requirement scrolled the list off
+            # the screen and moving to the next meant scrolling back up
+            # ~1200px. Everything below keeps ONE requirement as the
+            # working object and the list permanently beside it.
+            #
+            # Publication and operator identity are NOT asked here any
+            # more: they are workspace context, chosen once in the shell
+            # bar above the tabs.
+            # ============================================================
+            with gr.Row(elem_classes=["ms-cp-topbar"]):
+                gr.HTML("<div class='ms-pagehead ms-pagehead-tight'><div>"
+                        "<div class='ms-page-kicker'>Flusso</div><h1>Conformità</h1></div></div>")
+                cp_scope = gr.Dropdown(label="Perimetro normativo", choices=[], value=None, scale=2)
+                cp_reload = gr.Button("Ricalcola stato", variant="secondary", scale=1)
 
-            # ------------------------------------------------------------
-            # 4F.2 UX: the page is ordered by what a user actually DOES.
-            # Installing a pack is a one-time setup action, so it sits at
-            # the BOTTOM; what stays at the top is the state of the work:
-            # which pack is active, whether it is current, and then the
-            # coverage itself. Before this, ~600px of package
-            # administration sat between the overview and "Copertura
-            # documentale", pushing the real screen below the fold.
-            # ------------------------------------------------------------
-            gr.HTML("<div class='ms-section-title'>Pacchetto di requisiti</div>"
-                    "<div class='ms-section-sub'>Da dove arrivano gli obblighi documentali di questo "
-                    "progetto e se sono allineati all'ultima revisione verificata.</div>")
+            # --- Header: the essential state, always visible -----------
+            # Deliberately only four things: how much is covered, what
+            # needs attention, which package is active, and an update
+            # alert ONLY when there is something to apply. The update
+            # ACTIONS live in this same strip rather than in the tab
+            # below, so an alert and the button that answers it are never
+            # separated.
+            cp_dashboard = gr.HTML()
             cp_pack_state = gr.HTML()
-            # A pack is a versioned SOURCE: when a newer verified revision
-            # ships, the project must be told and must be able to apply it
-            # WITHOUT losing its own decisions. This row stays hidden
-            # until there is genuinely something to apply.
             with gr.Row(visible=False) as cp_pack_update_row:
-                cp_pack_update_actor = gr.Textbox(label="Il tuo nome", scale=2,
-                                                  info="L'aggiornamento del pacchetto viene registrato.")
                 cp_pack_update_preview_btn = gr.Button("Visualizza aggiornamento", scale=1)
                 cp_pack_update_apply_btn = gr.Button("Aggiorna pacchetto", variant="primary", scale=1)
-            cp_pack_update_preview = gr.HTML(elem_classes=["ms-cp-collapsible"])
-            cp_pack_update_status = gr.HTML(elem_classes=["ms-cp-collapsible"])
 
-            # 4F.2: coverage + gap views, isolated from the requirement
-            # decision panel below.
-            cp_coverage = gr.HTML()
-            gr.HTML("<div class='ms-section-title'>Da completare</div><div class='ms-section-sub'>Requisiti "
-                    "applicabili senza evidenza, coperture parziali e requisiti ancora da valutare.</div>")
-            cp_gaps = gr.Dataframe(interactive=False, wrap=True, max_height=320,
-                                   elem_classes=["ms-cp-grid"],
-                                   column_widths=["30%", "22%", "14%", "8%", "26%"])
+            with gr.Tabs(elem_id="cp-subtabs"):
+                # --------------------------------------------------------
+                # Requisiti — the daily work, and therefore the landing
+                # view. List on the left, detail on the right, both
+                # visible at the same time at 1920px.
+                # --------------------------------------------------------
+                with gr.Tab("Requisiti", id="cp_requirements"):
+                    with gr.Row():
+                        with gr.Column(scale=5, min_width=520):
+                            gr.HTML("<div class='ms-section-sub ms-cp-listhint'>Ordinati per priorità. "
+                                    "<b>Clicca una riga per aprire il requisito.</b></div>")
+                            with gr.Row(elem_classes=["ms-cp-listbar"]):
+                                cp_search = gr.Textbox(label="Cerca", scale=2,
+                                                       placeholder="Cerca per titolo o riferimento…",
+                                                       show_label=False)
+                                cp_filter = gr.Radio(
+                                    ["Da completare", "Tutti", "Coperti", "Non applicabili"],
+                                    value="Da completare", show_label=False, scale=3,
+                                    elem_classes=["ms-cp-filter"])
+                            # The working list. "Da completare" is the
+                            # default because it is the only view that
+                            # answers "what should I do now?" -- browsing
+                            # all 41 requirements is the exception, not
+                            # the daily case.
+                            cp_table = gr.Dataframe(interactive=False, wrap=True, max_height=620,
+                                                    elem_classes=["ms-cp-grid", "ms-cp-grid-click"],
+                                                    column_widths=["40%", "25%", "19%", "16%"])
+                            cp_req_picker = gr.Dropdown(
+                                label="Requisito", choices=[], value=None, visible=False)
+                        with gr.Column(scale=6, min_width=560, elem_classes=["ms-panel", "ms-cp-detail"]):
+                            cp_header = gr.HTML()
+                            with gr.Column(elem_classes=["ms-cp-detail-form"]):
+                                with gr.Row():
+                                    with gr.Column():
+                                        gr.HTML("<div class='ms-section-title'>Applicabilità</div>")
+                                        cp_applic_current = gr.HTML()
+                                        cp_applic_radio = gr.Radio(
+                                            ["Si applica", "Non applicabile", "Da verificare"],
+                                            label="Decisione", value=None)
+                                        cp_applic_justification = gr.Textbox(
+                                            label="Motivazione — obbligatoria solo per «Non applicabile»")
+                                        cp_applic_comment = gr.Textbox(label="Commento — opzionale")
+                                        cp_applic_confirm = gr.Button("Conferma applicabilità", variant="primary")
+                                        cp_applic_msg = gr.Markdown()
+                                    with gr.Column():
+                                        gr.HTML("<div class='ms-section-title'>Copertura</div>")
+                                        cp_cov_banner = gr.HTML()
+                                        cp_cov_current = gr.HTML()
+                                        cp_cov_radio = gr.Radio(["Coperto", "Da verificare", "Mancante"],
+                                                                label="Decisione", value=None)
+                                        cp_cov_comment = gr.Textbox(label="Commento — opzionale")
+                                        cp_cov_confirm = gr.Button("Conferma copertura", variant="primary")
+                                        cp_cov_msg = gr.Markdown()
+                                gr.HTML("<div class='ms-section-title'>Evidenze collegate</div>"
+                                        "<div class='ms-section-sub'>Contenuto ERYLOS che dimostra la copertura "
+                                        "di questo requisito.</div>")
+                                cp_evidence_table = gr.Dataframe(interactive=False, wrap=True, max_height=200,
+                                                                 elem_classes=["ms-cp-grid"])
+                                with gr.Row():
+                                    cp_evidence_candidates = gr.Dropdown(
+                                        label="Collega un contenuto esistente come evidenza", choices=[], value=None)
+                                    cp_evidence_link_btn = gr.Button("Collega come evidenza")
+                                with gr.Row():
+                                    cp_evidence_unlink_dd = gr.Dropdown(
+                                        label="Scollega un'evidenza già collegata", choices=[], value=None)
+                                    cp_evidence_unlink_btn = gr.Button("Scollega evidenza")
+                                cp_evidence_msg = gr.Markdown()
+                                # Provenance, internal ids and version detail:
+                                # genuinely useful when answering "where does
+                                # this obligation come from?", noise the rest
+                                # of the time.
+                                with gr.Accordion("Dettagli tecnici (modalità avanzata)", open=False):
+                                    cp_advanced = gr.HTML()
 
-            gr.HTML("<div class='ms-section-title'>Requisiti</div><div class='ms-section-sub'>Ordinati per priorità: "
-                    "prima ciò che manca, poi ciò che va verificato. "
-                    "<b>Clicca una riga per aprire il requisito</b> e registrarne la valutazione.</div>")
-            cp_table = gr.Dataframe(interactive=False, wrap=True, max_height=380,
-                                    elem_classes=["ms-cp-grid", "ms-cp-grid-click"],
-                                    column_widths=["30%", "22%", "12%", "28%", "8%"])
-            # Kept as a keyboard-reachable alternative to clicking a row,
-            # and renamed so it reads as an action rather than a filter.
-            cp_req_picker = gr.Dropdown(label="Oppure seleziona il requisito da valutare",
-                                        choices=[], value=None)
-            with gr.Column(elem_classes=["ms-panel"]):
-                cp_header = gr.HTML()
-                with gr.Row():
-                    with gr.Column():
-                        gr.HTML("<div class='ms-section-title'>Applicabilità</div>")
-                        cp_applic_current = gr.HTML()
-                        cp_applic_radio = gr.Radio(["Si applica", "Non applicabile", "Da verificare"],
-                                                   label="Decisione", value=None)
-                        cp_applic_justification = gr.Textbox(label="Motivazione — obbligatoria solo per «Non applicabile»")
-                        cp_applic_comment = gr.Textbox(label="Commento — opzionale")
-                        cp_applic_confirm = gr.Button("Conferma applicabilità", variant="primary")
-                        cp_applic_msg = gr.Markdown()
-                    with gr.Column():
-                        gr.HTML("<div class='ms-section-title'>Copertura</div>")
-                        cp_cov_banner = gr.HTML()
-                        cp_cov_current = gr.HTML()
-                        cp_cov_radio = gr.Radio(["Coperto", "Da verificare", "Mancante"], label="Decisione", value=None)
-                        cp_cov_comment = gr.Textbox(label="Commento — opzionale")
-                        cp_cov_confirm = gr.Button("Conferma copertura", variant="primary")
-                        cp_cov_msg = gr.Markdown()
-                cp_reviewer = gr.Textbox(
-                    label="Il tuo nome",
-                    info="Usato per registrare chi ha preso le decisioni su questo requisito: "
-                         "applicabilità, copertura ed evidenze.")
-                gr.HTML("<div class='ms-section-title'>Evidenze collegate</div><div class='ms-section-sub'>Contenuto "
-                        "ManualSync che dimostra la copertura di questo requisito.</div>")
-                cp_evidence_table = gr.Dataframe(interactive=False, wrap=True, max_height=260)
-                with gr.Row():
-                    cp_evidence_candidates = gr.Dropdown(label="Collega un contenuto esistente come evidenza",
-                                                         choices=[], value=None)
-                    cp_evidence_link_btn = gr.Button("Collega come evidenza")
-                with gr.Row():
-                    cp_evidence_unlink_dd = gr.Dropdown(label="Scollega un'evidenza già collegata", choices=[], value=None)
-                    cp_evidence_unlink_btn = gr.Button("Scollega evidenza")
-                cp_evidence_msg = gr.Markdown()
-                with gr.Accordion("Dettagli tecnici (modalità avanzata)", open=False):
-                    cp_advanced = gr.HTML()
+                # --------------------------------------------------------
+                # Panoramica — the fuller coverage picture. Separate from
+                # the working view because reading the numbers and acting
+                # on a requirement are different tasks: mixing them is
+                # what made the old page three screens long.
+                # --------------------------------------------------------
+                with gr.Tab("Panoramica", id="cp_overview"):
+                    cp_coverage = gr.HTML()
+                    gr.HTML("<div class='ms-section-title'>Da completare</div>"
+                            "<div class='ms-section-sub'>Requisiti applicabili senza evidenza, coperture "
+                            "parziali e requisiti ancora da valutare, con il prossimo passo suggerito.</div>")
+                    cp_gaps = gr.Dataframe(interactive=False, wrap=True, max_height=420,
+                                           elem_classes=["ms-cp-grid"],
+                                           column_widths=["30%", "22%", "14%", "8%", "26%"])
+
+                # --------------------------------------------------------
+                # Aggiornamenti normativi — the pack as a versioned
+                # source. Rarely needed, never during daily assessment,
+                # so it is one click away rather than on the work screen.
+                # --------------------------------------------------------
+                with gr.Tab("Aggiornamenti normativi", id="cp_updates"):
+                    gr.HTML("<div class='ms-section-sub'>Da dove arrivano gli obblighi documentali di questo "
+                            "progetto, e cosa cambia quando è disponibile una revisione verificata.</div>")
+                    cp_pack_provenance = gr.HTML()
+                    cp_pack_update_preview = gr.HTML(elem_classes=["ms-cp-collapsible"])
+                    cp_pack_update_status = gr.HTML(elem_classes=["ms-cp-collapsible"])
+                    # Setup, collapsed: a pack NEVER installs itself into a
+                    # project, and the user sees source, version, review
+                    # date and scope size before importing. Once a pack is
+                    # installed this is not a daily task.
+                    with gr.Accordion("Aggiungi un pacchetto di requisiti", open=False):
+                        gr.HTML("<div class='ms-section-sub'>Aggiungi al progetto un pacchetto curato di "
+                                "obblighi documentali. Puoi vedere fonte, versione e data di revisione "
+                                "prima di importarlo.</div>")
+                        with gr.Row():
+                            cp_pack_picker = gr.Dropdown(label="Pacchetto disponibile", choices=[],
+                                                         value=None, scale=2)
+                            cp_pack_groups = gr.CheckboxGroup(
+                                choices=list(csp.APPLICABILITY_GROUPS.values()),
+                                value=[csp.APPLICABILITY_GROUPS[csp.GROUP_FULL_MACHINERY]],
+                                label="Ambito di applicabilità", scale=2)
+                        cp_pack_preview = gr.HTML()
+                        cp_pack_import = gr.Button("Aggiungi pacchetto al progetto", variant="primary")
+                        cp_pack_status = gr.HTML()
             cp_open_rid = gr.State("")
-
-            # ------------------------------------------------------------
-            # Setup, deliberately LAST and collapsed: a pack NEVER installs
-            # itself into a project, and the user sees source, version,
-            # review date, application date and scope size before
-            # importing, together with the statement that this is a
-            # documentation traceability aid and not automatic
-            # certification. Once a pack is installed this is not a daily
-            # task, so it must not be the first thing on the screen.
-            # ------------------------------------------------------------
-            with gr.Accordion("Aggiungi un pacchetto di requisiti", open=False):
-                gr.HTML("<div class='ms-section-sub'>Aggiungi al progetto un pacchetto curato di obblighi "
-                        "documentali. Puoi vedere fonte, versione e data di revisione prima di importarlo.</div>")
-                with gr.Row():
-                    cp_pack_picker = gr.Dropdown(label="Pacchetto disponibile", choices=[], value=None, scale=2)
-                    cp_pack_groups = gr.CheckboxGroup(
-                        choices=list(csp.APPLICABILITY_GROUPS.values()),
-                        value=[csp.APPLICABILITY_GROUPS[csp.GROUP_FULL_MACHINERY]],
-                        label="Ambito di applicabilità", scale=2)
-                cp_pack_preview = gr.HTML()
-                with gr.Row():
-                    cp_pack_actor = gr.Textbox(label="Il tuo nome", scale=2,
-                                               info="La decisione di importare il pacchetto viene registrata.")
-                    cp_pack_import = gr.Button("Aggiungi pacchetto al progetto", variant="primary", scale=1)
-                cp_pack_status = gr.HTML()
 
             cp_out_full = [cp_dashboard, cp_table, cp_req_picker, cp_header, cp_applic_current, cp_applic_radio,
                           cp_cov_banner, cp_cov_current, cp_cov_radio, cp_evidence_table, cp_evidence_candidates,
                           cp_evidence_unlink_dd, cp_advanced, cp_open_rid, cp_applic_msg, cp_cov_msg, cp_evidence_msg]
             cp_reload.click(compliance_load_ui, [project_state, cp_pub], [cp_scope, *cp_out_full]).then(
                 compliance_coverage_ui, [project_state, cp_scope], [cp_coverage, cp_gaps]).then(
-                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row])
+                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
+                    compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             cp_scope.change(compliance_switch_scope_ui, [project_state, cp_scope], cp_out_full).then(
-                compliance_coverage_ui, [project_state, cp_scope], [cp_coverage, cp_gaps])
+                compliance_coverage_ui, [project_state, cp_scope], [cp_coverage, cp_gaps]).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             # 4F.2 pack wiring -- isolated callbacks, isolated outputs.
             cp_pack_picker.change(compliance_pack_preview_ui, [cp_pack_picker], [cp_pack_preview])
             cp_pack_update_preview_btn.click(compliance_pack_update_preview_ui, [project_state],
                                              [cp_pack_update_preview])
             cp_pack_update_apply_btn.click(
-                compliance_pack_update_apply_ui, [project_state, cp_scope, cp_pack_update_actor],
+                compliance_pack_update_apply_ui, [project_state, cp_scope, ws_operator],
                 [cp_pack_update_status, cp_pack_update_preview, cp_coverage, cp_gaps],
                 trigger_mode="once", concurrency_limit=1).then(
                 # Re-reads the pack state, so the strip shows the new active
                 # version and the update row hides itself once applied.
-                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row]).then(
+                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
+                    compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table).then(
                 # Found by the browser gate: refreshing only coverage/gaps left
                 # the "Requisiti" table and the open requirement showing the
                 # PRE-update titles until the user happened to press "Aggiorna".
@@ -5726,25 +5990,37 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 compliance_switch_scope_ui, [project_state, cp_scope], cp_out_full)
             cp_pack_import.click(
                 compliance_import_pack_ui,
-                [project_state, cp_pub, cp_scope, cp_pack_picker, cp_pack_groups, cp_pack_actor],
+                [project_state, cp_pub, cp_scope, cp_pack_picker, cp_pack_groups, ws_operator],
                 [cp_pack_status, cp_scope, cp_coverage, cp_gaps]).then(
-                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row])
+                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
+                    compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             cp_req_picker.change(compliance_open_requirement_ui, [project_state, cp_scope, cp_req_picker], cp_out_full)
-            cp_table.select(compliance_open_requirement_row_ui, [project_state, cp_scope], cp_out_full)
+            cp_table.select(compliance_open_requirement_row_ui,
+                            [project_state, cp_scope, cp_search, cp_filter], cp_out_full).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
+            # Search and filter drive ONLY the list; the open requirement
+            # stays open, which is what keeps the working context alive
+            # while the user narrows the list around it.
+            cp_search.change(compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table, show_progress="hidden")
+            cp_filter.change(compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table, show_progress="hidden")
             cp_applic_confirm.click(compliance_decide_applicability_ui,
-                                    [project_state, cp_scope, cp_open_rid, cp_applic_radio, cp_reviewer,
-                                     cp_applic_justification, cp_applic_comment, cp_cov_radio], cp_out_full)
+                                    [project_state, cp_scope, cp_open_rid, cp_applic_radio, ws_operator,
+                                     cp_applic_justification, cp_applic_comment, cp_cov_radio], cp_out_full).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             cp_cov_confirm.click(compliance_decide_coverage_ui,
-                                 [project_state, cp_scope, cp_open_rid, cp_cov_radio, cp_reviewer, cp_cov_comment,
+                                 [project_state, cp_scope, cp_open_rid, cp_cov_radio, ws_operator, cp_cov_comment,
                                   cp_applic_radio],
-                                 cp_out_full)
+                                 cp_out_full).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             cp_evidence_link_btn.click(compliance_link_evidence_ui,
-                                       [project_state, cp_scope, cp_open_rid, cp_evidence_candidates, cp_reviewer,
+                                       [project_state, cp_scope, cp_open_rid, cp_evidence_candidates, ws_operator,
                                         cp_applic_radio, cp_cov_radio],
-                                       cp_out_full)
+                                       cp_out_full).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             cp_evidence_unlink_btn.click(compliance_unlink_evidence_ui,
                                          [project_state, cp_scope, cp_open_rid, cp_evidence_unlink_dd,
-                                          cp_reviewer, cp_applic_radio, cp_cov_radio], cp_out_full)
+                                          ws_operator, cp_applic_radio, cp_cov_radio], cp_out_full).then(
+                compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             # Acceptance fix: this tab must never depend on the user remembering
             # to press "Aggiorna". Whenever it becomes the selected tab -- first
             # open, Home -> Compliance, or after a client reconnect that resets
@@ -5764,7 +6040,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             cp_tab.select(compliance_load_ui, [project_state, cp_pub], [cp_scope, *cp_out_full]).then(
                 compliance_coverage_ui, [project_state, cp_scope], [cp_coverage, cp_gaps]).then(
                 compliance_pack_choices_ui, None, [cp_pack_picker]).then(
-                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row])
+                compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
+                    compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
             # Same programmatic-navigation trap fixed in 4F.1 for the
             # Publishing Preview picker: the sidebar switches tabs via
             # gr.Tabs(selected=...), which never fires cp_tab.select, so
@@ -5775,7 +6052,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     compliance_pack_choices_ui, None, [cp_pack_picker]).then(
                     compliance_load_ui, [project_state, cp_pub], [cp_scope, *cp_out_full]).then(
                     compliance_coverage_ui, [project_state, cp_scope], [cp_coverage, cp_gaps]).then(
-                    compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row])
+                    compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
+                    compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter], cp_table)
 
         with gr.Tab("Traduzioni",id="translations"):
             gr.HTML("<div class='ms-pagehead'><div><div class='ms-page-kicker'>Workflow</div><h1>Traduzioni</h1><p>Pacchetti lingua, traduzioni, QA e passaggio ai fornitori.</p></div></div><div class='ms-stepper'><div class='ms-step active'><span class='ms-step-num'>1</span>Pacchetti</div><div class='ms-step'><span class='ms-step-num'>2</span>Traduzioni</div><div class='ms-step'><span class='ms-step-num'>3</span>QA</div><div class='ms-step'><span class='ms-step-num'>4</span>Pronto per release</div></div>")

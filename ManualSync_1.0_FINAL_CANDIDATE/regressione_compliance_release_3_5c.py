@@ -383,7 +383,7 @@ msg_html = ui_result[0]
 check("g11: the readiness card reports RELEASE BLOCCATA", "RELEASE BLOCCATA" in msg_html, msg_html)
 check("g11: the readiness card reports Compliance richiede intervento", "richiede intervento" in msg_html, msg_html)
 check("g11: the readiness card never claims a certification/false green checkmark for Compliance",
-      "Compliance: pronta" not in msg_html, msg_html)
+      "Conformità: pronta" not in msg_html, msg_html)
 release_button_update = ui_result[4]
 check("g11: the Release button stays disabled while Compliance blocks the release",
       release_button_update.get("interactive") is False, release_button_update)
@@ -391,7 +391,7 @@ check("g11: the Release button stays disabled while Compliance blocks the releas
 # Sanity: the same UI path on the READY fixture (group 4) shows the
 # positive Compliance state and re-enables the Release button.
 ui_ready = app.readiness_ui(str(p4), "PUB-MAIN", [], "", "Collaudo interno")
-check("g11: the ready fixture's readiness card reports Compliance: pronta", "Compliance: pronta" in ui_ready[0], ui_ready[0])
+check("g11: the ready fixture's readiness card reports Conformità: pronta", "Conformità: pronta" in ui_ready[0], ui_ready[0])
 check("g11: the ready fixture's readiness card never claims a legal certification",
       not any(w in ui_ready[0] for w in ("certificato", "conforme automaticamente", "CE verificato", "compliance garantita")),
       ui_ready[0])

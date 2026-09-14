@@ -1064,12 +1064,14 @@ check("upd37b (gate 37): so does a missing project and a missing scope",
       and "scope" in app.compliance_pack_update_apply_ui(str(_UP2), "", "Quality")[0].lower(), None)
 check("upd37c (gate 37): the read-only pack-state check never raises, whatever it is handed",
       app.compliance_pack_state_ui("")[0] == ""
-      and app.compliance_pack_state_ui("")[1]["visible"] is False, None)
+      and app.compliance_pack_state_ui("")[1]["visible"] is False
+      and app.compliance_pack_state_ui("")[2] == "", None)
 # Both entry points matter: the sidebar button uses gr.Tabs(selected=...),
 # which never fires cp_tab.select, so a single binding would leave the
 # notice invisible on the path users actually take.
 _APP_SRC = Path(app.__file__).read_text(encoding="utf-8")
-_UPDATE_BINDING = "compliance_pack_state_ui, [project_state], [cp_pack_state, cp_pack_update_row]"
+_UPDATE_BINDING = ("compliance_pack_state_ui, [project_state], "
+                   "[cp_pack_state, cp_pack_update_row, cp_pack_provenance]")
 check("upd38 (gate 38): every normal way into Compliance loads the pack state -- the tab select, the "
       "sidebar button and the Home card (both of the latter use gr.Tabs(selected=...), which never "
       "fires .select()), plus the reload and import actions that can change it",
@@ -1097,46 +1099,64 @@ def _pos(needle: str) -> int:
 
 check("nav1: Compliance has an entry point in the project workspace itself, not only the sidebar -- "
       "a user who does not already know the area exists now has a reason to open it",
-      "home_compliance=gr.Button(\"Vai a Compliance\"" in _SRC
+      "home_compliance=gr.Button(\"Vai a Conformità\"" in _SRC
       and "Copertura documentale</div><div class='ms-quick-desc'>" in _SRC, None)
 check("nav1b: that Home card actually navigates to the compliance tab",
       "home_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)" in _SRC, None)
 check("nav1c: the sidebar entry is unchanged -- no second navigation paradigm was introduced",
-      "nav_compliance=gr.Button(\"☑   Compliance\"" in _SRC
+      "nav_compliance=gr.Button(\"☑   Conformità\"" in _SRC
       and "nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)" in _SRC, None)
 
-# The whole point of the reorder: the daily work comes before the setup.
+# UX Gate 1 replaced the single long page with a workspace: a compact
+# always-visible header, then sub-tabs. Linear source order is no longer
+# the right thing to assert -- the structure is.
+_POS_HEADER = _pos("cp_dashboard = gr.HTML()")
 _POS_PACKSTATE = _pos("cp_pack_state = gr.HTML()")
-_POS_COVERAGE = _pos("cp_coverage = gr.HTML()")
-_POS_GAPS = _pos("cp_gaps = gr.Dataframe(")
-_POS_REQS = _pos("cp_table = gr.Dataframe(")
+_POS_REQTAB = _pos('with gr.Tab("Requisiti", id="cp_requirements"):')
+_POS_LIST = _pos("cp_table = gr.Dataframe(")
+_POS_OVERVIEW = _pos('with gr.Tab("Panoramica", id="cp_overview"):')
+_POS_UPDATES = _pos('with gr.Tab("Aggiornamenti normativi", id="cp_updates"):')
 _POS_SETUP = _pos('with gr.Accordion("Aggiungi un pacchetto di requisiti", open=False):')
-check("nav2: 'Copertura documentale' is rendered BEFORE the pack setup panel -- it used to sit "
-      "roughly 600px below it, under a block a user only ever needs once",
-      _POS_COVERAGE < _POS_SETUP, (_POS_COVERAGE, _POS_SETUP))
-check("nav2b: the whole working sequence (stato pacchetto, copertura, da completare, requisiti) "
-      "precedes the setup panel, in that order",
-      _POS_PACKSTATE < _POS_COVERAGE < _POS_GAPS < _POS_REQS < _POS_SETUP,
-      (_POS_PACKSTATE, _POS_COVERAGE, _POS_GAPS, _POS_REQS, _POS_SETUP))
-check("nav3: the setup panel is collapsed by default -- installing a pack is a one-time action and "
-      "must not be the first thing on a screen about documentation coverage",
+check("nav2: the essential state (coverage + active package) is in an always-visible header, "
+      "ABOVE the sub-tabs, so it never scrolls away while working",
+      _POS_HEADER < _POS_PACKSTATE < _POS_REQTAB, (_POS_HEADER, _POS_PACKSTATE, _POS_REQTAB))
+check("nav2b: 'Requisiti' is the LANDING sub-tab -- the daily work is what the section opens on, "
+      "with Panoramica and the pack updates behind it",
+      _POS_REQTAB < _POS_OVERVIEW < _POS_UPDATES, (_POS_REQTAB, _POS_OVERVIEW, _POS_UPDATES))
+check("nav2c: the working list lives inside the Requisiti tab, and the one-time setup is the very "
+      "last thing in the section",
+      _POS_REQTAB < _POS_LIST < _POS_UPDATES < _POS_SETUP,
+      (_POS_REQTAB, _POS_LIST, _POS_UPDATES, _POS_SETUP))
+check("nav3: the setup panel is still collapsed by default -- installing a pack is a one-time "
+      "action and must not compete with daily assessment",
       'with gr.Accordion("Aggiungi un pacchetto di requisiti", open=False):' in _SRC
       and 'with gr.Accordion("Pacchetti di requisiti", open=True):' not in _SRC, None)
-check("nav4: the pack section carries a visible heading, so the area is identifiable even before any "
-      "data loads",
-      "<div class='ms-section-title'>Pacchetto di requisiti</div>" in _SRC, None)
+check("nav4: the section is named in Italian everywhere a user can see it",
+      '<h1>Conformità</h1>' in _SRC and 'gr.Tab("Conformità", id="compliance")' in _SRC
+      and '<h1>Compliance</h1>' not in _SRC, None)
 
 # The pack strip answers the version questions without opening anything.
 _st_new = cv.pack_update_status(svc, PACK)
 _strip = app._pack_state_html(_st_new)
-check("nav5: the pack strip answers 'which pack version is this project using?' at a glance, with no "
-      "dropdown to open first",
-      "Pacchetto attivo" in _strip and "Versione nel progetto" in _strip and "1.1.0" in _strip, _strip[:200])
-check("nav5b: it also answers 'which official text was this verified against?' and 'which scope?'",
-      "Testo ufficiale verificato" in _strip and "02023R1230 — IT" in _strip
-      and "Ambito" in _strip and "Macchina completa" in _strip, None)
-check("nav5c: when the pack is current it says so plainly instead of showing nothing",
-      "allineato all'ultima revisione verificata" in _strip, None)
+# UX Gate 1 split this in two: the compact header answers "which pack,
+# which version" at a glance, and the full provenance (which official
+# consolidated text it was verified against) moved to the tab whose
+# subject is exactly that -- visible without opening anything, but not
+# competing with the working list.
+check("nav5: the compact header answers 'which pack and which version?' at a glance, "
+      "with no dropdown to open first",
+      "Pacchetto" in _strip and "1.1.0" in _strip, _strip[:200])
+_prov = app._pack_provenance_html(_st_new)
+check("nav5b: the FULL provenance -- official verified text and scope -- lives in "
+      "'Aggiornamenti normativi', always visible there, never lost",
+      "Testo ufficiale verificato" in _prov and "02023R1230 — IT" in _prov
+      and "Ambito" in _prov and "Macchina completa" in _prov, _prov[:220])
+# UX Gate 1 requires the update alert to appear ONLY when relevant, so a
+# current pack now says nothing at all in the header rather than spending
+# a line to report that nothing is happening.
+check("nav5c: a CURRENT pack shows the pack line and no alert -- silence is the signal",
+      cv.UPDATE_AVAILABLE_TITLE not in _strip and "Pacchetto" in _strip,
+      _strip[:200])
 check("nav6: a project with NO pack gets a call to action naming where to go, not an empty screen",
       "Nessun pacchetto di requisiti" in app._pack_state_html({"installed": False})
       and "Aggiungi un pacchetto di requisiti" in app._pack_state_html({"installed": False}), None)
@@ -1146,21 +1166,21 @@ check("nav7: the strip exposes no database or schema terminology",
                                             "mr2023-")), _strip)
 
 # Update actions appear only when they mean something.
-_state_current_html, _state_current_vis = app.compliance_pack_state_ui(str(P))
+_state_current_html, _state_current_vis, _ = app.compliance_pack_state_ui(str(P))
 check("nav8: for an up-to-date project the update actions are HIDDEN -- a permanently visible "
       "'Aggiorna pacchetto' invites a click that does nothing",
       _state_current_vis["visible"] is False, _state_current_vis)
 _UP3, _urepo3, _usvc3 = _project_on_old_revision("4f2_nav_pending")
-_state_pending_html, _state_pending_vis = app.compliance_pack_state_ui(str(_UP3))
+_state_pending_html, _state_pending_vis, _ = app.compliance_pack_state_ui(str(_UP3))
 check("nav8b: when an update IS pending the actions become visible next to the notice",
       _state_pending_vis["visible"] is True
       and cv.UPDATE_AVAILABLE_TITLE in _state_pending_html, _state_pending_vis)
 check("nav8c: the pending strip still shows the version the project is on, so the user can compare",
       "1.0.0" in _state_pending_html and "1.1.0" in _state_pending_html, None)
-check("nav9: the update row carries its own name field, so applying an update does not require "
-      "scrolling to the setup panel at the bottom of the page to type a name",
-      "cp_pack_update_actor = gr.Textbox" in _SRC
-      and "compliance_pack_update_apply_ui, [project_state, cp_scope, cp_pack_update_actor]" in _SRC, None)
+check("nav9: applying an update uses the WORKSPACE operator -- UX Gate 1 superseded the "
+      "per-panel name field with one identity chosen once in the shell",
+      "compliance_pack_update_apply_ui, [project_state, cp_scope, ws_operator]" in _SRC
+      and "cp_pack_update_actor" not in _SRC, None)
 # Found by the browser gate, not by reasoning: the apply chain refreshed
 # coverage and gaps but NOT the requirement table, so an update whose whole
 # purpose is to correct wording left the OLD wording on screen, looking
@@ -1204,8 +1224,9 @@ check("pol1c: an ACTIVE scope is not annotated '(attivo)' -- only a non-active o
 
 check("pol2: the refresh button names what its callback actually does and is no longer the page's "
       "primary action, so it cannot be confused with updating the starter pack",
-      'cp_reload = gr.Button("Ricalcola stato", variant="secondary")' in _SRC
-      and 'cp_reload = gr.Button("Aggiorna", variant="primary")' not in _SRC, None)
+      'cp_reload = gr.Button("Ricalcola stato"' in _SRC
+      and 'variant="secondary"' in _SRC.split('cp_reload = gr.Button("Ricalcola stato"')[1][:60]
+      and 'cp_reload = gr.Button("Aggiorna"' not in _SRC, None)
 
 # --- #3: no mixed-language statuses reach the user -------------------
 check("pol3: the engine vocabulary is mapped to Italian for display only",
@@ -1231,29 +1252,40 @@ check("pol3e: the requirement detail badge is Italian too, and keeps the status 
       and app._COMPLIANCE_STATUS_COLOR["To verify"] in app._compliance_status_badge("To verify"), None)
 
 # --- #4: product tables, not debug dumps -----------------------------
-check("pol4: both compliance tables declare column widths, so they fit a normal desktop instead of "
-      "forcing a horizontal scrollbar",
-      'elem_classes=["ms-cp-grid"],\n                                   column_widths=' in _SRC
-      and 'elem_classes=["ms-cp-grid", "ms-cp-grid-click"],\n                                    column_widths=' in _SRC,
+check("pol4: every compliance table declares column widths, so none forces a horizontal "
+      "scrollbar. The working list dropped to four columns in UX Gate 1 because it now "
+      "shares the row with the requirement detail",
+      _SRC.count("column_widths=") >= 2
+      and '"40%", "25%", "19%", "16%"' in _SRC
+      and list(app._COMPLIANCE_LIST_COLS) == ["Titolo", "Riferimento", "Stato", "Evidenza"],
       None)
 check("pol4b: the grid CSS overrides Gradio's tabular cell font with the product font and lets text "
       "wrap inside its column",
       ".ms-cp-grid td,.ms-cp-grid th{font-family:inherit!important" in _SRC
       and "white-space:normal!important" in _SRC, None)
-check("pol4c: no information was dropped to achieve it -- both tables keep every column",
+check("pol4c: no information was dropped -- 'Motivo' moved from the scannable list to the "
+      "requirement detail, where the decision it explains actually happens, and the full "
+      "five-column table is still produced for anything that needs it",
       list(_pol_table.columns) == app._COMPLIANCE_TABLE_COLS
-      and len(app._COMPLIANCE_TABLE_COLS) == 5, list(_pol_table.columns))
+      and len(app._COMPLIANCE_TABLE_COLS) == 5
+      and "Motivo" not in app._COMPLIANCE_LIST_COLS, list(_pol_table.columns))
 
 # --- #5: a requirement row is the way into a requirement -------------
-check("pol5: clicking a row in the requirement table opens that requirement",
-      "cp_table.select(compliance_open_requirement_row_ui, [project_state, cp_scope], cp_out_full)" in _SRC,
-      None)
+check("pol5: clicking a row in the requirement list opens that requirement, resolved against "
+      "the SEARCH and FILTER the user is actually looking at -- otherwise a click on a "
+      "narrowed list would open the wrong one",
+      "cp_table.select(compliance_open_requirement_row_ui," in _SRC
+      and "[project_state, cp_scope, cp_search, cp_filter], cp_out_full)" in _SRC, None)
 check("pol5b: the section says so in words, so the affordance is discoverable before it is tried",
       "Clicca una riga per aprire il requisito" in _SRC, None)
-check("pol5c: the dropdown survives as a keyboard-reachable alternative and is renamed to read as an "
-      "action rather than a filter",
-      'label="Oppure seleziona il requisito da valutare"' in _SRC
-      and 'label="Apri un requisito"' not in _SRC, None)
+# Manual acceptance rejected the alternative dropdown: it expanded into a
+# page-covering list of 41 requirements and overwhelmed the workspace.
+# Row-click plus search and filter give equivalent access, so it is out of
+# the visible workflow. The component itself stays only because the detail
+# bundle is positional and a structural guard pins its arity.
+check("pol5c: the page-covering alternative dropdown is OUT of the visible workflow",
+      'label="Requisito", choices=[], value=None, visible=False)' in _SRC
+      and "Oppure seleziona il requisito da valutare" not in _SRC, None)
 
 
 class _Sel:
@@ -1281,29 +1313,30 @@ except ValueError:
     _actor_required_still_enforced = True
 
 
-_opened = app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", _Sel([0, 0]))
+_opened = app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", "", "Tutti", _Sel([0, 0]))
 _expected_rid = cv.requirement_list_rows(svc, "SCOPE-EU")[0]["requirement_id"]
 check("pol5d: the row click opens the requirement on THAT row, resolved against a freshly computed "
       "list rather than whatever the client-side table happens to hold",
       _opened[app_idx_open_rid] == _expected_rid, (_opened[app_idx_open_rid], _expected_rid))
 check("pol5e: an out-of-range or malformed row index opens nothing instead of the wrong requirement",
-      app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", _Sel([9999, 0]))[app_idx_open_rid] == ""
-      and app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", _Sel(None))[app_idx_open_rid] == "", None)
+      app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", "", "Tutti", _Sel([9999, 0]))[app_idx_open_rid] == ""
+      and app.compliance_open_requirement_row_ui(str(P), "SCOPE-EU", "", "Tutti", _Sel(None))[app_idx_open_rid] == "", None)
 check("pol5f: a missing project or scope is handled without raising",
-      app.compliance_open_requirement_row_ui("", "SCOPE-EU", _Sel([0, 0]))[app_idx_open_rid] == ""
-      and app.compliance_open_requirement_row_ui(str(P), "", _Sel([0, 0]))[app_idx_open_rid] == "", None)
+      app.compliance_open_requirement_row_ui("", "SCOPE-EU", "", "Tutti", _Sel([0, 0]))[app_idx_open_rid] == ""
+      and app.compliance_open_requirement_row_ui(str(P), "", "", "Tutti", _Sel([0, 0]))[app_idx_open_rid] == "", None)
 
 # --- #6: one reviewer identity per requirement -----------------------
-check("pol6: the requirement panel asks for the reviewer's name ONCE, not once per decision",
-      "cp_reviewer = gr.Textbox(" in _SRC
+check("pol6: the operator identity is asked ONCE for the whole workspace, not once per "
+      "decision and not once per panel",
+      "ws_operator = gr.Textbox(" in _SRC and "cp_reviewer" not in _SRC
       and "cp_applic_reviewer" not in _SRC and "cp_cov_reviewer" not in _SRC
       and "cp_evidence_reviewer" not in _SRC and "cp_evidence_unlink_reviewer" not in _SRC, None)
 check("pol6b: that one field feeds every decision callback, so the audit actor is unchanged -- the "
       "name is shared, the audit semantics are not relaxed",
-      _SRC.count("cp_open_rid, cp_applic_radio, cp_reviewer") == 1
-      and _SRC.count("cp_open_rid, cp_cov_radio, cp_reviewer") == 1
-      and _SRC.count("cp_evidence_candidates, cp_reviewer") == 1
-      and _SRC.count("cp_evidence_unlink_dd,\n                                          cp_reviewer") == 1, None)
+      _SRC.count("cp_open_rid, cp_applic_radio, ws_operator") == 1
+      and _SRC.count("cp_open_rid, cp_cov_radio, ws_operator") == 1
+      and _SRC.count("cp_evidence_candidates, ws_operator") == 1
+      and _SRC.count("cp_evidence_unlink_dd,\n                                          ws_operator") == 1, None)
 check("pol6c: an empty reviewer name is still refused by the engine, so sharing the field did not "
       "weaken attribution",
       _actor_required_still_enforced, None)

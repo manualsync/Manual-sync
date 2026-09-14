@@ -111,11 +111,38 @@ def scope_options(svc: ComplianceService, publication_id: str) -> list[tuple[str
     return out
 
 
+# PRESENTATION ONLY. The stored `official_identifier` is the instrument's
+# canonical identifier and never changes -- it is what a pack declares and
+# what provenance is traced against. This maps the EU act types to the
+# Italian citation form the rest of the reference is already written in,
+# so a requirement does not read "Regulation (EU) 2023/1230 Articolo 10,
+# paragrafo 8" -- half English, half Italian, in an Italian product.
+_ACT_TYPE_IT = (
+    ("Regulation (EU)", "Regolamento (UE)"),
+    ("Regulation (EC)", "Regolamento (CE)"),
+    ("Directive (EU)", "Direttiva (UE)"),
+    ("Directive (EC)", "Direttiva (CE)"),
+)
+
+
+def instrument_label(official_identifier: str) -> str:
+    """The Italian display form of an instrument identifier.
+
+    Unknown identifiers pass through unchanged rather than being guessed
+    at: showing a citation nobody can find in the Gazzetta would be worse
+    than showing it in English."""
+    text = str(official_identifier or "")
+    for en, it in _ACT_TYPE_IT:
+        if text.startswith(en):
+            return it + text[len(en):]
+    return text
+
+
 def _requirement_reference(svc: ComplianceService, req: dict[str, Any]) -> str:
     if not req.get("instrument_id"):
         return req.get("article_ref") or "—"
     inst = svc.instrument_row(req["instrument_id"])
-    ident = inst["official_identifier"] if inst else req["instrument_id"]
+    ident = instrument_label(inst["official_identifier"]) if inst else req["instrument_id"]
     art = req.get("article_ref") or ""
     return f"{ident} {art}".strip()
 
@@ -361,6 +388,11 @@ def requirement_list_rows(svc: ComplianceService, scope_id: str) -> list[dict[st
             "requirement_id": rid,
             "title": req["title"],
             "reference": _requirement_reference(svc, req),
+            # Short form for a LIST scoped to one instrument: repeating
+            # "Regolamento (UE) 2023/1230" on all 41 rows spends the whole
+            # column on a constant and pushes every row to three lines.
+            # The full citation stays on the requirement detail.
+            "reference_short": req.get("article_ref") or _requirement_reference(svc, req),
             "status": status,
             "reason": _explain_status(svc, scope_id, rid, status),
             "has_evidence": bool(svc.evidence_for_requirement(rid)),
