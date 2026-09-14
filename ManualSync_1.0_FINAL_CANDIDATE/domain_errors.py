@@ -176,6 +176,42 @@ MIGRATED_CODES = (
     ERR_PROJECT_REPOSITORY_MISSING,
 )
 
+# ---------------------------------------------------------------------
+# Authoring / Contenuti — first migration batch.
+#
+# Repository and object validation only: the errors that say "this input
+# is not usable" or "that file/repository is not there". Deliberately NOT
+# the 32 "actor è obbligatorio ..." raises, which share one condition but
+# 22 different sentences -- collapsing those needs a wording decision,
+# and this gate is forbidden from changing wording.
+#
+# Each catalog entry reproduces the CURRENT Italian sentence exactly,
+# including its interpolation, so the screen is unchanged. Where the old
+# f-string used !r, the catalog uses {name!r} for the same reason.
+# ---------------------------------------------------------------------
+ERR_AUTHORING_REPOSITORY_MISSING = "ERR_AUTHORING_REPOSITORY_MISSING"
+ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED = "ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED"
+ERR_AUTHORING_TOPIC_TITLE_REQUIRED = "ERR_AUTHORING_TOPIC_TITLE_REQUIRED"
+ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED = "ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED"
+ERR_AUTHORING_ASSET_FILE_MISSING = "ERR_AUTHORING_ASSET_FILE_MISSING"
+ERR_AUTHORING_TOPIC_ID_REQUIRED = "ERR_AUTHORING_TOPIC_ID_REQUIRED"
+ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED = "ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED"
+
+#: The Authoring/Contenuti batch. Kept separate from MIGRATED_CODES so a
+#: suite can still assert which layer each code belongs to.
+AUTHORING_CODES = (
+    ERR_AUTHORING_REPOSITORY_MISSING,
+    ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED,
+    ERR_AUTHORING_TOPIC_TITLE_REQUIRED,
+    ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED,
+    ERR_AUTHORING_ASSET_FILE_MISSING,
+    ERR_AUTHORING_TOPIC_ID_REQUIRED,
+    ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED,
+)
+
+#: Every code migrated so far, whatever the layer.
+ALL_CODES = MIGRATED_CODES + AUTHORING_CODES
+
 #: What the UI shows when it meets a code it has no sentence for, or a
 #: failure that is not a DomainError at all. Kept here so the fallback is
 #: part of the contract rather than an accident of the resolver.

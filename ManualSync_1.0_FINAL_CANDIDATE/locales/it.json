@@ -168,5 +168,12 @@
   "error.ERR_PACK_NO_REQUIREMENTS_SELECTED": "Nessun requisito corrisponde all'ambito di applicabilità selezionato.",
   "error.ERR_PROJECT_EXISTS": "Esiste già un progetto con questo nome: {project_name}.",
   "error.ERR_PROJECT_MANIFEST_INVALID": "Il file di progetto non è leggibile come progetto ERYLOS valido.",
-  "error.ERR_PROJECT_REPOSITORY_MISSING": "Questo progetto non contiene ancora un archivio contenuti."
+  "error.ERR_PROJECT_REPOSITORY_MISSING": "Questo progetto non contiene ancora un archivio contenuti.",
+  "error.ERR_AUTHORING_REPOSITORY_MISSING": "Repository CCMS non trovato nel progetto",
+  "error.ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED": "kind deve essere uno tra {allowed}",
+  "error.ERR_AUTHORING_TOPIC_TITLE_REQUIRED": "Il titolo del topic è obbligatorio.",
+  "error.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED": "Tipo blocco non creabile dall'editor: {block_type!r} (ammessi: {allowed}).",
+  "error.ERR_AUTHORING_ASSET_FILE_MISSING": "File non trovato: {path}",
+  "error.ERR_AUTHORING_TOPIC_ID_REQUIRED": "topic_id obbligatorio",
+  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind deve essere topic o component"
 }

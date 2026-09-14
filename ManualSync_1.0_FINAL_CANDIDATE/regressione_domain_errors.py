@@ -278,7 +278,9 @@ import re as _re  # noqa: E402
 
 CATALOG_ERROR_KEYS = {k for lg in i18n.SUPPORTED_LANGUAGES for k in i18n.catalog_keys(lg)
                       if k.startswith("error.")}
-declared = {f"error.{c}" for c in de.MIGRATED_CODES} | {"error.unknown"}
+# ALL_CODES, not MIGRATED_CODES: later gates add their own batches (the
+# Authoring one is already here), and their catalog entries are not orphans.
+declared = {f"error.{c}" for c in de.ALL_CODES} | {"error.unknown"}
 check("cons1: no orphan error key -- every error.* entry maps to a declared code",
       CATALOG_ERROR_KEYS == declared,
       {"orphans": sorted(CATALOG_ERROR_KEYS - declared),
@@ -287,10 +289,10 @@ check("cons2: MIGRATED_CODES has no duplicates",
       len(de.MIGRATED_CODES) == len(set(de.MIGRATED_CODES)))
 check("cons3: no two codes resolve to the same sentence -- which would mean two "
       "codes for one condition",
-      len({i18n.translate(f"error.{c}", "it") for c in de.MIGRATED_CODES})
-      == len(de.MIGRATED_CODES),
-      [t_ for t_ in {i18n.translate(f"error.{c}", "it") for c in de.MIGRATED_CODES}
-       if [i18n.translate(f"error.{c}", "it") for c in de.MIGRATED_CODES].count(t_) > 1])
+      len({i18n.translate(f"error.{c}", "it") for c in de.ALL_CODES})
+      == len(de.ALL_CODES),
+      [t_ for t_ in {i18n.translate(f"error.{c}", "it") for c in de.ALL_CODES}
+       if [i18n.translate(f"error.{c}", "it") for c in de.ALL_CODES].count(t_) > 1])
 
 # Placeholders a catalog message needs, vs params the raise sites emit.
 EMITTED = {

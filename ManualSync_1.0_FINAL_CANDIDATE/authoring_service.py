@@ -59,6 +59,8 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
+import domain_errors as de
+from domain_errors import DomainFileMissingError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 import rich_text
 
@@ -195,7 +197,8 @@ class AuthoringService:
     def save_draft(self, kind: str, object_id: str, *, base_version: int, payload: dict[str, Any],
                    actor: str, session_id: str = "") -> None:
         if kind not in _EDITABLE_KINDS:
-            raise ValueError(f"kind deve essere uno tra {sorted(_EDITABLE_KINDS)}")
+            raise DomainValidationError(de.ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED,
+                                        allowed=sorted(_EDITABLE_KINDS))
         actor = str(actor or "").strip()
         if not actor:
             raise ValueError("actor è obbligatorio per un draft recovery.")
@@ -1527,7 +1530,7 @@ class AuthoringService:
             raise ValueError("actor è obbligatorio per creare un topic.")
         title = str(title or "").strip()
         if not title:
-            raise ValueError("Il titolo del topic è obbligatorio.")
+            raise DomainValidationError(de.ERR_AUTHORING_TOPIC_TITLE_REQUIRED)
         if not self.conn.execute("SELECT 1 FROM publications WHERE publication_id=?", (publication_id,)).fetchone():
             raise KeyError(publication_id)
 
@@ -1579,7 +1582,9 @@ class AuthoringService:
             raise ValueError("actor è obbligatorio per creare un blocco.")
         bt = str(block_type or "").strip().lower()
         if bt not in EDITABLE_TEXT_BLOCK_TYPES:
-            raise ValueError(f"Tipo blocco non creabile dall'editor: {bt!r} (ammessi: {sorted(EDITABLE_TEXT_BLOCK_TYPES)}).")
+            raise DomainValidationError(de.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED,
+                                        block_type=bt,
+                                        allowed=sorted(EDITABLE_TEXT_BLOCK_TYPES))
         topic_row = self.conn.execute("SELECT archived_at FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
         if not topic_row:
             raise KeyError(topic_id)
@@ -1900,7 +1905,8 @@ class AuthoringService:
         so preview/consumption code does not need two path conventions."""
         source_path = Path(source_path)
         if not source_path.exists():
-            raise FileNotFoundError(f"File non trovato: {source_path}")
+            raise DomainFileMissingError(de.ERR_AUTHORING_ASSET_FILE_MISSING,
+                                         path=str(source_path))
         assets_dir = self._project_dir() / "Assets" / subdir
         assets_dir.mkdir(parents=True, exist_ok=True)
         safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", source_path.name).strip("_") or "asset"

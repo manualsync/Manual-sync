@@ -168,5 +168,12 @@
   "error.ERR_PACK_NO_REQUIREMENTS_SELECTED": "No requirement matches the selected applicability scope.",
   "error.ERR_PROJECT_EXISTS": "A project with this name already exists: {project_name}.",
   "error.ERR_PROJECT_MANIFEST_INVALID": "This project file cannot be read as a valid ERYLOS project.",
-  "error.ERR_PROJECT_REPOSITORY_MISSING": "This project does not contain a content repository yet."
+  "error.ERR_PROJECT_REPOSITORY_MISSING": "This project does not contain a content repository yet.",
+  "error.ERR_AUTHORING_REPOSITORY_MISSING": "CCMS repository not found in this project",
+  "error.ERR_AUTHORING_DRAFT_KIND_UNSUPPORTED": "kind must be one of {allowed}",
+  "error.ERR_AUTHORING_TOPIC_TITLE_REQUIRED": "The topic title is required.",
+  "error.ERR_AUTHORING_BLOCK_TYPE_UNSUPPORTED": "Block type not creatable from the editor: {block_type!r} (allowed: {allowed}).",
+  "error.ERR_AUTHORING_ASSET_FILE_MISSING": "File not found: {path}",
+  "error.ERR_AUTHORING_TOPIC_ID_REQUIRED": "topic_id is required",
+  "error.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED": "kind must be topic or component"
 }

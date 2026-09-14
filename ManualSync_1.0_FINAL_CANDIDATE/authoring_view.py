@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import domain_errors as de
+from domain_errors import DomainFileMissingError
 from ccms_industrial import IndustrialRepository
 from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES, _SHARED_OBJECT_MESSAGE
 import rich_text as _rich_text
@@ -119,7 +121,8 @@ def ccms_db_path(project_dir: str | Path) -> Path:
         p = base / name
         if p.exists():
             return p
-    raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    raise DomainFileMissingError(de.ERR_AUTHORING_REPOSITORY_MISSING,
+                                 project_dir=str(base))
 
 
 def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, AuthoringService]:

@@ -13,6 +13,8 @@ from uuid import uuid4
 import pandas as pd
 from docx import Document as DocxDocument
 
+import domain_errors as de
+from domain_errors import DomainValidationError
 from layout_engine import extract_layout
 from language_codes import canonical_lang
 from idml_import import parse_idml, materialize_figure_assets
@@ -178,7 +180,7 @@ class ContentRepository:
                      evidence_status: str = "SOURCE_GROUNDED") -> str:
         topic_id = str(topic_id).strip()
         if not topic_id:
-            raise ValueError("topic_id obbligatorio")
+            raise DomainValidationError(de.ERR_AUTHORING_TOPIC_ID_REQUIRED)
         now = _now()
         include = sorted(set(str(x).strip() for x in (include_variants or []) if str(x).strip()))
         exclude = sorted(set(str(x).strip() for x in (exclude_variants or []) if str(x).strip()))
@@ -400,7 +402,7 @@ class ContentRepository:
                 if token in (r["body"] or ""):
                     impacted_topics.add(r["topic_id"])
         else:
-            raise ValueError("kind deve essere topic o component")
+            raise DomainValidationError(de.ERR_AUTHORING_OBJECT_KIND_UNSUPPORTED)
         rows = []
         for topic_id in sorted(impacted_topics):
             topic = self.conn.execute("SELECT * FROM topics WHERE topic_id=?", (topic_id,)).fetchone()
