@@ -33,15 +33,47 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance_guard import active_project_dir, overlay_snapshot, report_delta  # noqa: E402
+from acceptance_guard import overlay_snapshot, report_delta  # noqa: E402
 from regressione_browser_save_4e3 import Browser, APP_URL  # noqa: E402
 
+import acceptance_fixture as fx  # noqa: E402
 import authoring_view as av  # noqa: E402
 
-# Whatever the app is actually pointed at. Hardcoding one project here is
-# how a harness ends up silently operating on somebody else's baseline.
-PROJECT = active_project_dir()
-PROFILE_LABEL = "EU Service"
+# Resolved from the disposable project this gate builds for itself.
+#
+# These used to be a hardcoded profile name ("EU Service") and a manual
+# title ("Manuale Pompa HX-400") belonging to a project that exists on no
+# checkout in this repository, so the gate failed during setup everywhere
+# and proved nothing. It now creates the profile it needs and reads the
+# publication title back out of what it built, so a future rename of
+# either cannot break it.
+PROJECT = None
+PROFILE_LABEL = ""
+PUBLICATION_TITLE = ""
+
+# The profile this gate creates. Any name would do -- what matters is
+# that the gate creates it and then asserts the SAME name comes back in
+# the export card, rather than hoping a particular one already exists.
+FIXTURE_PROFILE_ID = "PROF-ACCEPT-EXPORT"
+FIXTURE_PROFILE_NAME = "Servizio Europa"
+
+
+def seed_profile(project_dir):
+    """Give the fixture one active variant profile to export against.
+
+    Created through AuthoringService, exactly as the product creates a
+    profile, so it is a real row with real audit history. The canonical
+    demo builder already supplied the manual and publication; this adds
+    the one thing the publishing preview additionally needs.
+    """
+    repo, svc = av.open_service(str(project_dir))
+    try:
+        svc.create_variant_profile(FIXTURE_PROFILE_ID, FIXTURE_PROFILE_NAME, {},
+                                   actor="Acceptance Gate 4F.1")
+    finally:
+        repo.close()
+    return {"profile_id": FIXTURE_PROFILE_ID, "profile_name": FIXTURE_PROFILE_NAME}
+
 
 results: list[dict] = []
 
@@ -125,13 +157,31 @@ def _card_links(br) -> dict:
 
 
 def main():
-    # Export is a READ of the project: it produces files under Exports/ and
-    # must leave project data untouched. This harness therefore does not
-    # demand a disposable clone -- it proves it was read-only instead, by
-    # reporting an overlay delta that has to be zero.
-    target = active_project_dir()
-    overlay_before = overlay_snapshot(target)
+    """Build a disposable project, export from it, throw it away.
 
+    Export is a READ of the project: it produces files under Exports/ and
+    must leave project data untouched, which this gate still proves by
+    requiring a zero overlay delta and unchanged content versions. It now
+    builds its own disposable project anyway -- not because it needs to
+    mutate, but so it starts from data it controls and can assert
+    against, instead of whatever the machine happened to be pointing at.
+    """
+    global PROJECT, PROFILE_LABEL, PUBLICATION_TITLE
+    global APP_URL
+    with fx.disposable_project("Browser_Export_4F1", seed=seed_profile) as (target, facts):
+        PROJECT = target
+        PROFILE_LABEL = facts["profile_name"]
+        PUBLICATION_TITLE = facts["publication_title"]
+        print(f"fixture profile: {PROFILE_LABEL!r}   publication: {PUBLICATION_TITLE!r}")
+        # Own the server for the same reason the save gate does: the
+        # active project is resolved once, at import.
+        with fx.app_server(target) as url:
+            APP_URL = url
+            _run(target)
+
+
+def _run(target):
+    overlay_before = overlay_snapshot(target)
     versions_before = _db_versions()
     br = Browser()
     try:
@@ -143,24 +193,29 @@ def main():
         # Real mouse click: a synthetic one does not fire the sidebar's
         # Python callback, so the tab (and the profile picker it
         # populates) would silently never initialize.
-        check("e2e_nav (setup): the Contenuti tab can be opened from the sidebar",
-              _click_by_text(br, "button", "Contenuti", contains=True), None)
-        br.wait_for("!!document.querySelector('input[aria-label=\"Profilo\"]')",
-                    timeout=45, label="Contenuti loaded")
+        # UX Gate 2A: the publishing preview and the PDF/HTML exports moved
+        # from Contenuti to Rilascio -- they belong to the release cycle,
+        # not to the per-object writing loop. The profile picker moved with
+        # them and is now labelled "Profilo di variante" (it used to be a
+        # bare "Profilo", one of two identically-labelled controls).
+        check("e2e_nav (setup): the Rilascio tab can be opened from the sidebar",
+              _click_by_text(br, "button", "Rilascio", contains=True), None)
+        br.wait_for("!!document.querySelector('input[aria-label=\"Profilo di variante\"]')",
+                    timeout=45, label="Rilascio loaded")
         time.sleep(3)
 
         # ---- select the EU Service profile in the preview's own picker ----
         # The preview's profile picker is a Gradio Dropdown: a text input
-        # labelled "Profilo" whose options only exist in the DOM once it
-        # is opened, so this is a real two-step user interaction.
+        # whose options only exist in the DOM once it is opened, so this
+        # is a real two-step user interaction.
         # The choices arrive from a CHAINED callback after navigation, so
         # the dropdown can legitimately be open-but-empty for a moment;
         # retry rather than racing it.
         picked, opened = False, None
         for _attempt in range(8):
-            br.click('input[aria-label="Profilo"]')
+            br.click('input[aria-label="Profilo di variante"]')
             time.sleep(1.2)
-            opened = br.js("""(document.querySelector('input[aria-label="Profilo"]')||{})
+            opened = br.js("""(document.querySelector('input[aria-label="Profilo di variante"]')||{})
                               .getAttribute('aria-expanded')""")
             option_sel = f'li[aria-label="{PROFILE_LABEL}"]'
             if br.js(f"!!document.querySelector({json.dumps(option_sel)})"):
@@ -181,7 +236,7 @@ def main():
 
         check("e2e1 (PDF, item 3): a real result CARD appears with the success headline and a human "
               "subtitle -- not a bare banner", "PDF creato correttamente" in card_text
-              and "Manuale Pompa HX-400" in card_text and "EU Service" in card_text, card_text)
+              and PUBLICATION_TITLE in card_text and PROFILE_LABEL in card_text, card_text)
         check("e2e2 (PDF, item 4): an 'Apri PDF' action is visibly present as the primary button",
               "Apri PDF" in links and br.js(
                   "!!document.querySelector('.ms-export-card a.ms-export-btn-primary')"), list(links))
@@ -221,7 +276,7 @@ def main():
 
         check("e2e8 (HTML, item 2): a result card appears with the HTML success headline and subtitle",
               "Pacchetto HTML creato correttamente" in card_html_text
-              and "Manuale Pompa HX-400" in card_html_text and "EU Service" in card_html_text,
+              and PUBLICATION_TITLE in card_html_text and PROFILE_LABEL in card_html_text,
               card_html_text)
         check("e2e9 (HTML, item 3): an 'Apri HTML' primary action is present",
               "Apri HTML" in html_links, list(html_links))

@@ -26,6 +26,7 @@ from authoring_service import AuthoringService, VersionConflictError, ArchivedOb
 import authoring_view as av
 from project_lifecycle import create_project
 import app
+import i18n
 
 TMP = Path(tempfile.mkdtemp(prefix="manualsync_authoring_editor_4b2_"))
 results = []
@@ -547,16 +548,32 @@ def _deps_writing_to(component) -> list:
 # actual wired app.demo Blocks graph, not just the pure-Python helpers.
 # ------------------------------------------------------------------
 
-# 1) exactly one standard-mode "Il tuo nome" textbox in the Contenuti tab:
-#    the old second one (Studio's own st_actor) and the old
-#    source-approval one (c_simple_reviewer, since folded into the shared
-#    field) no longer exist as separate components at all.
+# 1) exactly ONE identity field reaches the authoring actions.
+#
+#    Re-aimed by UX Gate 2A. The invariant this group has always
+#    protected is "one identity field, plain language, feeding
+#    actor_state" -- not the particular component that provides it.
+#    4B.2 removed two duplicates (Studio's own st_actor, and the
+#    source-approval c_simple_reviewer) and kept a tab-local c_actor.
+#    Gate 2A removed that one too: it was a third copy of a question
+#    the shell context bar already asks, sitting ~800px above the
+#    workspace on a tab whose job is writing. ws_operator is now the
+#    single field, and actor_state is fed from it.
 check("g30.1: the old, second Studio 'Il tuo nome' field (st_actor) no longer exists", not hasattr(app, "st_actor"), None)
 check("g30.1: the old source-approval 'Il tuo nome' field (c_simple_reviewer) no longer exists -- folded into the shared one",
       not hasattr(app, "c_simple_reviewer"), None)
-check("g30.1: the one remaining shared identity field is still labelled exactly 'Il tuo nome'", app.c_actor.label == "Il tuo nome", app.c_actor.label)
-check("g30.1: it carries the plain-language helper text, not 'actor'/'audit actor'/'user id' jargon",
-      app.c_actor.info == "Serve per registrare chi effettua modifiche e decisioni.", app.c_actor.info)
+check("g30.1: the tab-local duplicate identity field (c_actor) no longer exists -- folded into the shell operator",
+      not hasattr(app, "c_actor"), None)
+check("g30.1: the one remaining identity field is the shell workspace operator",
+      app.ws_operator.label == i18n.translate("context.operator", "it"), app.ws_operator.label)
+check("g30.1: it carries plain-language helper text, not 'actor'/'audit actor'/'user id' jargon",
+      app.ws_operator.info == i18n.translate("context.operator.hint", "it")
+      and not any(j in (app.ws_operator.info or "").lower() for j in ("actor", "user id", "audit actor")),
+      app.ws_operator.info)
+check("g30.1: actor_state is fed from that single field, so every mutation callback still sees one identity",
+      any(dep.get("inputs") == [app.ws_operator._id] and dep.get("outputs") == [app.actor_state._id]
+          for dep in app.demo.config["dependencies"]),
+      None)
 
 # 2) Authoring Studio actions are wired to that same shared field's
 #    identity (checked against the real dependency graph, not just by
@@ -668,8 +685,26 @@ check("g30.8b (4E.3): opening an editable BLOCK makes the standard contenteditab
 #    assumption: a full page reload (F5) is a fresh browser session and is
 #    documented as the one case that does start over, per Gradio's normal
 #    per-session component state.
-check("g30.9: no wired event anywhere in the app ever targets c_actor as an OUTPUT (nothing can silently clear it)",
-      len(_deps_writing_to(app.c_actor)) == 0, None)
+#    Gate 2A note: the operator field IS an output of exactly one event --
+#    the language switch, which rewrites its label/info/placeholder. That
+#    is not a value write, so the guarantee is unchanged; assert the
+#    precise thing rather than the blunt "never an output", which would
+#    now pass only by forbidding localization of the field.
+_operator_writers = _deps_writing_to(app.ws_operator)
+check("g30.9: exactly ONE wired event writes to the operator field",
+      len(_operator_writers) == 1, _operator_writers)
+check("g30.9: and that event is the language switch -- it writes to every LOC-registered component at once",
+      len(_operator_writers[0].get("outputs", [])) == len(app.LOC),
+      (len(_operator_writers[0].get("outputs", [])), len(app.LOC)))
+_op_entry = next(builders for comp, builders in app.LOC._entries if comp is app.ws_operator)
+check("g30.9: the language switch rewrites the operator's LABEL only -- it never emits a value, "
+      "so switching IT<->EN cannot clear what the user typed",
+      "value" not in _op_entry and set(_op_entry) <= {"label", "info", "placeholder"}, _op_entry)
+with i18n.use_language("en"):
+    _op_update = app.gr.update(**{p: (b() if callable(b) else app.t(b)) for p, b in _op_entry.items()})
+check("g30.9: and the update it actually emits carries no value key",
+      "value" not in {k for k, v in dict(_op_update).items() if v is not None}
+      or dict(_op_update).get("value") is None, dict(_op_update))
 
 # 10) every predictable validation in the Studio flow still returns a
 #     normal, full-length bundle (never a generic gr.Error) after this

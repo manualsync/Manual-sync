@@ -1013,8 +1013,22 @@ repo2, svc2 = av.open_service(p2)
 svc2.create_variant_profile("PROF-OTHER", "Other Profile", {}, actor="Writer A")
 repo2.close()
 
-choices_p1 = app.studio_preview_profile_choices_ui(str(p1))
-choices_p2 = app.studio_preview_profile_choices_ui(str(p2))
+# UX Gate 2A: studio_preview_profile_choices_ui is now the ONE profile
+# choice builder shared by Contenuti's evaluator and Rilascio's preview/
+# export, so it returns (dropdown_update, kept_profile_id) -- the second
+# half feeds the shared profile_state. Unpack; the choice-list assertions
+# below are unchanged.
+choices_p1, kept_p1 = app.studio_preview_profile_choices_ui(str(p1))
+choices_p2, kept_p2 = app.studio_preview_profile_choices_ui(str(p2))
+check("switch44b (UX Gate 2A): with no prior selection, nothing is invented -- the carried profile is None",
+      kept_p1 is None and kept_p2 is None, (kept_p1, kept_p2))
+# and a selection from ANOTHER project is dropped rather than carried over
+_, kept_cross = app.studio_preview_profile_choices_ui(str(p2), "PROF-EU")
+check("switch44c (UX Gate 2A): a profile id from a different project is dropped, never carried across",
+      kept_cross is None, kept_cross)
+_, kept_same = app.studio_preview_profile_choices_ui(str(p1), "PROF-EU")
+check("switch44d (UX Gate 2A): a still-valid selection IS preserved across a refresh",
+      kept_same == "PROF-EU", kept_same)
 check("switch44 (item 44): profile choices refresh correctly per project (project 1's profiles, then "
       "project 2's, are each exactly right -- no leakage either direction)",
       {c[1] for c in choices_p1["choices"]} == {"PROF-EU", "PROF-US", "PROF-EU-OP"} and

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -632,6 +633,89 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-rich-save-ok{background:var(--ui-green-soft);border:1px solid #a6f4c5;color:#067647}
 .ms-rich-save-err{background:var(--ui-red-soft);border:1px solid #fecaca;color:#b42318}
 .ms-rich-save-info{background:var(--ui-surface-2);border:1px solid var(--ui-line);color:var(--ui-muted)}
+
+/* ================================================================
+   UX Gate 2A -- the three-zone authoring workspace.
+
+   Left and right panes stick while the centre scrolls, so the manual
+   structure stays reachable while writing instead of scrolling off the
+   top (measured: the outline used to leave the viewport before the
+   Save button came into it).
+
+   position:sticky needs one override to work here. .gradio-container
+   carries overflow:hidden, and an ancestor with a non-visible overflow
+   becomes the sticky element's scroll container -- so the pane stuck
+   to a box that never scrolls, i.e. did not stick at all. Verified in
+   the live browser during the discovery gate: with overflow:visible
+   restored on the container, a pane held at 160px from the top at
+   scroll offset 900. Restricted to :has() of the workspace so the rule
+   cannot change scrolling anywhere else in the app; browsers without
+   :has() simply get the current non-sticky behaviour.
+   ================================================================ */
+.gradio-container:has(.ms-authoring-workspace){overflow:visible!important}
+/* Reclaim the dead vertical space above the workspace. Measured on the
+   recomposed page: 559px separated the top of the viewport from the top
+   of the panes, of which only 231px was actual content (context bar +
+   page head) -- the rest was stacked default gaps between Gradio blocks
+   that carry no information. Scoped to the tab that has the workspace,
+   so no other page's rhythm changes. */
+.tabitem:has(.ms-authoring-workspace)>.ms-pagehead,
+.tabitem:has(.ms-authoring-workspace) .ms-pagehead{
+  padding-top:2px!important;padding-bottom:2px!important;margin-bottom:0!important}
+.tabitem:has(.ms-authoring-workspace) .ms-pagehead h1{font-size:21px!important}
+/* Gradio wraps every gr.HTML in a .html-container with 10px of vertical
+   padding. On the page head that is 20px spent directly above the
+   workspace; zero it for that one block only. */
+.tabitem:has(.ms-authoring-workspace) .html-container:has(.ms-pagehead){
+  padding-top:0!important;padding-bottom:0!important}
+.tabitem:has(.ms-authoring-workspace)>.column>*{margin-top:0!important}
+.tabitem:has(.ms-authoring-workspace)>.column{gap:6px!important}
+.tabitem:has(.ms-authoring-workspace){padding-top:0!important;margin-top:0!important}
+.ms-authoring-workspace{margin-top:0!important}
+/* The open object's identity and state read as one line, not two. */
+.ms-editor-contextline{align-items:center!important;gap:10px!important;margin:0!important}
+.ms-editor-contextline>*{margin:0!important;min-width:0}
+/* One line means one line: strip the block padding Gradio adds around
+   each child so the pair does not occupy two rows' worth of height. */
+.ms-editor-contextline .html-container,
+.ms-editor-contextline .prose,
+.ms-editor-contextline .block{padding-top:0!important;padding-bottom:0!important;margin:0!important;border:0!important}
+.ms-editor-contextline p{margin:0!important;line-height:1.35!important}
+/* The toolbar sits directly on top of the writing surface -- it is part
+   of the editor, not a band above it. */
+.ms-pane-centre .ms-rich-toolbar{margin-bottom:0!important;padding-bottom:0!important}
+.ms-authoring-workspace{align-items:flex-start!important;gap:16px!important}
+.ms-authoring-workspace>.ms-pane{min-width:0}
+.ms-pane-left,.ms-pane-right{
+  position:sticky;top:12px;align-self:flex-start;
+  max-height:calc(100vh - 28px);overflow-y:auto;overflow-x:hidden;
+  padding-right:6px}
+/* The centre pane must NOT be sticky: it is the one that scrolls. */
+.ms-pane-centre{min-height:60vh}
+/* The editor is the dominant surface, not a 120px slot inside a page
+   of configuration. */
+.ms-pane-centre .ms-rich-editable-inner,
+.ms-pane-centre #ms-rich-editable-inner{min-height:520px!important}
+/* Only the BODY editor grows. A first cut of this rule targeted every
+   textarea in the centre pane, which also caught a topic's single-line
+   "Titolo" field and rendered it 320px tall -- found by measuring a
+   topic rather than a block. #ms-rich-text-input is st_text_input, the
+   canonical body-text carrier; the title keeps its natural height. */
+.ms-pane-centre #ms-rich-text-input textarea{min-height:320px!important}
+/* Quiet scrollbars in the side panes -- they are navigation, not
+   content, and a heavy native bar reads as a second page. */
+.ms-pane-left::-webkit-scrollbar,.ms-pane-right::-webkit-scrollbar{width:8px}
+.ms-pane-left::-webkit-scrollbar-thumb,.ms-pane-right::-webkit-scrollbar-thumb{
+  background:#e4e7ec;border-radius:8px}
+/* The structure list is the primary navigation: give it room and make
+   each row read as a target rather than a form option. */
+.ms-pane-left .wrap[data-testid="radio-group"]{gap:1px!important}
+.ms-pane-left label{cursor:pointer}
+@media (max-width:1400px){
+  /* Below this the three panes stop being three panes; let them stack
+     rather than squeeze the editor under its usable width. */
+  .ms-pane-left,.ms-pane-right{position:static;max-height:none;overflow:visible}
+}
 """
 
 def _ccms_db(project_dir: str | Path) -> Path:
@@ -760,17 +844,33 @@ def _page_head_html(kicker_key: str, title_key: str, subtitle_key: str) -> str:
 
     Every migrated section head is built here so the language switch can
     rebuild it with exactly the markup it was created with -- two copies
-    of this string would drift the first time one of them changed."""
+    of this string would drift the first time one of them changed.
+
+    All three arguments are catalog KEYS, never display text. A second
+    definition of this function used to follow, taking the subtitle as
+    literal text for sections whose body copy was not yet migrated; it
+    shadowed this one, so every one of the six call sites -- all of
+    which pass `page.<section>.subtitle` -- printed the key verbatim.
+    The catalog has had every one of those subtitles in `it` and `en`
+    for some time, so the literal-subtitle variant had no remaining
+    caller and is gone."""
     return (f"<div class='ms-pagehead'><div><div class='ms-page-kicker'>{t(kicker_key)}</div>"
             f"<h1>{t(title_key)}</h1><p>{t(subtitle_key)}</p></div></div>")
 
 
-def _page_head_html(kicker_key: str, title_key: str, subtitle: str) -> str:
-    """One page head. The subtitle is passed in literally for sections
-    whose body copy this gate did not migrate -- a half-translated page
-    is worse than an honestly untranslated one."""
-    return (f"<div class='ms-pagehead'><div><div class='ms-page-kicker'>{t(kicker_key)}</div>"
-            f"<h1>{t(title_key)}</h1><p>{subtitle}</p></div></div>")
+def _section_head_html(title_key: str, sub_key: str | None = None) -> str:
+    """One in-page section heading, built from catalog KEYS.
+
+    UX Gate 2A: every section title the recomposed Contenuti workspace
+    moved or introduced goes through here. The markup is the same
+    ms-section-title / ms-section-sub pair those headings already used
+    as hand-written gr.HTML literals; the difference is that the text is
+    now a key, so the language switch rebuilds it like everything else
+    registered with LOC."""
+    head = f"<div class='ms-section-title'>{t(title_key)}</div>"
+    if sub_key:
+        head += f"<div class='ms-section-sub'>{t(sub_key)}</div>"
+    return head
 
 
 def _project_meta_line(h: dict) -> str:
@@ -2024,10 +2124,42 @@ def _studio_pub_header_html(repo, publication_id: str) -> str:
     # UX clarity fix: "Editor professionale" alone never told the user WHICH
     # manual they were looking at -- the static header just said the generic
     # word "Pubblicazione". This shows the real, current publication title.
+    #
+    # UX Gate 2A: this header moved into the left context pane (it answers
+    # "which manual am I in", which is navigation context, not a caption
+    # for the editor) and so it is a MOVED control -- its two strings go
+    # through the catalog like every other label in the workspace. The
+    # publication TITLE itself is project data and is never translated.
     row = repo.conn.execute("SELECT title FROM publications WHERE publication_id=?", (publication_id,)).fetchone()
     if not row:
-        return f"<div class='ms-muted'>Nessuna publication «{html.escape(publication_id)}».</div>"
-    return f"<div class='ms-prod'>Pubblicazione: <b>{html.escape(row['title'])}</b></div>"
+        return (f"<div class='ms-muted'>"
+                f"{t('content.pubheader.missing', publication_id=html.escape(publication_id))}</div>")
+    return (f"<div class='ms-prod'>{t('content.pubheader.label')}: "
+            f"<b>{html.escape(row['title'])}</b></div>")
+
+def studio_context_relabel_ui(project_dir, publication_id, lang):
+    """Re-render the Contenuti context header in the newly chosen language.
+
+    UX Gate 2A. st_pub_header is data-driven HTML ("Pubblicazione: <title>"),
+    so LOC cannot rebuild it from a catalog key alone -- it needs the live
+    project and publication. Without this it kept the previous language's
+    label until the next studio refresh.
+
+    Deliberately the NARROWEST possible output: this one display-only
+    element. It must not touch the editor. Re-running the full studio
+    bundle here would rebuild st_text_input/st_rich_editable from persisted
+    state and so discard whatever the author has typed but not yet saved --
+    switching language must never cost someone their in-progress paragraph.
+    """
+    if not project_dir:
+        return gr.update()
+    with i18n.use_language(lang):
+        repo, _svc = av.open_service(project_dir)
+        try:
+            return _studio_pub_header_html(repo, (publication_id or "").strip() or "PUB-MAIN")
+        finally:
+            repo.close()
+
 
 def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archived, *, save_msg="", review_msg="",
                         shared_confirmed=False, shared_impact_token=None, diff_output=""):
@@ -3174,7 +3306,11 @@ def studio_next_prev_ui(project_dir, publication_id, kind, object_id, direction,
 # ----------------------------------------------------------------
 
 _VARIANT_ROWS = 4
-_VARIANT_PANEL_OUT_COUNT = 2 + 2 * _VARIANT_ROWS + 2  # summary, panel visible, dim x N, val x N, profile dd, eval clear
+# summary, panel visible, dim x N, val x N, profile dd, eval clear, and
+# (UX Gate 2A) the shared profile_state carried back out so the variant
+# profile survives opening the next object and stays in step with the
+# same selector in Rilascio.
+_VARIANT_PANEL_OUT_COUNT = 2 + 2 * _VARIANT_ROWS + 3
 
 
 def _variant_dimension_choices(svc: AuthoringService) -> list[tuple[str, str]]:
@@ -3197,7 +3333,22 @@ def _variant_rows_from_condition(dimensions: list[dict]) -> list[tuple[str, list
     return out[:_VARIANT_ROWS] + [("", [])] * max(0, _VARIANT_ROWS - len(out))
 
 
-def _variant_panel_bundle(svc: AuthoringService, detail: dict[str, Any]) -> tuple:
+def _keep_profile(choices: list[tuple[str, str]], current) -> str | None:
+    """The still-valid half of a profile selection, else None.
+
+    UX Gate 2A: the profile is now session state shared with Rilascio's
+    preview/export, so a panel refresh must not silently clear it -- a
+    user who picked "Mercato IT" and then opened the next block would
+    otherwise be evaluating against nothing without being told. A profile
+    that genuinely disappeared (deactivated, renamed away, different
+    project) is still dropped: keeping a dangling id would make the two
+    surfaces disagree again, in the one direction that matters."""
+    valid = {pid for _label, pid in choices}
+    return current if current in valid else None
+
+
+def _variant_panel_bundle(svc: AuthoringService, detail: dict[str, Any],
+                          current_profile=None) -> tuple:
     dim_choices = _variant_dimension_choices(svc)
     rows = _variant_rows_from_condition(detail.get("condition_dimensions", []))
     dim_updates = []
@@ -3206,24 +3357,31 @@ def _variant_panel_bundle(svc: AuthoringService, detail: dict[str, Any]) -> tupl
         dim_updates.append(gr.update(choices=dim_choices, value=(dim_id or None)))
         val_updates.append(gr.update(choices=_variant_value_choices(svc, dim_id), value=value_ids))
     profile_choices = _variant_profile_choices(svc)
+    kept = _keep_profile(profile_choices, current_profile)
     return (detail.get("condition_summary", ""), gr.update(visible=True), *dim_updates, *val_updates,
-            gr.update(choices=profile_choices, value=None), "")
+            gr.update(choices=profile_choices, value=kept), "", kept)
 
 
-def studio_variant_panel_ui(project_dir, kind, object_id):
+def studio_variant_panel_ui(project_dir, kind, object_id, current_profile=None):
     """Refreshes the Studio 'Varianti' section: human summary, the
     _VARIANT_ROWS dimension/value picker rows pre-filled from the
     currently open topic/block's own condition, and the profile choices
-    for the mini-evaluator. Triggered by st_id.change()/st_version.change()
-    -- see the module note above for why."""
+    for the evaluator. Triggered by st_id.change()/st_version.change()
+    -- see the module note above for why.
+
+    UX Gate 2A: also carries the shared profile through. It takes the
+    current profile_state in and returns it back out (dropped only if
+    that profile no longer exists), so opening the next object keeps the
+    profile the author is working against instead of resetting it."""
     if not project_dir or kind not in ("topic", "block") or not object_id:
         dim_updates = [gr.update(choices=[], value=None) for _ in range(_VARIANT_ROWS)]
         val_updates = [gr.update(choices=[], value=[]) for _ in range(_VARIANT_ROWS)]
-        return ("", gr.update(visible=False), *dim_updates, *val_updates, gr.update(choices=[], value=None), "")
+        return ("", gr.update(visible=False), *dim_updates, *val_updates,
+                gr.update(choices=[], value=None), "", current_profile)
     repo, svc = av.open_service(project_dir)
     try:
         detail = av.topic_detail(svc, object_id) if kind == "topic" else av.block_detail(svc, object_id)
-        return _variant_panel_bundle(svc, detail)
+        return _variant_panel_bundle(svc, detail, current_profile)
     finally:
         repo.close()
 
@@ -3382,22 +3540,31 @@ def studio_variant_evaluate_ui(project_dir, kind, object_id, profile_id):
 # contract already established for the rest of the Studio.
 # ----------------------------------------------------------------
 
-def studio_preview_profile_choices_ui(project_dir):
-    """(label, profile_id) choices for the Publishing Preview's own
-    profile picker -- ACTIVE profiles only (an inactive one is never
-    offered as a NEW selection, matching the Varianti panel's own
-    profile dropdown), human names only, never raw ids. Wired to fire on
-    project load/switch so no stale profile list from a previous project
-    can ever survive -- value is always reset to None on refresh, which
-    also correctly clears any stale SELECTION from a previous project."""
+def studio_preview_profile_choices_ui(project_dir, current_profile=None):
+    """(label, profile_id) choices for a variant-profile picker -- ACTIVE
+    profiles only (an inactive one is never offered as a NEW selection),
+    human names only, never raw ids.
+
+    UX Gate 2A: this is now the ONE choice builder for both surfaces that
+    ask "which variant profile?" -- the Contenuti evaluator and Rilascio's
+    preview/export. It used to exist twice, as this function and as
+    _variant_profile_choices(), with byte-identical bodies feeding two
+    unrelated gr.Dropdowns both labelled "Profilo".
+
+    Returns (dropdown_update, profile_id). A still-valid selection is
+    PRESERVED rather than reset -- the selection is shared session state
+    now, so clearing it here would silently desynchronise the other
+    surface. A profile that no longer exists is still dropped, which is
+    what makes switching project safe."""
     if not project_dir:
-        return gr.update(choices=[], value=None)
+        return gr.update(choices=[], value=None), None
     repo, svc = av.open_service(project_dir)
     try:
         choices = [(p["name"], p["profile_id"]) for p in svc.list_variant_profiles(include_inactive=False)]
     finally:
         repo.close()
-    return gr.update(choices=choices, value=None)
+    kept = _keep_profile(choices, current_profile)
+    return gr.update(choices=choices, value=kept), kept
 
 
 def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excluded):
@@ -5101,6 +5268,32 @@ def switch_language_ui(code):
 
 with gr.Blocks(title=BRAND_NAME) as demo:
     project_state=gr.State(INITIAL_PROJECT)
+    # ================================================================
+    # UX Gate 2A — single sources of truth for the two coordinates that
+    # were being asked for twice on the same screen.
+    #
+    # actor_state: WHO is editing. Authoring's mutation callbacks all
+    #   read this State (never a Textbox directly -- see the 4B.2 note
+    #   at its former declaration for the sync reason). It used to be
+    #   fed by a second "Il tuo nome" field declared inside Contenuti,
+    #   sitting 800px above a context bar that already asks for exactly
+    #   the same thing. Now fed from ws_operator below, which is the
+    #   one place the question is asked.
+    #
+    # profile_state: WHICH variant profile. Contenuti's per-object
+    #   evaluator and the publishing preview/export used to own two
+    #   independent gr.Dropdowns, both labelled "Profilo", both built
+    #   from the byte-identical comprehension
+    #       [(p["name"], p["profile_id"])
+    #        for p in svc.list_variant_profiles(include_inactive=False)]
+    #   and both passing the result to a variant-profile service call.
+    #   Same concept, two controls, no link: a user could evaluate a
+    #   block against one profile and export against another with
+    #   nothing on screen saying so. Both selectors now read and write
+    #   this State, so they cannot diverge.
+    # ================================================================
+    actor_state = gr.State("")
+    profile_state = gr.State(None)
     with gr.Sidebar(width=236, elem_id="ms-sidebar"):
         gr.HTML(f"<div class='ms-brand'><div class='ms-logo'>M</div><div><div class='ms-brand-title'>{BRAND_NAME}</div><div class='ms-brand-sub'>Brand provvisorio · Technical Content Intelligence</div></div></div>")
         nav_home=LOC.button(lambda: f"⌂   {t('nav.overview')}",variant="primary")
@@ -5171,6 +5364,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                          info=t("context.operator.hint")),
                               label="context.operator", info="context.operator.hint",
                               placeholder="context.operator.placeholder")
+    # UX Gate 2A: the shell operator now feeds Authoring's actor_state.
+    # .change() rather than .input() for the reason established in 4B.2
+    # against this exact Gradio build: .input() on a plain gr.Textbox
+    # never reached the backend, .change() fired every time -- and
+    # .change()'s "also fires on programmatic pushes" caveat is harmless
+    # here because ws_operator is only ever an input, never an output.
+    ws_operator.change(lambda v: v, [ws_operator], [actor_state])
 
     with gr.Tabs(selected="home", elem_id="workspace-tabs") as workspace_tabs:
         with gr.Tab(t("nav.overview"), id="home") as tab_home:
@@ -5311,71 +5511,42 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             with gr.Row(): a_report=gr.File(label="Rapporto"); a_queue_file=gr.File(label="Coda di lavoro")
             a_btn.click(revision_analysis_ui,[project_state,a_old,a_tr,a_new,a_full],[a_summary,a_queue,a_report,a_queue_file])
 
+            # ------------------------------------------------------------
+            # UX Gate 2A: the grounded-proposal review queue, moved here
+            # from Contenuti. Deciding on someone else's proposal is a
+            # REVIEW act, not an authoring one -- it was three accordions
+            # deep inside the writing surface (Dettagli tecnici > Coda di
+            # revisione) on a tab whose job is trova -> apri -> modifica
+            # -> salva. Behaviour is untouched: same callbacks, same
+            # decide_review() gate, same fail-closed Draft/In Review hold,
+            # and the reviewer keeps its own explicit identity field
+            # rather than inheriting the workspace operator.
+            # ------------------------------------------------------------
+            with gr.Accordion(t("revision.queue.section"), open=False) as rv_accordion:
+                LOC.add(rv_accordion, label="revision.queue.section")
+                LOC.add(gr.Markdown(t("revision.queue.hint")), value="revision.queue.hint")
+                rv_refresh=gr.Button("Aggiorna coda"); rv_queue=gr.Dataframe(interactive=False,max_height=300)
+                with gr.Row(): rv_review_id=gr.Number(label="Review ID",precision=0); rv_decision=gr.Radio(["APPROVE","REJECT"],value="APPROVE",label="Decisione"); rv_actor=gr.Textbox(label="Revisore")
+                rv_comment=gr.Textbox(label="Commento — opzionale")
+                rv_decide=gr.Button("Decidi",variant="primary"); rv_msg=gr.Markdown()
+                rv_refresh.click(review_queue_ui,[project_state],[rv_queue])
+                rv_decide.click(review_decide_ui,[project_state,rv_review_id,rv_decision,rv_actor,rv_comment],[rv_msg,rv_queue])
+
         with gr.Tab(t("nav.content"),id="authoring") as authoring_tab:
             LOC.add(authoring_tab, label="nav.content")
             head_content=LOC.html(lambda: _page_head_html("kicker.workflow", "page.content.title", "page.content.subtitle"))
 
-            # UX clarity fix: ONE shared identity field for the whole tab,
-            # shown first, before any action that can modify or approve
-            # content (source approval, topic/block creation, save, reorder,
-            # archive/restore, revert, review submission). There used to be
-            # two separate "Il tuo nome" textboxes -- one here, one inside
-            # the Studio panel below -- with nothing to tell them apart; a
-            # real user hit exactly that during manual acceptance. The
-            # backend actor requirement is untouched and stays fail-closed
-            # either way; a distinct reviewer role (review-decide, grounded
-            # queue) keeps its own explicit "Revisore" label rather than
-            # reusing or duplicating this one.
-            gr.HTML("<div class='ms-section-title'>La tua identità</div>")
-            c_actor = gr.Textbox(label="Il tuo nome", info="Serve per registrare chi effettua modifiche e decisioni.")
-            # Actor state consistency fix: a real user typed a name here,
-            # saw it stay visibly filled, went back to a table and pressed
-            # Salva -- and still got "Inserisci il tuo nome per
-            # continuare." even though the field was genuinely non-empty.
-            # Every mutation callback below now reads actor_state (this
-            # State), never c_actor directly: a gr.State value is tracked
-            # authoritatively server-side per session and isn't subject to
-            # whatever can leave a live Textbox's client-rendered value
-            # transiently out of sync with what a DIFFERENT button's click
-            # payload captures at that instant.
-            #
-            # Sync trigger: .change(), not .input() -- empirically verified
-            # against this exact Gradio 6.5.1 build (isolated file-based
-            # server-side trace, both synthetic and real-keyboard typing):
-            # .input() on a plain gr.Textbox never reached the backend at
-            # all in this build, while .change() fired reliably every time.
-            # This isn't a UX regression: c_actor is never a programmatic
-            # update target anywhere in this app (confirmed -- it only ever
-            # appears as an input, never an output), so .change()'s usual
-            # "also fires on programmatic pushes" caveat (the reason
-            # st_table_grid deliberately uses .input() instead) doesn't
-            # apply here -- there is nothing programmatic to filter out.
-            # A Textbox's change event fires on native blur, which already
-            # happens automatically the instant the user clicks anywhere
-            # else (including the very button they're about to press) --
-            # so this never asks the user to do anything beyond typing the
-            # name once and continuing normally.
-            actor_state = gr.State("")
-            c_actor.change(lambda v: v, [c_actor], [actor_state])
+            # UX Gate 2A: the "La tua identità" / "Il tuo nome" field that
+            # used to open this tab is gone. It was a second copy of the
+            # shell context bar's Operatore field, asked for again ~800px
+            # below where the user had already answered it -- one of the
+            # duplicated labels the discovery measured on this page. The
+            # backend actor requirement is untouched and still fail-closed:
+            # every mutation callback below reads actor_state exactly as
+            # before, and actor_state is now fed from ws_operator. Distinct
+            # reviewer roles (review-decide, grounded queue) keep their own
+            # explicit "Revisore" fields rather than inheriting this one.
 
-            # Milestone 3A: standard view, shown by default. Same topics/blocks data as
-            # the technical dataframes below (no second backend) — just friendlier
-            # columns. No ID/metadata/re-import button in this default view.
-            gr.HTML("<div class='ms-section-title'>Revisione del contenuto importato</div><div class='ms-section-sub'>Controlla il contenuto importato prima di approvarlo come sorgente. Per i dettagli tecnici, apri “Dettagli tecnici (modalità avanzata)” qui sotto.</div>")
-            c_simple_table=gr.Dataframe(interactive=False,wrap=True,max_height=500)
-            # Milestone 3D constraint: master-spread/orphan/unsupported/ambiguous-
-            # asset/caption-candidate items from an IDML import are shown here in
-            # plain language (no Story/Spread ids, no JSON to open) and BLOCK
-            # "Approva sorgente" below until explicitly acknowledged.
-            gr.HTML("<div class='ms-section-title'>Elementi da verificare</div>")
-            c_idml_review_html=gr.HTML(visible=False)
-            with gr.Row(visible=False) as c_idml_review_row:
-                with gr.Column():
-                    c_idml_review_radios=[gr.Radio(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS)]
-                    c_idml_review_confirm=gr.Button("Conferma decisioni")
-            c_simple_confirm=gr.Checkbox(label="Confermo di aver revisionato il contenuto")
-            c_simple_approve=gr.Button("Approva sorgente",variant="primary")
-            c_simple_msg=gr.Markdown()
 
             # ----------------------------------------------------------------
             # Milestone 4B.2: Professional Topic & Block Editor ("Studio").
@@ -5386,8 +5557,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # Publication ID field -- "non inventare una seconda nozione di
             # documento aperto" -- rather than declare a second one here.
             # ----------------------------------------------------------------
-            gr.HTML("<div class='ms-section-title'>Editor professionale</div>")
-            st_pub_header = gr.HTML()
+            # UX Gate 2A: the "Editor professionale" heading is gone. It
+            # labelled a section that is now the entire centre of the
+            # screen -- a caption for the obvious, costing 41px directly
+            # above the writing surface. st_pub_header (which manual am I
+            # in) moved into the left context pane, where the rest of the
+            # navigation context lives; it is still driven by exactly the
+            # same ST_OUT_FULL slot.
             st_kind = gr.State(None); st_id = gr.State(None); st_version = gr.State(None)
             # 4C: a table/figure block's editable CONTENT lives on a
             # separate table_id/figure_id row (own version counter) --
@@ -5410,16 +5586,32 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # closed even when the object's own version hasn't changed.
             # Same reset lifecycle as st_shared_confirmed.
             st_shared_impact_token = gr.State(None)
-            with gr.Row():
-                with gr.Column(scale=2):
+            # ================================================================
+            # UX Gate 2A — the three-zone authoring workspace.
+            #
+            #   left   (ms-pane-left)   navigate: structure, search, creation
+            #   centre (ms-pane-centre) write: the open object and Save
+            #   right  (ms-pane-right)  context: what is true of THIS object
+            #
+            # The zones are plain gr.Column with elem_classes; sticky
+            # positioning and per-pane scrolling are CSS (see ms-pane-* in
+            # the stylesheet). No custom DOM, no JS layout: the discovery
+            # gate verified in the live browser that this is enough, and a
+            # custom document tree is deliberately deferred.
+            # ================================================================
+            with gr.Row(elem_classes=["ms-authoring-workspace"]):
+                with gr.Column(scale=2, elem_classes=["ms-pane", "ms-pane-left"]):
+                    st_pub_header = gr.HTML()
+                    LOC.add(gr.HTML(_section_head_html("content.pane.structure")),
+                            value=lambda: _section_head_html("content.pane.structure"))
                     # UX clarity fix: replaces the old technical Dataframe as
                     # the primary standard-mode navigation -- a real document
                     # tree (topic rows, blocks indented beneath with human
                     # type labels + a short preview, no technical IDs, no
                     # horizontal scrollbar), one click to open. The Dataframe
-                    # is kept for diagnostics only, moved into "Dettagli
-                    # tecnici (modalità avanzata)" below.
-                    st_outline_radio = gr.Radio(choices=[], label="Struttura manuale", value=None)
+                    # is kept for diagnostics only, in the right pane's
+                    # "Dettagli tecnici (modalità avanzata)".
+                    st_outline_radio = gr.Radio(choices=[], show_label=False, value=None)
                     with gr.Row():
                         st_new_topic_title = gr.Textbox(label="Titolo nuovo topic", placeholder="Titolo del nuovo topic…", scale=3)
                         st_new_topic_btn = gr.Button("+ Nuovo topic", scale=1)
@@ -5439,9 +5631,22 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     st_search_msg = gr.Markdown()
                     st_search_picker = gr.Dropdown(label="Risultati", choices=[], visible=False)
                     st_search_open_btn = gr.Button("Apri risultato", visible=False)
-                with gr.Column(scale=3):
-                    st_breadcrumb = gr.Markdown("Pubblicazione")
-                    st_status_html = gr.HTML()
+                    # UX Gate 2A: topic prev/next belongs with navigation.
+                    # It used to sit at the top of the centre pane, above
+                    # the title and the editor, pushing the writing surface
+                    # down by its own height on every object -- a movement
+                    # control charging rent on the writing area.
+                    with gr.Row():
+                        st_prev_btn = gr.Button("‹ Topic precedente")
+                        st_next_btn = gr.Button("Topic successivo ›")
+                with gr.Column(scale=5, elem_classes=["ms-pane", "ms-pane-centre"]):
+                    # Side by side, not stacked: together they are one line
+                    # of "what is open and what state is it in", and stacking
+                    # them spent 40px of the space above the editor saying it
+                    # twice over.
+                    with gr.Row(elem_classes=["ms-editor-contextline"]):
+                        st_breadcrumb = gr.Markdown("Pubblicazione")
+                        st_status_html = gr.HTML()
                     # UX clarity fix: with nothing selected, only the empty-state
                     # message above (from st_status_html) is shown -- every
                     # action control below carries its OWN visible= (not just
@@ -5458,9 +5663,6 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     # Same reasoning applies to the 4C table/figure fields
                     # below: each one carries its own visible=, never a
                     # shared wrapping Group.)
-                    with gr.Row():
-                        st_prev_btn = gr.Button("‹ Topic precedente")
-                        st_next_btn = gr.Button("Topic successivo ›")
                     st_title_input = gr.Textbox(label="Titolo", visible=False)
                     # ----------------------------------------------------------------
                     # 4E.3 stabilization (Blocker 1): the writer-facing standard
@@ -5588,51 +5790,18 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_figure_replace_btn = gr.Button("Sostituisci immagine", scale=1)
                     st_readonly_notice = gr.Markdown(visible=False)
 
-                    # 4E.1: "Varianti" -- where this topic/block is visible.
-                    # Non-technical by design (ticket UX acceptance
-                    # criterion): only dimension/value NAMES ever appear
-                    # here, never ids/JSON/boolean syntax. Independently
-                    # wired (see the module note above studio_variant_
-                    # panel_ui) rather than folded into ST_OUT_FULL/
-                    # _studio_full_bundle.
+                    # UX Gate 2A: the Varianti panel that used to sit here,
+                    # between the editor and Save, now lives in the right
+                    # contextual pane. It was measured wedged into the
+                    # 944px gap a user had to scroll across to save what
+                    # they had just typed.
                     #
-                    # gr.Row(visible=...) toggled as a WHOLE, never
-                    # gr.Group -- this codebase's own documented Gradio
-                    # 6.5.1 finding is that a child's independent visible=
-                    # update is unreliable when nested inside a Group whose
-                    # OWN visibility stays static in that response; Row is
-                    # the pattern already proven safe here instead (see
-                    # st_new_table_row/st_new_figure_row/st_table_rowcol_row
-                    # above), and none of the children below ever get their
-                    # own separate visible= toggle -- only this Row's does.
-                    with gr.Row(visible=False) as st_variant_panel:
-                        with gr.Column():
-                            gr.HTML("<div class='ms-section-title'>Varianti — dove usare questo contenuto</div>"
-                                    "<div class='ms-section-sub'>Senza condizioni il contenuto è sempre visibile. "
-                                    "Puoi limitarlo a uno o più valori per una o più dimensioni (es. Mercato, Edizione).</div>")
-                            st_variant_summary = gr.Markdown()
-                            st_variant_dim_dd = []
-                            st_variant_val_dd = []
-                            for _vr in range(_VARIANT_ROWS):
-                                with gr.Row():
-                                    # 4E.1 stabilization (item 4.2): "Criterio"
-                                    # over "Dimensione" -- avoids any hint of
-                                    # technical/mathematical jargon for a
-                                    # first-time author; "Valori ammessi..."
-                                    # states the OR-multiselect behavior in
-                                    # plain language instead of the operator
-                                    # word "OPPURE".
-                                    st_variant_dim_dd.append(gr.Dropdown(choices=[], value=None, label="Criterio", scale=1))
-                                    st_variant_val_dd.append(gr.Dropdown(choices=[], value=[], multiselect=True,
-                                                                         label="Valori ammessi (puoi sceglierne più di uno)", scale=2))
-                            st_variant_save_btn = gr.Button("Salva varianti")
-                            st_variant_save_msg = gr.Markdown()
-                            gr.HTML("<div class='ms-section-sub'>Valuta con un profilo</div>")
-                            with gr.Row():
-                                st_variant_eval_profile = gr.Dropdown(choices=[], value=None, label="Profilo", scale=2)
-                                st_variant_eval_btn = gr.Button("Valuta contenuto con questo profilo", scale=1)
-                            st_variant_eval_result = gr.Markdown()
-
+                    # What deliberately stays HERE, next to Save: the
+                    # shared-object decision. "Aggiorna ovunque" is a
+                    # precondition of this Save (it unlocks in-place
+                    # editing and Save performs the audited override), so
+                    # moving it into a side pane would separate a gate
+                    # from the action it gates.
                     st_shared_notice = gr.Markdown(visible=False)
                     # 4D: the reuse-aware shared-object decision UX -- shown
                     # only while a shared table/figure is open and the
@@ -5678,7 +5847,80 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     with gr.Row(visible=False) as st_new_block_row:
                         st_new_block_type = gr.Dropdown(["paragraph", "note", "warning", "list_item"], value="paragraph", label="Nuovo blocco — tipo")
                         st_new_block_btn = gr.Button("+ Aggiungi blocco in fondo al topic")
-                    with gr.Accordion("Dettagli tecnici (modalità avanzata)", open=False):
+
+                # ====================================================
+                # UX Gate 2A — right pane: contextual detail.
+                #
+                # Deliberately minimal for this gate. Everything here is
+                # about the object that is currently open, and nothing
+                # here is required to write and save. Grounded Authoring
+                # is PRESERVED but not redesigned: 2B integrates it as a
+                # source-anchored proposal system. It is simply no longer
+                # buried two accordions deep inside a third.
+                # ====================================================
+                with gr.Column(scale=2, elem_classes=["ms-pane", "ms-pane-right"]):
+                    LOC.add(gr.HTML(_section_head_html("content.pane.detail")),
+                            value=lambda: _section_head_html("content.pane.detail"))
+
+                    # 4E.1: "Varianti" -- where this topic/block is visible.
+                    # Non-technical by design (ticket UX acceptance
+                    # criterion): only dimension/value NAMES ever appear
+                    # here, never ids/JSON/boolean syntax. Independently
+                    # wired (see the module note above studio_variant_
+                    # panel_ui) rather than folded into ST_OUT_FULL/
+                    # _studio_full_bundle.
+                    #
+                    # gr.Row(visible=...) toggled as a WHOLE, never
+                    # gr.Group -- this codebase's own documented Gradio
+                    # 6.5.1 finding is that a child's independent visible=
+                    # update is unreliable when nested inside a Group whose
+                    # OWN visibility stays static in that response; Row is
+                    # the pattern already proven safe here instead.
+                    with gr.Row(visible=False) as st_variant_panel:
+                        with gr.Column():
+                            LOC.add(gr.HTML(_section_head_html("content.variants.title",
+                                                               "content.variants.sub")),
+                                    value=lambda: _section_head_html("content.variants.title",
+                                                                     "content.variants.sub"))
+                            st_variant_summary = gr.Markdown()
+                            st_variant_dim_dd = []
+                            st_variant_val_dd = []
+                            for _vr in range(_VARIANT_ROWS):
+                                with gr.Row():
+                                    # 4E.1 stabilization (item 4.2): "Criterio"
+                                    # over "Dimensione" -- avoids any hint of
+                                    # technical/mathematical jargon for a
+                                    # first-time author; the values label
+                                    # states the OR-multiselect behavior in
+                                    # plain language instead of "OPPURE".
+                                    st_variant_dim_dd.append(
+                                        LOC.add(gr.Dropdown(choices=[], value=None,
+                                                            label=t("content.variants.criterion"), scale=1),
+                                                label="content.variants.criterion"))
+                                    st_variant_val_dd.append(
+                                        LOC.add(gr.Dropdown(choices=[], value=[], multiselect=True,
+                                                            label=t("content.variants.values"), scale=2),
+                                                label="content.variants.values"))
+                            st_variant_save_btn = LOC.button(lambda: t("content.variants.save"))
+                            st_variant_save_msg = gr.Markdown()
+                            LOC.add(gr.HTML(_section_head_html("content.variants.evaluate.sub")),
+                                    value=lambda: _section_head_html("content.variants.evaluate.sub"))
+                            # UX Gate 2A: THE variant profile selector for
+                            # this workspace. Formerly one of two controls
+                            # both labelled "Profilo" -- this one and the
+                            # publishing preview's -- with no link between
+                            # them. Both now read and write profile_state,
+                            # and the preview/export half lives in Rilascio.
+                            st_variant_eval_profile = LOC.add(
+                                gr.Dropdown(choices=[], value=None,
+                                            label=t("content.profile.label"),
+                                            info=t("content.profile.hint")),
+                                label="content.profile.label", info="content.profile.hint")
+                            st_variant_eval_btn = LOC.button(lambda: t("content.variants.evaluate"))
+                            st_variant_eval_result = gr.Markdown()
+
+                    with gr.Accordion(t("content.tech.section"), open=False) as st_tech_accordion:
+                        LOC.add(st_tech_accordion, label="content.tech.section")
                         st_tech_html = gr.HTML()
                         gr.Markdown("**Struttura (tabella tecnica, per diagnostica)**")
                         st_outline_table = gr.Dataframe(interactive=False, wrap=True, max_height=360)
@@ -5699,69 +5941,102 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                             st_revert_version = gr.Number(label="Versione da ripristinare", precision=0)
                             st_revert_btn = gr.Button("Ripristina questa versione")
 
-            # ----------------------------------------------------------------
-            # Milestone 4E.2: Publishing Preview -- deliberately a standard-
-            # mode section right here (never inside "Dettagli tecnici"): the
-            # ticket is explicit that this is normal workflow, not an
-            # expert-only feature. Read-only by construction -- no save/
-            # edit control anywhere in this block; all rendering comes from
-            # publishing_preview.py's pure model+HTML functions.
-            # ----------------------------------------------------------------
-            gr.HTML("<div class='ms-section-title'>Anteprima pubblicazione</div>"
-                    "<div class='ms-section-sub'>Scegli un profilo per vedere quali contenuti verrebbero "
-                    "inclusi — senza generare alcun file e senza modificare nulla.</div>")
-            with gr.Row():
-                pv_profile = gr.Dropdown(choices=[], value=None, label="Profilo", scale=2)
-                pv_refresh_btn = gr.Button("Aggiorna anteprima", scale=1)
-                pv_show_excluded = gr.Checkbox(label="Mostra contenuti esclusi", value=False, scale=1)
-            pv_output = gr.HTML("<div class='ms-pp-note-line'>Seleziona un profilo per vedere quali contenuti verranno inclusi.</div>")
+                    # Grounded Authoring: preserved verbatim, relocated.
+                    # It used to sit inside "Dettagli tecnici" > "AI
+                    # Grounded Authoring" -- two accordions deep, under a
+                    # third section -- which is why the discovery gate
+                    # measured it as effectively invisible. Gate 2B turns
+                    # it into a source-anchored proposal panel; this gate
+                    # only stops it being unreachable.
+                    with gr.Accordion(t("content.grounded.section"), open=False) as g_accordion:
+                        LOC.add(g_accordion, label="content.grounded.section")
+                        LOC.add(gr.Markdown(t("content.grounded.hint")), value="content.grounded.hint")
+                        with gr.Row():
+                            g_pdf = gr.File(label='Fonte tecnica PDF', type='filepath')
+                            g_text = gr.Textbox(label='Oppure fonte testuale', lines=4)
+                        with gr.Row():
+                            g_doc = gr.Textbox(label='Document ID')
+                            g_title = gr.Textbox(label='Titolo fonte')
+                        g_ingest = gr.Button('Indicizza fonte')
+                        g_ingest_msg = gr.Markdown()
+                        g_chunks = gr.Dataframe(interactive=False, max_height=350)
+                        with gr.Row():
+                            g_instruction = gr.Textbox(label='Richiesta')
+                            g_mode = gr.Dropdown(['paragraph', 'procedure', 'warning', 'summary', 'rewrite'],
+                                                 value='paragraph', label='Tipo')
+                        g_generate = gr.Button('Genera proposta grounded', variant='primary')
+                        g_msg = gr.Markdown()
+                        g_draft = gr.Textbox(label='Proposta', lines=8)
+                        g_evidence = gr.Dataframe(interactive=False, max_height=350)
+                        g_claims = gr.Dataframe(interactive=False)
+                        g_pid = gr.Textbox(label='Proposal ID')
+                        with gr.Row():
+                            g_topic = gr.Textbox(label='Topic ID')
+                            g_block = gr.Textbox(label='Nuovo Block ID')
+                            g_btype = gr.Dropdown(['paragraph', 'warning', 'note', 'list_item'],
+                                                  value='paragraph', label='Tipo blocco')
+                        with gr.Row():
+                            g_pos = gr.Number(label='Posizione', value=1, precision=0)
+                            g_reviewer = gr.Textbox(label='Revisore')
+                        g_queue = gr.Button('Invia in review umana')
+                        g_queue_msg = gr.Markdown()
+                        g_ingest.click(grounding_ingest_ui, [project_state, g_pdf, g_text, g_doc, g_title],
+                                       [g_ingest_msg, g_chunks])
+                        g_generate.click(grounded_generate_ui, [project_state, g_instruction, g_mode],
+                                         [g_msg, g_draft, g_evidence, g_claims, g_pid])
+                        g_queue.click(grounded_queue_ui,
+                                      [project_state, g_pid, g_topic, g_block, g_btype, g_pos, g_reviewer],
+                                      [g_queue_msg])
 
-            # ------------------------------------------------------------
-            # 4F.1 production outputs. Deliberately the SMALLEST additive
-            # surface: two buttons, one contained status line, one download
-            # slot -- and their own isolated callbacks (never ST_OUT_FULL).
-            # The exported PDF/HTML5 use the SAME publication+profile
-            # semantics the preview above just showed, so what the user
-            # previews is what they get.
-            # ------------------------------------------------------------
-            gr.HTML("<div class='ms-section-sub' style='margin-top:14px'>Output di produzione — genera il "
-                    "manuale finale per il profilo selezionato. L'esportazione non modifica i contenuti "
-                    "e non approva nulla.</div>")
-            with gr.Row():
-                pv_export_pdf_btn = gr.Button("Esporta PDF", variant="primary", scale=1)
-                pv_export_html_btn = gr.Button("Esporta HTML", scale=1)
-            # One HTML output, nothing else: the export RESULT CARD (see
-            # _export_result_card). Deliberately NOT a gr.File widget --
-            # a filename card with a generic "Scarica" is exactly the UX
-            # that failed manual acceptance, because "how do I open it?"
-            # had no visible answer.
-            pv_export_status = gr.HTML()
-            # .click() wiring is deferred to the Studio wiring section below,
-            # where c_pub (the Publication ID field) already exists -- the
-            # same deferral the 4B.2 block uses for exactly this reason.
-
-            with gr.Accordion("Dettagli tecnici (modalità avanzata)",open=False):
-                with gr.Row(): c_pdf=gr.File(label="Manuale corrente PDF",type='filepath'); c_lang=gr.Textbox(label="Lingua sorgente",value='en-US'); c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN'); c_title=gr.Textbox(label="Titolo")
-                c_import=gr.Button("Importa come draft",variant='primary'); c_msg=gr.Markdown(); c_topics=gr.Dataframe(interactive=False); c_blocks=gr.Dataframe(interactive=False,max_height=500)
-                with gr.Row(): c_reviewer=gr.Textbox(label="Revisore umano"); c_confirm=gr.Checkbox(label="Confermo di aver revisionato la sorgente")
-                c_approve=gr.Button("Approva sorgente"); c_approve_msg=gr.Markdown(); c_refresh=gr.Button("Mostra oggetti approvati"); c_approved=gr.Dataframe(interactive=False,max_height=450)
-                c_import.click(import_manual_ui,[project_state,c_pdf,c_lang,c_pub,c_title],[c_msg,c_topics,c_blocks]); c_approve.click(approve_source_ui,[project_state,c_pub,c_reviewer,c_confirm],[c_approve_msg]); c_refresh.click(approved_objects_ui,[project_state],[c_approved])
-                with gr.Accordion("AI Grounded Authoring",open=False):
-                    gr.Markdown("Le proposte possono usare soltanto fonti indicizzate; i conflitti o le affermazioni non supportate vengono bloccati.")
-                    with gr.Row(): g_pdf=gr.File(label='Fonte tecnica PDF',type='filepath'); g_text=gr.Textbox(label='Oppure fonte testuale',lines=4); g_doc=gr.Textbox(label='Document ID'); g_title=gr.Textbox(label='Titolo fonte')
-                    g_ingest=gr.Button('Indicizza fonte'); g_ingest_msg=gr.Markdown(); g_chunks=gr.Dataframe(interactive=False,max_height=350)
-                    with gr.Row(): g_instruction=gr.Textbox(label='Richiesta'); g_mode=gr.Dropdown(['paragraph','procedure','warning','summary','rewrite'],value='paragraph',label='Tipo')
-                    g_generate=gr.Button('Genera proposta grounded',variant='primary'); g_msg=gr.Markdown(); g_draft=gr.Textbox(label='Proposta',lines=8); g_evidence=gr.Dataframe(interactive=False,max_height=350); g_claims=gr.Dataframe(interactive=False); g_pid=gr.Textbox(label='Proposal ID')
-                    with gr.Row(): g_topic=gr.Textbox(label='Topic ID'); g_block=gr.Textbox(label='Nuovo Block ID'); g_btype=gr.Dropdown(['paragraph','warning','note','list_item'],value='paragraph',label='Tipo blocco'); g_pos=gr.Number(label='Posizione',value=1,precision=0); g_reviewer=gr.Textbox(label='Revisore')
-                    g_queue=gr.Button('Invia in review umana'); g_queue_msg=gr.Markdown(); g_ingest.click(grounding_ingest_ui,[project_state,g_pdf,g_text,g_doc,g_title],[g_ingest_msg,g_chunks]); g_generate.click(grounded_generate_ui,[project_state,g_instruction,g_mode],[g_msg,g_draft,g_evidence,g_claims,g_pid]); g_queue.click(grounded_queue_ui,[project_state,g_pid,g_topic,g_block,g_btype,g_pos,g_reviewer],[g_queue_msg])
-                with gr.Accordion("Coda di revisione",open=False):
-                    gr.Markdown("Le proposte in Draft/In Review restano bloccate finché un revisore umano non decide qui. (Milestone 4B.1: prima UI reale collegata a decide_review().)")
-                    rv_refresh=gr.Button("Aggiorna coda"); rv_queue=gr.Dataframe(interactive=False,max_height=300)
-                    with gr.Row(): rv_review_id=gr.Number(label="Review ID",precision=0); rv_decision=gr.Radio(["APPROVE","REJECT"],value="APPROVE",label="Decisione"); rv_actor=gr.Textbox(label="Revisore")
-                    rv_comment=gr.Textbox(label="Commento — opzionale")
-                    rv_decide=gr.Button("Decidi",variant="primary"); rv_msg=gr.Markdown()
-                    rv_refresh.click(review_queue_ui,[project_state],[rv_queue])
-                    rv_decide.click(review_decide_ui,[project_state,rv_review_id,rv_decision,rv_actor,rv_comment],[rv_msg,rv_queue])
+            # UX Gate 2A: source import and approval moved OFF the daily
+            # writing surface. These happen once per manual; they used to
+            # occupy the first screen of a tab whose real job is the
+            # trova -> apri -> modifica -> salva loop. Nothing is deleted --
+            # the standard-mode review table, the IDML items-to-check gate
+            # and both approval paths are all here, one click away.
+            with gr.Accordion(t("content.import.section"), open=False):
+                LOC.add(gr.Markdown(t("content.import.hint")), value="content.import.hint")
+                with gr.Row():
+                    c_pdf=gr.File(label="Manuale corrente PDF",type='filepath')
+                    c_lang=gr.Textbox(label="Lingua sorgente",value='en-US')
+                    c_pub=gr.Textbox(label="Publication ID",value='PUB-MAIN')
+                    c_title=gr.Textbox(label="Titolo")
+                c_import=gr.Button("Importa come draft",variant='primary')
+                c_msg=gr.Markdown()
+                # Milestone 3A: standard view. Same topics/blocks data as the
+                # technical dataframes below (no second backend) -- just
+                # friendlier columns, no IDs, no re-import button.
+                LOC.add(gr.HTML(_section_head_html("content.import.review.title",
+                                                   "content.import.review.sub")),
+                        value=lambda: _section_head_html("content.import.review.title",
+                                                         "content.import.review.sub"))
+                c_simple_table=gr.Dataframe(interactive=False,wrap=True,max_height=500)
+                # Milestone 3D constraint: master-spread/orphan/unsupported/
+                # ambiguous-asset/caption-candidate items from an IDML import are
+                # shown here in plain language (no Story/Spread ids, no JSON to
+                # open) and BLOCK "Approva sorgente" until acknowledged.
+                LOC.add(gr.HTML(_section_head_html("content.import.check.title")),
+                        value=lambda: _section_head_html("content.import.check.title"))
+                c_idml_review_html=gr.HTML(visible=False)
+                with gr.Row(visible=False) as c_idml_review_row:
+                    with gr.Column():
+                        c_idml_review_radios=[gr.Radio(visible=False) for _ in range(_IDML_REVIEW_MAX_ITEMS)]
+                        c_idml_review_confirm=gr.Button("Conferma decisioni")
+                c_simple_confirm=gr.Checkbox(label="Confermo di aver revisionato il contenuto")
+                c_simple_approve=gr.Button("Approva sorgente",variant="primary")
+                c_simple_msg=gr.Markdown()
+                c_topics=gr.Dataframe(interactive=False)
+                c_blocks=gr.Dataframe(interactive=False,max_height=500)
+                with gr.Row():
+                    c_reviewer=gr.Textbox(label="Revisore umano")
+                    c_confirm=gr.Checkbox(label="Confermo di aver revisionato la sorgente")
+                c_approve=gr.Button("Approva sorgente")
+                c_approve_msg=gr.Markdown()
+                c_refresh=gr.Button("Mostra oggetti approvati")
+                c_approved=gr.Dataframe(interactive=False,max_height=450)
+                c_import.click(import_manual_ui,[project_state,c_pdf,c_lang,c_pub,c_title],[c_msg,c_topics,c_blocks])
+                c_approve.click(approve_source_ui,[project_state,c_pub,c_reviewer,c_confirm],[c_approve_msg])
+                c_refresh.click(approved_objects_ui,[project_state],[c_approved])
 
             # ----------------------------------------------------------------
             # Milestone 4B.2 Studio wiring -- deferred to here so it can reuse
@@ -5801,9 +6076,15 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # trigger in the same response cycle, no client-side value-diff
             # detection involved, so the panel's visibility is guaranteed to
             # be recomputed every time the rest of the panel is.
+            # UX Gate 2A: profile_state is both an INPUT and an OUTPUT of
+            # the panel refresh -- it carries the shared variant profile
+            # through every object open so the selection survives, and it
+            # is re-emitted (possibly dropped, if that profile no longer
+            # exists) so Rilascio's picker sees the same value.
             VARIANT_PANEL_OUT = [st_variant_summary, st_variant_panel, *st_variant_dim_dd, *st_variant_val_dd,
-                                 st_variant_eval_profile, st_variant_eval_result]
-            _VARIANT_THEN_ARGS = (studio_variant_panel_ui, [project_state, st_kind, st_id], VARIANT_PANEL_OUT)
+                                 st_variant_eval_profile, st_variant_eval_result, profile_state]
+            _VARIANT_THEN_ARGS = (studio_variant_panel_ui,
+                                  [project_state, st_kind, st_id, profile_state], VARIANT_PANEL_OUT)
 
             authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
             st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
@@ -6060,31 +6341,6 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                         [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_variant_eval_btn.click(studio_variant_evaluate_ui,
                                       [project_state, st_kind, st_id, st_variant_eval_profile], [st_variant_eval_result])
-
-            # 4E.2 Publishing Preview wiring. Profile choices reload on
-            # every project load/switch (authoring_tab.select fires on tab
-            # entry; project_state.change fires on an actual project
-            # switch -- the same proven trigger already used for
-            # onboarding_choice_panel's own visibility) so no profile list
-            # -- and no stale SELECTION -- from a previous project can
-            # survive. Preview itself refreshes on its own button, on a
-            # profile pick, and on toggling "Mostra contenuti esclusi";
-            # each is independently wired directly to studio_preview_
-            # refresh_ui with no shared mutable state, matching the read-
-            # only, side-effect-free nature of the whole feature.
-            authoring_tab.select(studio_preview_profile_choices_ui, [project_state], [pv_profile])
-            project_state.change(studio_preview_profile_choices_ui, [project_state], [pv_profile])
-            pv_refresh_btn.click(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
-            pv_profile.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
-            pv_show_excluded.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
-            # 4F.1: production exports -- isolated callbacks, isolated
-            # outputs, same [project, publication, profile] inputs the
-            # preview above already uses, so preview and deliverable can
-            # never disagree about WHAT is being published.
-            pv_export_pdf_btn.click(studio_export_pdf_ui, [project_state, c_pub, pv_profile],
-                                    [pv_export_status])
-            pv_export_html_btn.click(studio_export_html_ui, [project_state, c_pub, pv_profile],
-                                     [pv_export_status])
 
         with gr.Tab(t("nav.conformity"), id="compliance") as cp_tab:
             LOC.add(cp_tab, label="nav.conformity")
@@ -6425,6 +6681,94 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             r_release=gr.Button('Crea release',variant='primary',interactive=False); r_msg=gr.Markdown(); r_zip=gr.File(label='Release package'); r_artifacts=gr.Dataframe(interactive=False,visible=False)
             r_check.click(readiness_ui,[project_state,r_pub,r_langs,r_profile,r_mode],[r_summary,r_matrix,r_blockers,r_json,r_release]); r_mode.change(_release_mode_reset,[r_mode],[r_mode_help,r_release,r_msg,r_zip,r_artifacts]); r_release.click(release_ui,[project_state,r_pub,r_langs,r_by,r_id,r_profile,r_idml,r_mode],[r_msg,r_zip,r_artifacts])
 
+            # ================================================================
+            # UX Gate 2A: publishing preview + production export, moved here
+            # from Contenuti.
+            #
+            # 4E.2 put the preview on the authoring tab as "normal workflow,
+            # not an expert-only feature", and that reasoning still holds --
+            # but the workflow it belongs to is the release cycle, which is
+            # this tab, not the per-object writing loop. On Contenuti it was
+            # measured sitting 1200px below the editor, behind the Save the
+            # author actually came for, carrying the second of the two
+            # "Profilo" selectors.
+            #
+            # Read-only by construction: no save/edit control anywhere in
+            # this block, all rendering from publishing_preview.py's pure
+            # model+HTML functions. Export is isolated: its own callbacks,
+            # its own status card, never ST_OUT_FULL.
+            # ================================================================
+            LOC.add(gr.HTML(_section_head_html("release.preview.title", "release.preview.sub")),
+                    value=lambda: _section_head_html("release.preview.title", "release.preview.sub"))
+            with gr.Row():
+                # The SAME variant profile the Contenuti evaluator uses --
+                # both bound to profile_state, so what you evaluate a block
+                # against and what you export can no longer disagree.
+                pv_profile = LOC.add(gr.Dropdown(choices=[], value=None,
+                                                 label=t("content.profile.label"),
+                                                 info=t("content.profile.hint"), scale=2),
+                                     label="content.profile.label", info="content.profile.hint")
+                pv_refresh_btn = LOC.button(lambda: t("release.preview.refresh"), scale=1)
+                pv_show_excluded = LOC.add(gr.Checkbox(label=t("release.preview.show_excluded"),
+                                                       value=False, scale=1),
+                                           label="release.preview.show_excluded")
+            pv_output = LOC.add(gr.HTML(f"<div class='ms-pp-note-line'>{t('release.preview.empty')}</div>"),
+                                value=lambda: f"<div class='ms-pp-note-line'>{t('release.preview.empty')}</div>")
+            LOC.add(gr.HTML(f"<div class='ms-section-sub' style='margin-top:14px'>{t('release.export.sub')}</div>"),
+                    value=lambda: f"<div class='ms-section-sub' style='margin-top:14px'>{t('release.export.sub')}</div>")
+            with gr.Row():
+                pv_export_pdf_btn = gr.Button("Esporta PDF", variant="primary", scale=1)
+                pv_export_html_btn = gr.Button("Esporta HTML", scale=1)
+            # One HTML output, nothing else: the export RESULT CARD (see
+            # _export_result_card). Deliberately NOT a gr.File widget --
+            # a filename card with a generic "Scarica" is exactly the UX
+            # that failed manual acceptance, because "how do I open it?"
+            # had no visible answer.
+            pv_export_status = gr.HTML()
+
+            # ============================================================
+            # UX Gate 2A — variant profile: ONE value, two views.
+            #
+            # Contenuti's evaluator and Rilascio's preview/export both
+            # answer "which variant profile am I working against?". They
+            # used to own two unlinked gr.Dropdowns, both labelled
+            # "Profilo", both filled from the same query -- so a user
+            # could evaluate a block against one and export against
+            # another with nothing on screen to say so.
+            #
+            # The fix is a single profile_state:
+            #   * picking in EITHER selector writes the state;
+            #   * entering EITHER tab re-reads the state into that tab's
+            #     selector (studio_preview_profile_choices_ui preserves a
+            #     still-valid selection rather than resetting it);
+            #   * a project switch reloads the list and drops a profile
+            #     that no longer exists, in both places.
+            # Divergence is therefore not something the user can reach.
+            # ============================================================
+            st_variant_eval_profile.change(lambda v: v, [st_variant_eval_profile], [profile_state])
+            pv_profile.change(lambda v: v, [pv_profile], [profile_state])
+
+            tab_release.select(studio_preview_profile_choices_ui,
+                               [project_state, profile_state], [pv_profile, profile_state])
+            project_state.change(studio_preview_profile_choices_ui,
+                                 [project_state, profile_state], [pv_profile, profile_state])
+
+            # Preview refreshes on its own button, on a profile pick, and
+            # on toggling "Mostra contenuti esclusi"; each independently
+            # wired with no shared mutable state, matching the read-only,
+            # side-effect-free nature of the whole feature.
+            pv_refresh_btn.click(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            pv_profile.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            pv_show_excluded.change(studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            # 4F.1: production exports -- isolated callbacks, isolated
+            # outputs, same [project, publication, profile] inputs the
+            # preview above already uses, so preview and deliverable can
+            # never disagree about WHAT is being published.
+            pv_export_pdf_btn.click(studio_export_pdf_ui, [project_state, c_pub, pv_profile],
+                                    [pv_export_status])
+            pv_export_html_btn.click(studio_export_html_ui, [project_state, c_pub, pv_profile],
+                                     [pv_export_status])
+
         with gr.Tab(t("nav.settings"),id="settings") as tab_settings:
             LOC.add(tab_settings, label="nav.settings")
             head_settings=LOC.html(lambda: _page_head_html("kicker.system", "page.settings.title", "page.settings.subtitle"))
@@ -6558,23 +6902,29 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # on the navigation itself is the fix, chained (never merged into the
     # nav callback) so navigation keeps working even if the project has
     # no profiles yet.
+    # UX Gate 2A: the profile picker this chain used to refill lives in
+    # Rilascio now, so navigating to Contenuti refills the CONTENUTI one.
     nav_authoring.click(lambda:_navigate('authoring'),None,_nav_outputs).then(
-        studio_preview_profile_choices_ui,[project_state],[pv_profile])
+        studio_preview_profile_choices_ui,[project_state,profile_state],
+        [st_variant_eval_profile,profile_state])
     nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
     nav_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
-    nav_release.click(lambda:_navigate('release'),None,_nav_outputs)
+    nav_release.click(lambda:_navigate('release'),None,_nav_outputs).then(
+        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state])
     nav_settings.click(lambda:_navigate('settings'),None,_nav_outputs)
     home_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
     home_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
-    home_release.click(lambda:_navigate('release'),None,_nav_outputs)
+    home_release.click(lambda:_navigate('release'),None,_nav_outputs).then(
+        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state])
     home_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     # Milestone 3A: "Rivedi il contenuto importato" opens the Contenuti tab, whose
     # DEFAULT view (c_simple_table) is now the friendly standard view — the
     # technical dataframes live only inside the collapsed "modalità avanzata"
     # accordion, so they're never the primary call-to-action.
     lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel]).then(
-        studio_preview_profile_choices_ui,[project_state],[pv_profile])
+        studio_preview_profile_choices_ui,[project_state,profile_state],
+        [st_variant_eval_profile,profile_state])
     # Keeps the standard review table in sync with the SAME topics/blocks data
     # shown in "modalità avanzata" — fires after either the guided import or the
     # manual "Importa come draft" click, since both set c_blocks. No second backend.
@@ -6615,7 +6965,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         compliance_pack_state_ui, [project_state, ws_lang],
         [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
         compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table).then(
-        compliance_coverage_ui, [project_state, cp_scope, ws_lang], [cp_coverage, cp_gaps])
+        compliance_coverage_ui, [project_state, cp_scope, ws_lang], [cp_coverage, cp_gaps]).then(
+        # UX Gate 2A: the same treatment Compliance's data-driven panels
+        # already get -- one display-only element, never the editor.
+        studio_context_relabel_ui, [project_state, c_pub, ws_lang], [st_pub_header])
 
 if __name__=='__main__':
-    demo.launch(server_name='127.0.0.1',server_port=7860,inbrowser=True,show_error=False,theme=gr.themes.Base(),css=CSS,favicon_path=str(Path(__file__).with_name('manualsync.png')) if Path(__file__).with_name('manualsync.png').exists() else None,allowed_paths=[str(DATA_ROOT.resolve())],footer_links=[])
+    # MS_APP_PORT / MS_NO_BROWSER: launch overrides for automated
+    # acceptance only. Defaults are exactly the previous behaviour
+    # (the standard local address and port, opens a browser), so a normal
+    # double-click start is
+    # unchanged.
+    #
+    # They exist because the two browser gates must own the server they
+    # drive: the active project is read ONCE at import (INITIAL_PROJECT),
+    # so a gate that builds a disposable project cannot repoint a server
+    # that is already running -- it would silently exercise whatever
+    # project that server happened to start on. Each gate now starts its
+    # own instance on its own free port, which also means running one
+    # cannot disturb an app the user already has open on 7860.
+    _port = int(os.environ.get("MS_APP_PORT", "7860"))
+    _open_browser = not os.environ.get("MS_NO_BROWSER")
+    demo.launch(server_name='127.0.0.1',server_port=_port,inbrowser=_open_browser,show_error=False,theme=gr.themes.Base(),css=CSS,favicon_path=str(Path(__file__).with_name('manualsync.png')) if Path(__file__).with_name('manualsync.png').exists() else None,allowed_paths=[str(DATA_ROOT.resolve())],footer_links=[])

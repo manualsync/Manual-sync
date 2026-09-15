@@ -31,6 +31,7 @@ from authoring_service import (
 import authoring_view as av
 from project_lifecycle import create_project
 import app
+import i18n
 
 TMP = Path(tempfile.mkdtemp(prefix="manualsync_authoring_tables_figures_4c_"))
 results = []
@@ -576,8 +577,8 @@ for _fn_index, entry in app.demo.fns.items():
         break
 check("g37: studio_new_table_ui is wired to the shared actor_state (durable, synced from the single c_actor field)",
       dep_new_table is not None and app.actor_state._id in dep_new_table["inputs"], dep_new_table)
-check("g37: studio_new_table_ui is NOT wired directly to the live c_actor component (that was the actor-state bug)",
-      dep_new_table is not None and app.c_actor._id not in dep_new_table["inputs"], dep_new_table)
+check("g37: studio_new_table_ui is NOT wired directly to the live operator Textbox (that was the actor-state bug)",
+      dep_new_table is not None and app.ws_operator._id not in dep_new_table["inputs"], dep_new_table)
 dep_replace = None
 for _fn_index, entry in app.demo.fns.items():
     fn = getattr(entry, "fn", None)
@@ -843,15 +844,31 @@ check("g44: the blocked Save did not bump the shared table's version", v44_after
 #     bug cannot recur. (Still exactly one shared "Il tuo nome" field;
 #     the fix added a State, not a second textbox.)
 # ------------------------------------------------------------------
-_actor_labeled_textboxes_in_authoring_tab = [
-    c for c in [app.c_actor] if getattr(c, "label", None) == "Il tuo nome"
+# UX Gate 2A re-aim: the identity field is now the shell context bar's
+# ws_operator -- c_actor was a third copy of the same question and is
+# gone. The invariant under test is unchanged: ONE identity component,
+# and no authoring mutation callback reading a live Textbox directly.
+_identity_components = [
+    c for c in [app.ws_operator] if getattr(c, "label", None) == i18n.translate("context.operator", "it")
 ]
-check("g45: exactly one 'Il tuo nome' identity component feeds authoring actions (c_actor itself, unchanged)",
-      len(_actor_labeled_textboxes_in_authoring_tab) == 1, _actor_labeled_textboxes_in_authoring_tab)
+check("g45: exactly one identity component feeds authoring actions (the shell operator)",
+      len(_identity_components) == 1, _identity_components)
+check("g45: the old tab-local duplicate (c_actor) is gone, not merely renamed",
+      not hasattr(app, "c_actor"), None)
 check("g45: actor_state is a real gr.State (not a second visible textbox)",
       isinstance(app.actor_state, app.gr.State), type(app.actor_state))
-_c_actor_input_deps = [d for d in app.demo.config["dependencies"] if app.c_actor._id in d.get("inputs", [])]
-check("g45: c_actor is read as an input by EXACTLY one dependency in the whole app graph -- its own sync-to-state handler",
+# ws_operator is read directly by Compliance's own callbacks (a Gate 1
+# decision, unrelated to this bug class), so the assertion that matters
+# here is the AUTHORING one: not one studio_* callback may read the live
+# Textbox -- they all go through actor_state.
+_operator_input_deps = [d for d in app.demo.config["dependencies"] if app.ws_operator._id in d.get("inputs", [])]
+_authoring_reading_live = [d for d in _operator_input_deps
+                           if str(d.get("api_name") or "").startswith("studio_")]
+check("g45: NO authoring callback reads the live operator Textbox directly -- every one goes via actor_state",
+      _authoring_reading_live == [], [d.get("api_name") for d in _authoring_reading_live])
+_c_actor_input_deps = [d for d in _operator_input_deps
+                       if d.get("outputs") == [app.actor_state._id]]
+check("g45: exactly one dependency syncs the operator field into actor_state",
       len(_c_actor_input_deps) == 1, [d.get("api_name") or d.get("targets") for d in _c_actor_input_deps])
 check("g45: that one dependency fires on 'change' -- the mechanism actually proven to reach the backend in this "
       "Gradio build (verified with a server-side file trace: .input() on a plain Textbox never arrived at all, "
@@ -861,7 +878,7 @@ check("g45: that one dependency fires on 'change' -- the mechanism actually prov
       _c_actor_input_deps[0]["targets"][0][1] == "change", _c_actor_input_deps[0]["targets"])
 _actor_state_input_deps = [d for d in app.demo.config["dependencies"] if app.actor_state._id in d.get("inputs", [])]
 check("g45: at least 20 real mutation callbacks (save/archive/restore/reorder/review/revert/create/replace) "
-      "read actor_state instead of c_actor",
+      "read actor_state instead of the live operator Textbox",
       len(_actor_state_input_deps) >= 20, len(_actor_state_input_deps))
 _mutation_fn_names = {"studio_save_ui", "studio_move_ui", "studio_archive_ui", "studio_restore_obj_ui",
                       "studio_new_topic_ui", "studio_new_block_ui", "studio_new_table_ui", "studio_new_figure_ui",
@@ -880,7 +897,7 @@ check("g46: every listed mutation callback (topic/block/table/figure/save/archiv
 # ------------------------------------------------------------------
 _sync_dep = _c_actor_input_deps[0]
 _sync_fn = getattr(app.demo.fns.get(_sync_dep.get("id")), "fn", None)
-check("g47: the c_actor -> actor_state sync handler returns the value unchanged (pure passthrough)",
+check("g47: the operator -> actor_state sync handler returns the value unchanged (pure passthrough)",
       _sync_fn is not None and _sync_fn("Alessandro") == "Alessandro", _sync_fn("Alessandro") if _sync_fn else None)
 check("g47: the sync handler's own output target is actor_state",
       app.actor_state._id in _sync_dep.get("outputs", []), _sync_dep.get("outputs"))
@@ -960,8 +977,8 @@ check("g52: topic Save (non-4C path) is unaffected by the actor-state rewiring",
 check("g53: actor_state is never a target (output) of the outline/open/refresh bundle -- navigating never resets it",
       app.actor_state._id not in [i for d in app.demo.config["dependencies"]
                                   for i in d.get("outputs", []) if d.get("api_name") == "studio_open_ui"], None)
-check("g53: c_actor is never a target (output) of the outline/open/refresh bundle either",
-      app.c_actor._id not in [i for d in app.demo.config["dependencies"]
+check("g53: the operator field is never a target (output) of the outline/open/refresh bundle either",
+      app.ws_operator._id not in [i for d in app.demo.config["dependencies"]
                               for i in d.get("outputs", []) if d.get("api_name") == "studio_open_ui"], None)
 
 # ------------------------------------------------------------------

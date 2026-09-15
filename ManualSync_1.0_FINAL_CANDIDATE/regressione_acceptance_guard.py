@@ -235,9 +235,18 @@ with tempfile.TemporaryDirectory() as tmp:
                "import_requirement_pack", "create_topic", "add_block", "save",
                "Salva", "Conferma", "reset_fixture", "dispatchKeyEvent")
 
+    # app.py is the PRODUCT, not a harness. It legitimately mutates the
+    # active project -- that is its job -- and must never import a test
+    # guard. It is excluded by name rather than by accident: a passing
+    # mention of a local URL in one of its comments briefly made this
+    # tripwire flag the application itself, which would have taught the
+    # next reader that the tripwire cries wolf.
+    PRODUCT_ENTRYPOINTS = ("app.py",)
     harnesses, unguarded = [], []
     for path in sorted(HERE.glob("*.py")):
         if path.name in ("acceptance_guard.py", Path(__file__).name):
+            continue
+        if path.name in PRODUCT_ENTRYPOINTS:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         if not any(marker in text for marker in DRIVES_BROWSER):

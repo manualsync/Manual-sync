@@ -1119,11 +1119,24 @@ finally:
 # guidance, echoes choices back unchanged, persists once filled in) are
 # unchanged and still pass against c_actor; only this literal-source-text
 # check is updated to match the new, still-non-optional field.
+#
+# UX Gate 2A: that shared field is now the shell context bar's Operatore
+# -- c_actor was a third copy of the same question, removed when Contenuti
+# was recomposed around the daily writing loop. The assertion is re-aimed
+# from a source-text literal onto the live component, which is what the
+# user actually sees and cannot drift from the rendered app.
 app_source = (BASE / "app.py").read_text(encoding="utf-8")
 check("group28: the reviewer name field no longer claims to be optional",
       'label="Il tuo nome — opzionale"' not in app_source, "")
-check("group28: the shared 'Il tuo nome' field states its purpose (recording who makes changes/decisions), not that it's optional",
-      'c_actor = gr.Textbox(label="Il tuo nome", info="Serve per registrare chi effettua modifiche e decisioni.")' in app_source, "")
+check("group28: the tab-local duplicate identity field is gone, not merely relabelled",
+      not hasattr(app, "c_actor") and "c_actor = gr.Textbox" not in app_source, "")
+_op_label = app.ws_operator.label or ""
+_op_info = app.ws_operator.info or ""
+check("group28: the one identity field does not present itself as optional",
+      "opzionale" not in _op_label.lower() and "opzionale" not in _op_info.lower(),
+      (_op_label, _op_info))
+check("group28: and it states its purpose -- that what you do is recorded against this name",
+      "registrat" in _op_info.lower(), _op_info)
 
 print(f"parse build: {idml.IDML_IMPORT_BUILD}")
 

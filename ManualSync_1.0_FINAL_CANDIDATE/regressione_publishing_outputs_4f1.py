@@ -702,7 +702,7 @@ check("uxa21 (navigation defect, fixed): opening Contenuti from the sidebar refr
       len(_nav_profile_chains) >= 1, len(_nav_profile_chains))
 check("uxa22: the profile-choices callback genuinely returns this project's active profiles, so the "
       "picker is populated with real choices rather than an empty list",
-      len(app.studio_preview_profile_choices_ui(str(P))["choices"]) == 2,
+      len(app.studio_preview_profile_choices_ui(str(P))[0]["choices"]) == 2,
       app.studio_preview_profile_choices_ui(str(P)))
 
 shutil.rmtree(TMP, ignore_errors=True)

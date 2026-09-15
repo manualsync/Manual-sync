@@ -47,7 +47,8 @@ from pathlib import Path
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from acceptance_guard import guarded_start, overlay_snapshot, report_delta
+from acceptance_guard import overlay_snapshot, report_delta
+import acceptance_fixture as fx  # noqa: E402
 import authoring_view as av  # noqa: E402
 
 APP_URL = "http://127.0.0.1:7860/"
@@ -63,8 +64,13 @@ CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 # -- which regressione_browser_export_4f1.py does, for Browser and APP_URL
 # -- never trips the guard.
 PROJECT = ""
-PLAIN_BLK = "BLK-0FF3A85E07"
-RICH_BLK = "BLK-F302B2639A"
+# Resolved from the fixture this gate builds for itself -- see seed_blocks().
+# These used to be the ids of two blocks inside a hand-made project named
+# 4E3_Rich_Text_Manual_Acceptance that exists on no checkout but one. The
+# gate then failed during setup everywhere else, which is indistinguishable
+# from a real regression and is why it stopped being trusted.
+PLAIN_BLK = ""
+RICH_BLK = ""
 BASELINE_TEXT = "Prima di iniziare, verificare che la pompa sia scollegata."
 EDITED_TEXT = "Prima di iniziare, verificare che la pompa sia sempre scollegata."
 # The rich fixture's documented baseline. Restored EXACTLY (never by
@@ -265,13 +271,40 @@ class Browser:
 # DB helpers -- the browser proves what the USER sees; these prove what
 # was actually persisted. Both must agree for a PASS.
 # ---------------------------------------------------------------------
-def db_state(block_id=PLAIN_BLK):
+def db_state(block_id=None):
+    # Resolved at CALL time, not at def time: PLAIN_BLK is now filled in
+    # by the fixture seed, and a default argument would have captured the
+    # empty placeholder once, when this module was imported.
+    block_id = block_id or PLAIN_BLK
     repo, svc = av.open_service(PROJECT)
     d = av.block_detail(svc, block_id)
     audit = repo.conn.execute("SELECT COUNT(*) c FROM audit_events WHERE object_id=?",
                               (block_id,)).fetchone()["c"]
     repo.close()
     return {"version": d["version"], "format": d["text_format"], "text": d["text"], "audit": audit}
+
+
+def seed_blocks(project_dir):
+    """Create this gate's two subject blocks inside the disposable project.
+
+    One plain paragraph and one rich paragraph, because the scenarios
+    below exercise both the plain path and the markdown/rich path. They
+    are created through AuthoringService, the same way the product
+    creates a block, so the rows carry a real version and real audit
+    history rather than being written straight into sqlite.
+    """
+    repo, svc = av.open_service(str(project_dir))
+    try:
+        topic_id = repo.conn.execute(
+            "SELECT topic_id FROM topics ORDER BY topic_id LIMIT 1").fetchone()["topic_id"]
+        plain = svc.create_block_in_topic(topic_id, "paragraph", actor=ACTOR,
+                                          text=BASELINE_TEXT, text_format="plain")
+        rich = svc.create_block_in_topic(topic_id, "paragraph", actor=ACTOR,
+                                         text=RICH_BASELINE, text_format="rich")
+    finally:
+        repo.close()
+    return {"plain_block": plain["block_id"], "rich_block": rich["block_id"],
+            "topic_id": topic_id}
 
 
 def reset_fixture():
@@ -309,10 +342,31 @@ def open_block(br, block_id):
 
 
 def main():
-    global PROJECT
-    target, overlay_before = guarded_start()
-    PROJECT = str(target)
+    """Build a disposable project, run the gate against it, throw it away.
 
+    The whole run lives inside fx.disposable_project(), which sets and
+    then RE-VERIFIES the active-project pointer through acceptance_guard,
+    proves the starting data matches canonical_demo's documented
+    baseline, restores the caller's project on the way out and only then
+    deletes the fixture.
+    """
+    global PROJECT, PLAIN_BLK, RICH_BLK
+    global APP_URL
+    with fx.disposable_project("Browser_Save_4E3", seed=seed_blocks) as (target, facts):
+        PROJECT = str(target)
+        PLAIN_BLK = facts["plain_block"]
+        RICH_BLK = facts["rich_block"]
+        print(f"fixture blocks: plain={PLAIN_BLK} rich={RICH_BLK}")
+        # Own the server too: app.py reads the active project once at
+        # import, so an already-running instance would be pinned to a
+        # different project and this gate would pass or fail against
+        # data it never created.
+        with fx.app_server(target) as url:
+            APP_URL = url
+            _run(overlay_snapshot(target))
+
+
+def _run(overlay_before):
     baseline = reset_fixture()
     print("=" * 78)
     print(f"FIXTURE BASELINE: version={baseline['version']} format={baseline['format']} "
@@ -361,27 +415,29 @@ def main():
         # SCENARIO B -- the ticket's exact acceptance scenario, with the
         # identity field filled in the ordinary way a writer would.
         # ------------------------------------------------------------------
+        # UX Gate 2A: the identity field is the shell context bar's
+        # "Operatore". The tab-local "Il tuo nome" copy was removed --
+        # it asked the same question the context bar already asks. Same
+        # field, same fail-closed rule, new address.
         br.js("""
           (() => {
-            const lab = Array.from(document.querySelectorAll('label'))
-                             .find(l => l.textContent.trim().startsWith('Il tuo nome'));
-            const inp = lab.querySelector('input, textarea');
+            const inp = Array.from(document.querySelectorAll(
+                '.ms-ctxbar input[type=text], .ms-ctxbar textarea')).pop();
             inp.focus(); return true;
           })()
         """)
         br.type_text(ACTOR)
         br.js("""
           (() => {
-            const lab = Array.from(document.querySelectorAll('label'))
-                             .find(l => l.textContent.trim().startsWith('Il tuo nome'));
-            lab.querySelector('input, textarea').blur(); return true;
+            Array.from(document.querySelectorAll(
+                '.ms-ctxbar input[type=text], .ms-ctxbar textarea')).pop().blur();
+            return true;
           })()
         """)
         time.sleep(2)
         check("e2eB0: the identity field visibly holds the typed name",
-              br.js("""(() => { const lab = Array.from(document.querySelectorAll('label'))
-                       .find(l => l.textContent.trim().startsWith('Il tuo nome'));
-                       return lab.querySelector('input, textarea').value; })()""") == ACTOR, None)
+              br.js("""(() => Array.from(document.querySelectorAll(
+                       '.ms-ctxbar input[type=text], .ms-ctxbar textarea')).pop().value)()""") == ACTOR, None)
 
         open_block(br, PLAIN_BLK)
         before = db_state()
