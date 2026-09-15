@@ -62,8 +62,17 @@ check("mig1: this batch declares exactly seven codes",
       len(de.AUTHORING_OBJECT_CODES) == 7, de.AUTHORING_OBJECT_CODES)
 check("mig2: they are separate from the compliance batch",
       not (set(de.AUTHORING_CODES) & set(de.MIGRATED_CODES)))
-check("mig3: ALL_CODES is the union", set(de.ALL_CODES)
-      == set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES))
+# Re-aimed by Gate 2B.1, which added a third family (IMPACT_CODES) for
+# the read-only impact service. The invariant this check protects is not
+# "there are exactly two families" -- it is that this batch is disjoint
+# from the others and that nothing in it escapes ALL_CODES, which is what
+# regressione_domain_errors uses to prove every code has a catalog entry.
+check("mig3: this batch is fully contained in ALL_CODES",
+      set(de.AUTHORING_CODES) <= set(de.ALL_CODES),
+      sorted(set(de.AUTHORING_CODES) - set(de.ALL_CODES)))
+check("mig3: ALL_CODES is exactly the union of the declared families",
+      set(de.ALL_CODES) == set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES) | set(de.IMPACT_CODES),
+      sorted(set(de.ALL_CODES) ^ (set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES) | set(de.IMPACT_CODES))))
 
 SRC = {m: (HERE / m).read_text(encoding="utf-8") for m in MODULES}
 for code in de.AUTHORING_OBJECT_CODES:

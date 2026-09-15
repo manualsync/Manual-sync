@@ -262,7 +262,23 @@ AUTHORING_OBJECT_CODES = (
 AUTHORING_CODES = AUTHORING_OBJECT_CODES + ACTOR_CODES + ARCHIVED_CODES
 
 #: Every code migrated so far, whatever the layer.
-ALL_CODES = MIGRATED_CODES + AUTHORING_CODES
+# ================================================================
+# UX Gate 2B.1 -- Impact Intelligence.
+#
+# Two codes, both structural. Impact assessment is a READ, so it has no
+# validation vocabulary of its own: the only things that can go wrong are
+# being asked about an object that does not exist, or about a kind the
+# composed engines do not all support.
+# ================================================================
+ERR_IMPACT_OBJECT_NOT_FOUND = "ERR_IMPACT_OBJECT_NOT_FOUND"
+ERR_IMPACT_KIND_UNSUPPORTED = "ERR_IMPACT_KIND_UNSUPPORTED"
+
+IMPACT_CODES = (
+    ERR_IMPACT_OBJECT_NOT_FOUND,
+    ERR_IMPACT_KIND_UNSUPPORTED,
+)
+
+ALL_CODES = MIGRATED_CODES + AUTHORING_CODES + IMPACT_CODES
 
 #: What the UI shows when it meets a code it has no sentence for, or a
 #: failure that is not a DomainError at all. Kept here so the fallback is

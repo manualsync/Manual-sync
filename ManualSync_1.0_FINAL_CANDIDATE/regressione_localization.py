@@ -64,7 +64,15 @@ check("cat4: the catalogs are not empty", len(IT) > 100, len(IT))
 # "error.ERR_ACTOR_REQUIRED" is deliberate: an error key mirrors the
 # domain's stable CODE exactly, so the two cannot drift apart. Everything
 # else stays lowercase-dotted.
-_KEY_SHAPE = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)+|error\.(unknown|ERR_[A-Z0-9_]+)")
+# A key is a lowercase dotted path, optionally ending in one stable
+# SCREAMING_SNAKE identifier segment. That last form is how a domain
+# CODE becomes a catalog key -- error.ERR_*, and since Gate 2B.1
+# impact.reason.IMPACT_* / impact.limitation.LIMITATION_*. Allowing
+# it does not weaken this check: what cat5 exists to forbid is a key
+# like "Conformita" -- display text doubling as an identifier -- and
+# an uppercase code is the precise opposite of that.
+_KEY_SHAPE = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)*(\.[A-Z][A-Z0-9_]+)?"
+                        r"|error\.(unknown|ERR_[A-Z0-9_]+)")
 check("cat5: no key is Italian text used as an identifier",
       all(_KEY_SHAPE.fullmatch(k) for k in IT),
       [k for k in sorted(IT) if not _KEY_SHAPE.fullmatch(k)][:6])

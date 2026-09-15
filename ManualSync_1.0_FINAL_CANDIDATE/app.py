@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import html
 import json
 import os
@@ -23,6 +24,8 @@ from authoring_service import AuthoringService, VersionConflictError, ArchivedOb
 import authoring_view as av
 import publishing_preview as pp
 import publishing_output as po
+import impact_intelligence as ii
+import impact_view as iv
 import export_links
 import rich_text
 from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
@@ -702,6 +705,27 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    topic rather than a block. #ms-rich-text-input is st_text_input, the
    canonical body-text carrier; the title keeps its natural height. */
 .ms-pane-centre #ms-rich-text-input textarea{min-height:320px!important}
+/* UX Gate 2B.1 -- the Impact panel. Compact by construction: it informs
+   without competing with the editor, which is the constraint the whole
+   three-zone layout exists to protect. */
+.ms-impact-compact{display:flex;flex-direction:column;gap:3px;margin:2px 0 8px}
+.ms-impact-line{font-size:12.5px;line-height:1.45;color:var(--ui-ink);
+  padding:3px 8px;border-radius:7px;background:var(--ui-surface-2);
+  border:1px solid var(--ui-line)}
+/* Only things a human may have to act on are marked. "3 publications" is
+   context; "2 translations to check" is a decision waiting to happen. */
+.ms-impact-attention{background:var(--ui-amber-soft,#fffaeb);border-color:#fde68a;
+  color:#92400e;font-weight:650}
+.ms-impact-empty{font-size:12.5px;color:var(--ui-muted);padding:3px 2px}
+.ms-impact-details{font-size:12px;color:var(--ui-ink)}
+.ms-impact-group{margin-bottom:10px}
+.ms-impact-group-title{font-weight:750;font-size:11px;text-transform:uppercase;
+  letter-spacing:.05em;color:#98a2b3;margin-bottom:3px}
+.ms-impact-details ul{margin:0;padding-left:16px}
+.ms-impact-details li{margin:2px 0;line-height:1.45}
+.ms-impact-limits{border-top:1px solid var(--ui-line);padding-top:8px;margin-top:4px}
+.ms-impact-limits li{color:var(--ui-muted)}
+
 /* Quiet scrollbars in the side panes -- they are navigation, not
    content, and a heavy native bar reads as a second page. */
 .ms-pane-left::-webkit-scrollbar,.ms-pane-right::-webkit-scrollbar{width:8px}
@@ -3362,6 +3386,38 @@ def _variant_panel_bundle(svc: AuthoringService, detail: dict[str, Any],
             gr.update(choices=profile_choices, value=kept), "", kept)
 
 
+def studio_impact_panel_ui(project_dir, kind, object_id, lang=None):
+    """UX Gate 2B.1: the Impatto / Impact panel for the open object.
+
+    Strictly read-only. assess_object_impact() writes nothing, and this
+    callback adds nothing of its own -- viewing impact must never be a
+    reason for project data to change.
+
+    `lang` is an input purely so the language switch can re-render the
+    panel: the report is codes+params, so the same report produces
+    Italian or English depending on the language active for THIS request.
+    use_language() scopes it to this call, exactly as the compliance
+    callbacks do, so one session's choice never decides another's.
+
+    A failure here must not take the workspace down with it: impact is
+    contextual information, not part of writing or saving. Anything
+    unexpected degrades to the neutral empty panel rather than raising
+    into the editor's own event chain.
+    """
+    empty = iv.render(None)
+    if not project_dir or kind not in ii.SUPPORTED_KINDS or not object_id:
+        return empty
+    try:
+        with i18n.use_language(lang) if lang else contextlib.nullcontext():
+            report = ii.assess_object_impact(project_dir, kind, object_id)
+            return iv.render(report)
+    except de.DomainError:
+        # object genuinely gone (deleted/archived away under us)
+        return empty
+    except Exception:
+        return empty
+
+
 def studio_variant_panel_ui(project_dir, kind, object_id, current_profile=None):
     """Refreshes the Studio 'Varianti' section: human summary, the
     _VARIANT_ROWS dimension/value picker rows pre-filled from the
@@ -3467,7 +3523,7 @@ def studio_variant_save_ui(project_dir, kind, object_id, block_type, actor, *dim
     though nothing about any of them was actually wrong -- the whole
     panel looked broken from one small, expected validation failure. The
     full panel refresh (summary, visibility, pickers, eval profile) is
-    instead chained via .then(*_VARIANT_THEN_ARGS) on the wiring below --
+    instead chained via .then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS) on the wiring below --
     the SAME mechanism already used for every other Studio navigation
     event -- which re-reads whatever is CURRENTLY persisted regardless of
     whether this save just succeeded or failed, so a failed save leaves
@@ -5919,6 +5975,26 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                             st_variant_eval_btn = LOC.button(lambda: t("content.variants.evaluate"))
                             st_variant_eval_result = gr.Markdown()
 
+                    # ========================================
+                    # UX Gate 2B.1 -- Impatto / Impact.
+                    #
+                    # Placed directly under the pane heading, above the
+                    # variant editor and the advanced accordions: it is
+                    # the one thing in this pane that can tell the author
+                    # something they did not already know about the
+                    # object they have open.
+                    #
+                    # Compact by default, details behind an accordion, so
+                    # it informs without competing with the editor -- the
+                    # constraint the whole 2A layout exists to protect.
+                    # ========================================
+                    LOC.add(gr.HTML(_section_head_html("impact.section", "impact.hint")),
+                            value=lambda: _section_head_html("impact.section", "impact.hint"))
+                    st_impact_compact = gr.HTML(iv.compact_html(None))
+                    with gr.Accordion(t("impact.details"), open=False) as st_impact_accordion:
+                        LOC.add(st_impact_accordion, label="impact.details")
+                        st_impact_details = gr.HTML("")
+
                     with gr.Accordion(t("content.tech.section"), open=False) as st_tech_accordion:
                         LOC.add(st_tech_accordion, label="content.tech.section")
                         st_tech_html = gr.HTML()
@@ -6086,10 +6162,26 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             _VARIANT_THEN_ARGS = (studio_variant_panel_ui,
                                   [project_state, st_kind, st_id, profile_state], VARIANT_PANEL_OUT)
 
-            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            # UX Gate 2B.1: the Impact panel refreshes off the SAME events,
+            # chained the same way. Deliberately NOT st_id.change()/
+            # st_version.change(): this build does not fire a gr.State
+            # change reliably, which is exactly why the Varianti panel was
+            # moved to .then() chaining in 4E.1 (see the note above). A
+            # panel that silently fails to refresh is worse than no panel,
+            # because the number on screen would then be about a different
+            # object than the one open.
+            #
+            # ws_lang is an input so the panel re-renders in the language
+            # active for the request; the report itself is codes+params
+            # and carries no prose.
+            IMPACT_OUT = [st_impact_compact, st_impact_details]
+            _IMPACT_THEN_ARGS = (studio_impact_panel_ui,
+                                 [project_state, st_kind, st_id, ws_lang], IMPACT_OUT)
+
+            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
             # 4C: draft recovery now also covers the table/figure editors --
             # any of these fields blurring/changing saves a draft the same
@@ -6209,7 +6301,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                  st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
                  st_shared_impact_token],
                 ST_OUT_FULL
-            ).then(*_VARIANT_THEN_ARGS)
+            ).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
             # Add/remove row/column -- see _table_rowcol_op: replaces
             # reliance on the Dataframe's own native right-click menu,
@@ -6228,8 +6320,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                         st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn,
                                         st_rich_editable, st_rich_save_status])
             st_discard_draft_btn.click(studio_discard_draft_ui,
-                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             # st_save_btn's own wiring is now the two-step guaranteed-order
             # chain declared earlier, right after the rich-text toolbar
             # buttons (see the "4E.3 Save/Version Regression Fix" comment
@@ -6240,37 +6332,37 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # 4D reuse-aware shared-object decision -- see
             # studio_confirm_shared_update_ui/studio_fork_local_ui.
             st_update_everywhere_btn.click(studio_confirm_shared_update_ui,
-                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_fork_local_btn.click(studio_fork_local_ui,
                                     [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
-                                     st_version, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                     st_version, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
             st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
-                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_move_down_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "down", sa, ac),
-                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_prev_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "prev", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_next_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "next", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
-            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_new_figure_btn.click(studio_new_figure_ui,
                                     [project_state, c_pub, st_kind, st_id, st_new_figure_file, st_new_figure_caption,
-                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_figure_replace_btn.click(studio_replace_figure_ui,
                                         [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                          st_version, st_figure_replace_file, st_show_archived, actor_state,
-                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
-            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             st_revert_btn.click(studio_revert_ui,
                                 [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                  st_revert_version, st_show_archived, actor_state, st_shared_confirmed,
-                                 st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+                                 st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
             # 4D revision compare -- read-only, no ST_OUT_FULL re-render
             # (see studio_compare_ui): only st_diff_output changes.
@@ -6282,7 +6374,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                       [st_diff_output])
 
             st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
-            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS)
+            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
 
             # 4E.1 Varianti panel: per-row dimension picker cascade + the
             # panel's own Save/Evaluate buttons. The panel's own visibility/
@@ -6336,7 +6428,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 [project_state, st_kind, st_id, st_block_type, actor_state,
                  *st_variant_dim_dd, *st_variant_val_dd],
                 [st_variant_save_msg, st_version])
-            _variant_save_event.then(*_VARIANT_THEN_ARGS)
+            _variant_save_event.then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
             _variant_save_event.success(studio_refresh_ui,
                                         [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
             st_variant_eval_btn.click(studio_variant_evaluate_ui,
@@ -6968,7 +7060,12 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         compliance_coverage_ui, [project_state, cp_scope, ws_lang], [cp_coverage, cp_gaps]).then(
         # UX Gate 2A: the same treatment Compliance's data-driven panels
         # already get -- one display-only element, never the editor.
-        studio_context_relabel_ui, [project_state, c_pub, ws_lang], [st_pub_header])
+        studio_context_relabel_ui, [project_state, c_pub, ws_lang], [st_pub_header]).then(
+        # UX Gate 2B.1: the Impact panel is data-driven too -- its records
+        # are codes, so re-rendering them is the whole translation step.
+        # Read-only, and it touches no editor slot.
+        studio_impact_panel_ui, [project_state, st_kind, st_id, ws_lang],
+        [st_impact_compact, st_impact_details])
 
 if __name__=='__main__':
     # MS_APP_PORT / MS_NO_BROWSER: launch overrides for automated
