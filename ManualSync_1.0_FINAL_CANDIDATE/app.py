@@ -28,6 +28,8 @@ import impact_intelligence as ii
 import impact_view as iv
 import translation_intelligence as ti
 import translation_view as tv
+import impact_center as ic
+import impact_center_view as icv
 import export_links
 import rich_text
 from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
@@ -727,6 +729,55 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-impact-details li{margin:2px 0;line-height:1.45}
 .ms-impact-limits{border-top:1px solid var(--ui-line);padding-top:8px;margin-top:4px}
 .ms-impact-limits li{color:var(--ui-muted)}
+
+/* ERYLOS Impact Center -- built to be read across a meeting room, not
+   squinted at. Three sections, one verdict, technical vocabulary confined
+   to the advanced disclosure. */
+.ms-ic-readonly{font-size:11.5px;color:var(--ui-muted);margin:-4px 0 10px}
+.ms-ic-empty{font-size:13px;color:var(--ui-muted);padding:18px 2px}
+.ms-ic-header{background:var(--ui-surface-2);border:1px solid var(--ui-line);
+  border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.ms-ic-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;
+  color:#98a2b3;font-weight:800}
+.ms-ic-object{font-size:19px;font-weight:800;margin:3px 0 5px;line-height:1.25}
+.ms-ic-meta{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--ui-muted)}
+.ms-ic-badge{background:var(--ui-primary);color:#fff;border-radius:999px;
+  padding:2px 10px;font-weight:750;font-size:11.5px}
+.ms-ic-section{background:#fff;border:1px solid var(--ui-line);border-radius:12px;
+  padding:14px 16px;margin-bottom:12px}
+.ms-ic-warn{border-color:#fde68a;background:var(--ui-amber-soft,#fffaeb)}
+.ms-ic-allclear{border-color:#a6f4c5;background:var(--ui-green-soft,#f0fdf4)}
+.ms-ic-h{font-size:14.5px;font-weight:800;margin:0 0 10px;display:flex;
+  align-items:center;gap:8px}
+.ms-ic-cols{display:flex;flex-wrap:wrap;gap:18px}
+.ms-ic-cols>.ms-ic-group{flex:1 1 210px;min-width:190px}
+.ms-ic-group{margin-bottom:10px}
+.ms-ic-group-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+  font-weight:800;color:#98a2b3;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.ms-ic-count{background:var(--ui-surface-2);border:1px solid var(--ui-line);
+  border-radius:999px;padding:0 7px;font-size:10.5px;color:var(--ui-ink)}
+.ms-ic-count-warn{background:#fde68a;border-color:#fcd34d;color:#92400e}
+.ms-ic-list{margin:0;padding-left:16px;font-size:12.5px}
+.ms-ic-list li{margin:2px 0;line-height:1.45}
+.ms-ic-detail{display:block;font-size:11px;color:var(--ui-muted);font-style:italic}
+.ms-ic-none{font-size:12px;color:var(--ui-muted);font-style:italic}
+.ms-ic-lang{padding:5px 0;border-bottom:1px solid var(--ui-line)}
+.ms-ic-lang:last-child{border-bottom:0}
+.ms-ic-lang-head{font-size:13px;font-weight:700}
+.ms-ic-stale .ms-ic-lang-head{color:#92400e}
+.ms-ic-fresh .ms-ic-lang-head{color:#067647}
+.ms-ic-missing .ms-ic-lang-head{color:var(--ui-muted)}
+.ms-ic-why{font-size:11.5px;color:var(--ui-muted);line-height:1.45}
+.ms-ic-verdict{font-size:15px;font-weight:800;padding:7px 12px;border-radius:9px;
+  display:inline-block;margin:2px 0 7px}
+.ms-ic-verdict-ok{background:var(--ui-green-soft,#f0fdf4);color:#067647;border:1px solid #a6f4c5}
+.ms-ic-verdict-no{background:var(--ui-red-soft,#fef3f2);color:#b42318;border:1px solid #fecaca}
+.ms-ic-scope{font-size:11px;color:var(--ui-muted);font-style:italic;margin-top:5px}
+.ms-ic-adv{font-size:11.5px}
+.ms-ic-adv-table{border-collapse:collapse;margin-bottom:10px}
+.ms-ic-adv-table th{text-align:left;padding:2px 14px 2px 0;color:var(--ui-muted);font-weight:600}
+.ms-ic-adv-list{margin:0 0 10px;padding-left:16px;font-family:ui-monospace,monospace;font-size:10.5px}
+.ms-ic-adv-list li{margin:1px 0;word-break:break-word}
 
 /* UX Gate 2B.2 -- Affidabilita traduzioni. One block per language,
    status stated in words as well as colour: colour alone is not an
@@ -3513,6 +3564,43 @@ def translation_impact_ui(project_dir, kind, object_id, lang=None):
             return f"<div class='ms-tr-note'>{html.escape(t('translation.tier2.TIER2_FAILED'))}</div>"
 
 
+def impact_center_choices_ui(project_dir, lang=None):
+    """Fill the Impact Center picker with recently changed content.
+
+    Built from the audit trail, so the list is "what somebody has been
+    working on" rather than an alphabetical dump of the whole manual --
+    the user is looking for a change they just made.
+    """
+    if not project_dir:
+        return gr.update(choices=[], value=None)
+    try:
+        return gr.update(choices=ic.changed_objects(project_dir), value=None)
+    except Exception:
+        return gr.update(choices=[], value=None)
+
+
+def impact_center_ui(project_dir, object_id, deep, lang=None):
+    """The Impact Center view. Strictly read-only.
+
+    Composes impact_intelligence and translation_intelligence and writes
+    nothing: no table, no row, no version, no audit event, no file. The
+    translation analysis is opt-in because it runs the CAT engine.
+    """
+    empty = icv.render(None)
+    if not project_dir or not object_id:
+        return empty
+    try:
+        with i18n.use_language(lang) if lang else contextlib.nullcontext():
+            report = ic.assess_impact_center(project_dir, object_id,
+                                             include_translation_detail=bool(deep))
+            return icv.render(report)
+    except de.DomainError as exc:
+        msg = f"<div class='ms-ic-empty'>{html.escape(ui_error_text(exc, lang))}</div>"
+        return (msg, "", "", "", "")
+    except Exception:
+        return empty
+
+
 def studio_variant_panel_ui(project_dir, kind, object_id, current_profile=None):
     """Refreshes the Studio 'Varianti' section: human summary, the
     _VARIANT_ROWS dimension/value picker rows pre-filled from the
@@ -5451,6 +5539,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         side_workflow=LOC.html(lambda: f"<div class='ms-side-section'>{t('kicker.workflow')}</div>")
         nav_revision=LOC.button(lambda: f"◫   {t('nav.revision')}",variant="secondary")
         nav_authoring=LOC.button(lambda: f"✎   {t('nav.content')}",variant="secondary")
+        nav_impact=LOC.button(lambda: f"◈   {t('nav.impact')}",variant="secondary")
         nav_compliance=LOC.button(lambda: f"☑   {t('nav.conformity')}",variant="secondary")
         nav_translation=LOC.button(lambda: f"⇄   {t('nav.translation')}",variant="secondary")
         nav_jobs=LOC.button(lambda: f"▣   {t('nav.jobs')}",variant="secondary")
@@ -6564,6 +6653,55 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             st_variant_eval_btn.click(studio_variant_evaluate_ui,
                                       [project_state, st_kind, st_id, st_variant_eval_profile], [st_variant_eval_result])
 
+        # ================================================================
+        # ERYLOS Impact Center V1 -- the product surface for the one
+        # question the engine could already answer and the product could
+        # not: "I changed this, what did it break?".
+        #
+        # Its own tab, deliberately. Folding it into Contenuti would bury
+        # the single most demonstrable capability in the product behind an
+        # accordion, which is the exact mistake Gate 2A existed to undo.
+        # Read-only from end to end: this screen writes nothing.
+        # ================================================================
+        with gr.Tab(t("nav.impact"), id="impact") as tab_impact:
+            LOC.add(tab_impact, label="nav.impact")
+            head_impact = LOC.html(lambda: _page_head_html(
+                "kicker.workflow", "page.impact.title", "page.impact.subtitle"))
+            with gr.Row():
+                icp_object = LOC.add(
+                    gr.Dropdown(choices=[], value=None, label=t("impactcenter.picker.label"),
+                                info=t("impactcenter.picker.hint"), scale=3,
+                                elem_id="ms-ic-object"),
+                    label="impactcenter.picker.label", info="impactcenter.picker.hint")
+                icp_deep = LOC.add(
+                    gr.Checkbox(label=t("impactcenter.analyse.deep"), value=False, scale=1,
+                                elem_id="ms-ic-deep"),
+                    label="impactcenter.analyse.deep")
+                icp_btn = LOC.button(lambda: t("impactcenter.analyse"),
+                                     variant="primary", scale=1,
+                                     elem_id="ms-ic-analyse")
+            icp_note = LOC.add(
+                gr.HTML(f"<div class='ms-ic-readonly'>{t('impactcenter.readonly')}</div>"),
+                value=lambda: f"<div class='ms-ic-readonly'>{t('impactcenter.readonly')}</div>")
+            # elem_id on each panel: the browser gate asserts on WHICH
+            # section a finding lands in, not merely that the words appear
+            # somewhere on the page. Without stable containers "stale
+            # translation reported under Cosa e pronto" would still pass.
+            icp_header = gr.HTML(icv.header_html(None), elem_id="ms-ic-header")
+            icp_changes = gr.HTML("", elem_id="ms-ic-changes")
+            icp_attention = gr.HTML("", elem_id="ms-ic-attention")
+            icp_ready = gr.HTML("", elem_id="ms-ic-ready")
+            with gr.Accordion(t("impactcenter.advanced"), open=False) as icp_adv_acc:
+                LOC.add(icp_adv_acc, label="impactcenter.advanced")
+                icp_advanced = gr.HTML("", elem_id="ms-ic-advanced")
+
+            _IC_OUT = [icp_header, icp_changes, icp_attention, icp_ready, icp_advanced]
+            _IC_IN = [project_state, icp_object, icp_deep, ws_lang]
+            icp_btn.click(impact_center_ui, _IC_IN, _IC_OUT)
+            icp_object.change(impact_center_ui, _IC_IN, _IC_OUT)
+            tab_impact.select(impact_center_choices_ui, [project_state, ws_lang], [icp_object])
+            project_state.change(impact_center_choices_ui, [project_state, ws_lang], [icp_object])
+
         with gr.Tab(t("nav.conformity"), id="compliance") as cp_tab:
             LOC.add(cp_tab, label="nav.conformity")
             # ============================================================
@@ -7161,6 +7299,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     nav_authoring.click(lambda:_navigate('authoring'),None,_nav_outputs).then(
         studio_preview_profile_choices_ui,[project_state,profile_state],
         [st_variant_eval_profile,profile_state])
+    nav_impact.click(lambda:_navigate('impact'),None,_nav_outputs).then(
+        impact_center_choices_ui,[project_state,ws_lang],[icp_object])
     nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
     nav_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
@@ -7232,7 +7372,12 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         # them IS the translation step. Tier 2 output is cleared rather
         # than silently left in the previous language.
         translation_panel_ui, [project_state, st_kind, st_id, ws_lang],
-        [st_tr_panel, st_tr_note, st_tr_impact])
+        [st_tr_panel, st_tr_note, st_tr_impact]).then(
+        # The Impact Center is codes+params like the rest, so re-rendering
+        # it IS the translation step. Deep analysis is not re-run: the
+        # checkbox carries the user's choice.
+        impact_center_ui, [project_state, icp_object, icp_deep, ws_lang],
+        [icp_header, icp_changes, icp_attention, icp_ready, icp_advanced])
 
 if __name__=='__main__':
     # MS_APP_PORT / MS_NO_BROWSER: launch overrides for automated

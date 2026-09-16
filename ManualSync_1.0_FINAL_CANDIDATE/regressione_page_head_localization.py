@@ -25,10 +25,14 @@ import i18n  # noqa: E402
 
 APP_PATH = Path(app.__file__)
 
-# Every (kicker, title, subtitle) triple app.py actually renders.
+# Every (kicker, title, subtitle) triple app.py actually renders. A new
+# section page belongs in this list: that is what puts its head under the
+# key-leak and language-switch checks below, and the count assertions
+# then keep the list honest rather than being a number to bump.
 PAGE_HEADS = [
     ("kicker.workflow", "page.revision.title", "page.revision.subtitle"),
     ("kicker.workflow", "page.content.title", "page.content.subtitle"),
+    ("kicker.workflow", "page.impact.title", "page.impact.subtitle"),
     ("kicker.workflow", "page.translation.title", "page.translation.subtitle"),
     ("kicker.workflow", "page.jobs.title", "page.jobs.subtitle"),
     ("kicker.workflow", "page.release.title", "page.release.subtitle"),
@@ -144,7 +148,7 @@ def test_call_sites_pass_keys_not_text():
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                 and node.func.id == "_page_head_html"):
             sites.append(node)
-    check("all six page heads still wired", len(sites) == len(PAGE_HEADS),
+    check("every page head is still wired", len(sites) == len(PAGE_HEADS),
           f"found {len(sites)}")
     for node in sites:
         args = [a.value if isinstance(a, ast.Constant) else None for a in node.args]

@@ -71,7 +71,12 @@ check("cat4: the catalogs are not empty", len(IT) > 100, len(IT))
 # it does not weaken this check: what cat5 exists to forbid is a key
 # like "Conformita" -- display text doubling as an identifier -- and
 # an uppercase code is the precise opposite of that.
-_KEY_SHAPE = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)*(\.[A-Z][A-Z0-9_]+)?"
+# The code segment may itself be qualified by one more lowercase segment.
+# That is the ".one" singular-form convention already used by
+# impact.count.<category>.one and reason.evidence.one, applied to a coded
+# key: impactcenter.release.RELEASE_BLOCKED_STALE_TRANSLATIONS.one. Still
+# not display text, so cat5 keeps catching what it was written to catch.
+_KEY_SHAPE = re.compile(r"[a-z0-9_]+(\.[a-z0-9_]+)*(\.[A-Z][A-Z0-9_]+)?(\.[a-z0-9_]+)?"
                         r"|error\.(unknown|ERR_[A-Z0-9_]+)")
 check("cat5: no key is Italian text used as an identifier",
       all(_KEY_SHAPE.fullmatch(k) for k in IT),
