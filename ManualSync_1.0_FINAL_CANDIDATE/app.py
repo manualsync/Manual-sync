@@ -26,6 +26,8 @@ import publishing_preview as pp
 import publishing_output as po
 import impact_intelligence as ii
 import impact_view as iv
+import translation_intelligence as ti
+import translation_view as tv
 import export_links
 import rich_text
 from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
@@ -725,6 +727,32 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-impact-details li{margin:2px 0;line-height:1.45}
 .ms-impact-limits{border-top:1px solid var(--ui-line);padding-top:8px;margin-top:4px}
 .ms-impact-limits li{color:var(--ui-muted)}
+
+/* UX Gate 2B.2 -- Affidabilita traduzioni. One block per language,
+   status stated in words as well as colour: colour alone is not an
+   accessible signal. */
+.ms-tr-panel{display:flex;flex-direction:column;gap:6px;margin:2px 0 8px}
+.ms-tr-version{font-size:11px;color:var(--ui-muted);margin-bottom:2px}
+.ms-tr-lang{padding:6px 9px;border-radius:8px;border:1px solid var(--ui-line);
+  background:var(--ui-surface-2)}
+.ms-tr-lang-name{font-size:12.5px;font-weight:700;margin-bottom:1px}
+.ms-tr-lang-status{font-size:12.5px;font-weight:650;margin-bottom:2px}
+.ms-tr-lang-why{font-size:11.5px;color:var(--ui-muted);line-height:1.4}
+.ms-tr-stale{background:var(--ui-red-soft,#fef3f2);border-color:#fecaca}
+.ms-tr-stale .ms-tr-lang-status{color:#b42318}
+.ms-tr-fresh .ms-tr-lang-status{color:#067647}
+.ms-tr-missing .ms-tr-lang-status{color:var(--ui-muted)}
+.ms-tr-empty,.ms-tr-note{font-size:11.5px;color:var(--ui-muted);padding:3px 2px;line-height:1.45}
+.ms-tr-impact{font-size:12px;margin-top:6px}
+.ms-tr-impact-lang{border-top:1px solid var(--ui-line);padding-top:7px;margin-top:7px}
+.ms-tr-figures,.ms-tr-why{margin:3px 0 0;padding-left:16px}
+.ms-tr-figures li,.ms-tr-why li{margin:1px 0;line-height:1.4}
+.ms-tr-why-title{font-weight:750;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.05em;color:#98a2b3;margin-top:6px}
+.ms-tr-seg{display:block;font-size:10.5px;color:var(--ui-muted);font-style:italic}
+/* the stepper now says where each step lives */
+.ms-step-where{display:block;font-size:10px;font-weight:500;color:var(--ui-muted);
+  text-transform:none;letter-spacing:0;margin-top:1px}
 
 /* Quiet scrollbars in the side panes -- they are navigation, not
    content, and a heavy native bar reads as a second page. */
@@ -3418,6 +3446,73 @@ def studio_impact_panel_ui(project_dir, kind, object_id, lang=None):
         return empty
 
 
+def _translation_stepper_html() -> str:
+    """The Traduzioni workflow, told honestly.
+
+    The old stepper advertised four steps as if all four lived on this
+    tab; only the first does. Rather than move working features around to
+    satisfy a graphic, each step now says where it actually happens --
+    the workflow becomes coherent without relocating anything.
+    """
+    steps = (("translation.step.1", "translation.step.here"),
+             ("translation.step.2", "translation.step.in_jobs"),
+             ("translation.step.3", "translation.step.in_jobs"),
+             ("translation.step.4", "translation.step.in_release"))
+    out = []
+    for idx, (label, where) in enumerate(steps, start=1):
+        active = " active" if idx == 1 else ""
+        out.append(f"<div class='ms-step{active}'><span class='ms-step-num'>{idx}</span>"
+                   f"{html.escape(t(label))}"
+                   f"<span class='ms-step-where'>{html.escape(t(where))}</span></div>")
+    return f"<div class='ms-stepper'>{''.join(out)}</div>"
+
+
+def translation_panel_ui(project_dir, kind, object_id, lang=None):
+    """UX Gate 2B.2 Tier 1: translation reliability for the open object.
+
+    Read-only. assess_translation_intelligence writes nothing, and this
+    adds nothing of its own. `lang` is an input so the language switch
+    re-renders the panel: the report is codes+params, so the same report
+    speaks Italian or English depending on the language active for THIS
+    request.
+    """
+    empty = tv.render(None)
+    if not project_dir or not object_id or kind not in ti.SUPPORTED_KINDS:
+        return (*empty, "")
+    try:
+        with i18n.use_language(lang) if lang else contextlib.nullcontext():
+            report = ti.assess_translation_intelligence(project_dir, object_id,
+                                                        object_type=kind)
+            panel, note = tv.render(report)
+            return panel, note, ""
+    except de.DomainError:
+        return (*empty, "")
+    except Exception:
+        return (*empty, "")
+
+
+def translation_impact_ui(project_dir, kind, object_id, lang=None):
+    """UX Gate 2B.2 Tier 2: "Analisi impatto traduzione", on demand.
+
+    Runs the EXISTING translation_impact engine with its output directed
+    at a temporary directory, so no package is generated and the project
+    is not touched. An object the engine refuses (not approved) produces
+    a plain explanation, never a technical error.
+    """
+    if not project_dir or not object_id or kind not in ti.SUPPORTED_KINDS:
+        return ""
+    try:
+        with i18n.use_language(lang) if lang else contextlib.nullcontext():
+            report = ti.assess_translation_intelligence(project_dir, object_id,
+                                                        object_type=kind, deep=True)
+            return tv.impact_html(report)
+    except de.DomainError as exc:
+        return f"<div class='ms-tr-note'>{html.escape(ui_error_text(exc, lang))}</div>"
+    except Exception:
+        with i18n.use_language(lang) if lang else contextlib.nullcontext():
+            return f"<div class='ms-tr-note'>{html.escape(t('translation.tier2.TIER2_FAILED'))}</div>"
+
+
 def studio_variant_panel_ui(project_dir, kind, object_id, current_profile=None):
     """Refreshes the Studio 'Varianti' section: human summary, the
     _VARIANT_ROWS dimension/value picker rows pre-filled from the
@@ -3523,7 +3618,7 @@ def studio_variant_save_ui(project_dir, kind, object_id, block_type, actor, *dim
     though nothing about any of them was actually wrong -- the whole
     panel looked broken from one small, expected validation failure. The
     full panel refresh (summary, visibility, pickers, eval profile) is
-    instead chained via .then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS) on the wiring below --
+    instead chained via .then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS) on the wiring below --
     the SAME mechanism already used for every other Studio navigation
     event -- which re-reads whatever is CURRENTLY persisted regardless of
     whether this save just succeeded or failed, so a failed save leaves
@@ -5995,6 +6090,26 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         LOC.add(st_impact_accordion, label="impact.details")
                         st_impact_details = gr.HTML("")
 
+                    # ========================================
+                    # UX Gate 2B.2 -- Affidabilita traduzioni.
+                    #
+                    # Answers, for the object the author has open, the one
+                    # question the product could not answer before: is the
+                    # German translation still reliable after this change?
+                    # Tier 1 is plain SELECTs and always available; the
+                    # impact analysis is an explicit action because it runs
+                    # the CAT engine.
+                    # ========================================
+                    LOC.add(gr.HTML(_section_head_html("translation.panel.title",
+                                                       "translation.panel.hint")),
+                            value=lambda: _section_head_html("translation.panel.title",
+                                                             "translation.panel.hint"))
+                    st_tr_panel = gr.HTML(tv.panel_html(None))
+                    st_tr_note = gr.HTML("")
+                    st_tr_impact_btn = LOC.button(lambda: t("translation.tier2.action"),
+                                                  size="sm")
+                    st_tr_impact = gr.HTML("")
+
                     with gr.Accordion(t("content.tech.section"), open=False) as st_tech_accordion:
                         LOC.add(st_tech_accordion, label="content.tech.section")
                         st_tech_html = gr.HTML()
@@ -6178,10 +6293,20 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             _IMPACT_THEN_ARGS = (studio_impact_panel_ui,
                                  [project_state, st_kind, st_id, ws_lang], IMPACT_OUT)
 
-            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            # UX Gate 2B.2: the translation panel refreshes off the same
+            # events, chained the same way and for the same reason -- a
+            # gr.State change does not fire reliably in this build.
+            # Tier 1 only: the impact analysis stays an explicit action,
+            # because it runs the CAT engine and must not fire on every
+            # selection.
+            TRANSLATION_OUT = [st_tr_panel, st_tr_note, st_tr_impact]
+            _TRANSLATION_THEN_ARGS = (translation_panel_ui,
+                                      [project_state, st_kind, st_id, ws_lang], TRANSLATION_OUT)
+
+            authoring_tab.select(studio_load_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_refresh_btn.click(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_show_archived.change(studio_refresh_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_outline_radio.change(studio_open_ui, [project_state, c_pub, st_outline_radio, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
             # 4C: draft recovery now also covers the table/figure editors --
             # any of these fields blurring/changing saves a draft the same
@@ -6301,7 +6426,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                  st_figure_caption, st_figure_alt, actor_state, st_show_archived, st_shared_confirmed,
                  st_shared_impact_token],
                 ST_OUT_FULL
-            ).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            ).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
             # Add/remove row/column -- see _table_rowcol_op: replaces
             # reliance on the Dataframe's own native right-click menu,
@@ -6320,8 +6445,8 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                         st_figure_caption, st_figure_alt, st_restore_draft_btn, st_discard_draft_btn,
                                         st_rich_editable, st_rich_save_status])
             st_discard_draft_btn.click(studio_discard_draft_ui,
-                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                       [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_discard_edits_btn.click(studio_discard_edits_ui, [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             # st_save_btn's own wiring is now the two-step guaranteed-order
             # chain declared earlier, right after the rich-text toolbar
             # buttons (see the "4E.3 Save/Version Regression Fix" comment
@@ -6332,37 +6457,37 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # 4D reuse-aware shared-object decision -- see
             # studio_confirm_shared_update_ui/studio_fork_local_ui.
             st_update_everywhere_btn.click(studio_confirm_shared_update_ui,
-                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                           [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_fork_local_btn.click(studio_fork_local_ui,
                                     [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
-                                     st_version, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                     st_version, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
             st_move_up_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "up", sa, ac),
-                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                 [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_move_down_btn.click(lambda pd_, pub, k, i, sa, ac: studio_move_ui(pd_, pub, k, i, "down", sa, ac),
-                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                   [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_archive_btn.click(studio_archive_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_restore_btn.click(studio_restore_obj_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_prev_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "prev", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_next_btn.click(lambda pd_, pub, k, i, sa: studio_next_prev_ui(pd_, pub, k, i, "next", sa),
-                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                              [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
-            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_new_topic_btn.click(studio_new_topic_ui, [project_state, c_pub, st_new_topic_title, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_new_block_btn.click(studio_new_block_ui, [project_state, c_pub, st_kind, st_id, st_new_block_type, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_new_table_btn.click(studio_new_table_ui, [project_state, c_pub, st_kind, st_id, st_new_table_caption, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_new_figure_btn.click(studio_new_figure_ui,
                                     [project_state, c_pub, st_kind, st_id, st_new_figure_file, st_new_figure_caption,
-                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                     st_new_figure_alt, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_figure_replace_btn.click(studio_replace_figure_ui,
                                         [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                          st_version, st_figure_replace_file, st_show_archived, actor_state,
-                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
-            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                         st_shared_confirmed, st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
+            st_submit_review_btn.click(studio_submit_review_ui, [project_state, c_pub, st_kind, st_id, st_show_archived, actor_state], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             st_revert_btn.click(studio_revert_ui,
                                 [project_state, c_pub, st_kind, st_id, st_block_type, st_object_ref_id,
                                  st_revert_version, st_show_archived, actor_state, st_shared_confirmed,
-                                 st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+                                 st_shared_impact_token], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
             # 4D revision compare -- read-only, no ST_OUT_FULL re-render
             # (see studio_compare_ui): only st_diff_output changes.
@@ -6374,7 +6499,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                       [st_diff_output])
 
             st_search_btn.click(studio_search_ui, [project_state, c_pub, st_search_box], [st_search_picker, st_search_open_btn, st_search_msg])
-            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            st_search_open_btn.click(studio_search_open_ui, [project_state, c_pub, st_search_picker, st_show_archived], ST_OUT_FULL).then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
 
             # 4E.1 Varianti panel: per-row dimension picker cascade + the
             # panel's own Save/Evaluate buttons. The panel's own visibility/
@@ -6428,9 +6553,14 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 [project_state, st_kind, st_id, st_block_type, actor_state,
                  *st_variant_dim_dd, *st_variant_val_dd],
                 [st_variant_save_msg, st_version])
-            _variant_save_event.then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS)
+            _variant_save_event.then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
             _variant_save_event.success(studio_refresh_ui,
                                         [project_state, c_pub, st_kind, st_id, st_show_archived], ST_OUT_FULL)
+            # Tier 2 is explicit and read-only: it runs the existing engine
+            # with its output on a temp directory, so no package is produced
+            # and nothing in the project changes.
+            st_tr_impact_btn.click(translation_impact_ui,
+                                   [project_state, st_kind, st_id, ws_lang], [st_tr_impact])
             st_variant_eval_btn.click(studio_variant_evaluate_ui,
                                       [project_state, st_kind, st_id, st_variant_eval_profile], [st_variant_eval_result])
 
@@ -6739,10 +6869,42 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         with gr.Tab(t("nav.translation"),id="translations") as tab_translations:
             LOC.add(tab_translations, label="nav.translation")
             head_translation=LOC.html(lambda: _page_head_html("kicker.workflow", "page.translation.title", "page.translation.subtitle"))
-            gr.HTML("<div class='ms-stepper'><div class='ms-step active'><span class='ms-step-num'>1</span>Pacchetti</div><div class='ms-step'><span class='ms-step-num'>2</span>Traduzioni</div><div class='ms-step'><span class='ms-step-num'>3</span>QA</div><div class='ms-step'><span class='ms-step-num'>4</span>Pronto per release</div></div>")
+            LOC.add(gr.HTML(_translation_stepper_html()), value=_translation_stepper_html)
             gr.HTML("<div class='ms-panel'><div class='ms-section-title'>Pacchetti lingua</div><div class='ms-section-sub'>Riuso TM, ripetizioni esatte e codici non traducibili restano fuori dal workfile; solo il lavoro linguistico reale entra nell’XLIFF controllato.</div></div>")
             with gr.Row(): t_kind=gr.Dropdown(['publication','topic','block','table','figure','component'],value='publication',label='Tipo'); t_id=gr.Textbox(label='Object ID'); t_tms=gr.File(label='TM SQLite esterna — opzionale',type='filepath',file_count='multiple')
             t_btn=gr.Button('Genera pacchetti lingua',variant='primary'); t_msg=gr.Markdown(); t_table=gr.Dataframe(interactive=False,wrap=True,visible=False)
+
+            # ========================================
+            # UX Gate 2B.2 -- Affidabilita traduzioni, on the Traduzioni tab.
+            #
+            # The same panel the Contenuti workspace shows for the object
+            # being edited, here driven by the object this tab is already
+            # pointed at. Two surfaces, one service: the reliability of a
+            # translation is the same fact whether you are writing the
+            # content or preparing its language packages, and answering it
+            # only in one place would mean the translator has to go and
+            # open the editor to find out.
+            #
+            # Read-only, and deliberately BEFORE the package generator: the
+            # whole point of this gate is that you no longer have to
+            # produce ZIPs to learn what state the translations are in.
+            # ========================================
+            LOC.add(gr.HTML(_section_head_html("translation.panel.title",
+                                               "translation.panel.hint")),
+                    value=lambda: _section_head_html("translation.panel.title",
+                                                     "translation.panel.hint"))
+            tr_panel = gr.HTML(tv.panel_html(None))
+            tr_note = gr.HTML("")
+            with gr.Row():
+                tr_refresh_btn = LOC.button(lambda: t("translation.panel.refresh"), size="sm")
+                tr_impact_btn = LOC.button(lambda: t("translation.tier2.action"), size="sm")
+            tr_impact = gr.HTML("")
+            tr_refresh_btn.click(translation_panel_ui, [project_state, t_kind, t_id, ws_lang],
+                                 [tr_panel, tr_note, tr_impact])
+            tr_impact_btn.click(translation_impact_ui, [project_state, t_kind, t_id, ws_lang],
+                                [tr_impact])
+            t_id.change(translation_panel_ui, [project_state, t_kind, t_id, ws_lang],
+                        [tr_panel, tr_note, tr_impact])
             with gr.Row(): t_master=gr.File(label='Master package'); t_files=gr.Files(label='Pacchetti lingua')
             t_btn.click(work_package_ui,[project_state,t_id,t_kind,t_tms],[t_msg,t_table,t_master,t_files])
 
@@ -7065,7 +7227,12 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         # are codes, so re-rendering them is the whole translation step.
         # Read-only, and it touches no editor slot.
         studio_impact_panel_ui, [project_state, st_kind, st_id, ws_lang],
-        [st_impact_compact, st_impact_details])
+        [st_impact_compact, st_impact_details]).then(
+        # UX Gate 2B.2: same treatment -- codes and params, so re-rendering
+        # them IS the translation step. Tier 2 output is cleared rather
+        # than silently left in the previous language.
+        translation_panel_ui, [project_state, st_kind, st_id, ws_lang],
+        [st_tr_panel, st_tr_note, st_tr_impact])
 
 if __name__=='__main__':
     # MS_APP_PORT / MS_NO_BROWSER: launch overrides for automated

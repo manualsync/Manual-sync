@@ -71,8 +71,10 @@ check("mig3: this batch is fully contained in ALL_CODES",
       set(de.AUTHORING_CODES) <= set(de.ALL_CODES),
       sorted(set(de.AUTHORING_CODES) - set(de.ALL_CODES)))
 check("mig3: ALL_CODES is exactly the union of the declared families",
-      set(de.ALL_CODES) == set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES) | set(de.IMPACT_CODES),
-      sorted(set(de.ALL_CODES) ^ (set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES) | set(de.IMPACT_CODES))))
+      set(de.ALL_CODES) == set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES)
+      | set(de.IMPACT_CODES) | set(de.TRANSLATION_CODES),
+      sorted(set(de.ALL_CODES) ^ (set(de.MIGRATED_CODES) | set(de.AUTHORING_CODES)
+                                 | set(de.IMPACT_CODES) | set(de.TRANSLATION_CODES))))
 
 SRC = {m: (HERE / m).read_text(encoding="utf-8") for m in MODULES}
 for code in de.AUTHORING_OBJECT_CODES:

@@ -397,7 +397,7 @@ def test_missing_object_raises_domain_error():
         check("a missing object raises", False, "no exception")
     except de.DomainNotFoundError as exc:
         check("a missing object raises DomainNotFoundError with a code",
-              exc.code == de.ERR_IMPACT_OBJECT_NOT_FOUND, exc.code)
+              exc.code == de.ERR_CONTENT_OBJECT_NOT_FOUND, exc.code)
         with i18n.use_language("en"):
             msg = i18n.translate(f"error.{exc.code}", None, **exc.params)
         check("...that resolves to English prose, not a bare code",

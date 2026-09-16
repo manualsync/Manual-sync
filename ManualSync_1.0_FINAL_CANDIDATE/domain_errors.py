@@ -270,15 +270,29 @@ AUTHORING_CODES = AUTHORING_OBJECT_CODES + ACTOR_CODES + ARCHIVED_CODES
 # being asked about an object that does not exist, or about a kind the
 # composed engines do not all support.
 # ================================================================
-ERR_IMPACT_OBJECT_NOT_FOUND = "ERR_IMPACT_OBJECT_NOT_FOUND"
+# Shared by every read-only assessment service: the condition is the
+# same one ("you asked about content that does not exist"), so it is
+# one code, named for the condition and not for the caller.
+ERR_CONTENT_OBJECT_NOT_FOUND = "ERR_CONTENT_OBJECT_NOT_FOUND"
 ERR_IMPACT_KIND_UNSUPPORTED = "ERR_IMPACT_KIND_UNSUPPORTED"
 
 IMPACT_CODES = (
-    ERR_IMPACT_OBJECT_NOT_FOUND,
+    ERR_CONTENT_OBJECT_NOT_FOUND,
     ERR_IMPACT_KIND_UNSUPPORTED,
 )
 
-ALL_CODES = MIGRATED_CODES + AUTHORING_CODES + IMPACT_CODES
+# ================================================================
+# UX Gate 2B.2 -- Translation Intelligence. Read-only, so like the
+# impact service it has no validation vocabulary of its own: only the
+# object being unknown, or a kind the translation tables do not cover.
+# ================================================================
+ERR_TRANSLATION_KIND_UNSUPPORTED = "ERR_TRANSLATION_KIND_UNSUPPORTED"
+
+TRANSLATION_CODES = (
+    ERR_TRANSLATION_KIND_UNSUPPORTED,
+)
+
+ALL_CODES = MIGRATED_CODES + AUTHORING_CODES + IMPACT_CODES + TRANSLATION_CODES
 
 #: What the UI shows when it meets a code it has no sentence for, or a
 #: failure that is not a DomainError at all. Kept here so the fallback is

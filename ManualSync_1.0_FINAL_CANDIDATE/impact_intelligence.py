@@ -317,7 +317,7 @@ def _load_object(repo: IndustrialRepository, kind: str, object_id: str) -> dict[
     table, key, title_col = _LIVE_TABLE[kind]
     row = repo.conn.execute(f"SELECT * FROM {table} WHERE {key}=?", (object_id,)).fetchone()
     if not row:
-        raise de.DomainNotFoundError(de.ERR_IMPACT_OBJECT_NOT_FOUND,
+        raise de.DomainNotFoundError(de.ERR_CONTENT_OBJECT_NOT_FOUND,
                                      object_type=kind, object_id=object_id)
     data = dict(row)
     label = str(data.get(title_col) or "") if title_col else ""
@@ -541,7 +541,7 @@ def assess_object_impact(project_dir: str | Path, object_type: str, object_id: s
                                        object_type=object_type,
                                        allowed=", ".join(SUPPORTED_KINDS))
     if not object_id:
-        raise de.DomainNotFoundError(de.ERR_IMPACT_OBJECT_NOT_FOUND,
+        raise de.DomainNotFoundError(de.ERR_CONTENT_OBJECT_NOT_FOUND,
                                      object_type=kind, object_id=object_id)
 
     project_dir = str(project_dir)
