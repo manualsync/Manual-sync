@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -447,31 +448,54 @@ class WorkflowManager:
         }
 
     def export_project_archive(self, out_dir: str | Path | None = None) -> Path:
+        """Write the project archive and return its path.
+
+        With no ``out_dir`` the archive goes into a fresh temporary
+        directory that belongs to the CALLER from then on (see
+        temp_artifacts for how the UI releases it).
+
+        A failed export leaves nothing behind: the archive is written under
+        a ``.partial`` name and renamed only once complete, so no
+        successful-looking archive can exist after an error, a previous
+        archive with the same name is not truncated by a failed attempt,
+        and a temporary directory created by this call is removed.
+        """
+        created_out = not out_dir
         out = Path(out_dir) if out_dir else Path(tempfile.mkdtemp(prefix="manualsync_v25_project_archive_"))
-        out.mkdir(parents=True, exist_ok=True)
-        archive = out / f"ManualSync_{_safe(self.project_metadata().get('title','Project'))}_PROJECT.zip"
-        files: list[dict[str, Any]] = []
-        for p in sorted(self.project_dir.rglob("*")):
-            if not p.is_file():
-                continue
-            # Project archives are outputs, never recursively archive another project archive.
-            if p.resolve() == archive.resolve() or p.name == "MANUALSYNC_PROJECT_MANIFEST.json":
-                continue
-            rel = p.relative_to(self.project_dir).as_posix()
-            files.append({"path": rel, "sha256": _sha256(p), "bytes": p.stat().st_size})
-        manifest = {
-            "build": WORKFLOW_BUILD,
-            "project": self.project_metadata(),
-            "dashboard": self.dashboard(),
-            "files": files,
-            "exported_at": _now(),
-        }
-        manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("MANUALSYNC_PROJECT_MANIFEST.json", manifest_bytes)
-            for meta in files:
-                zf.write(self.project_dir / meta["path"], arcname=meta["path"])
-        return archive
+        partial: Path | None = None
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+            archive = out / f"ManualSync_{_safe(self.project_metadata().get('title','Project'))}_PROJECT.zip"
+            partial = archive.with_name(archive.name + ".partial")
+            files: list[dict[str, Any]] = []
+            for p in sorted(self.project_dir.rglob("*")):
+                if not p.is_file():
+                    continue
+                # Project archives are outputs, never recursively archive another project archive.
+                if p.resolve() == archive.resolve() or p.name == "MANUALSYNC_PROJECT_MANIFEST.json":
+                    continue
+                rel = p.relative_to(self.project_dir).as_posix()
+                files.append({"path": rel, "sha256": _sha256(p), "bytes": p.stat().st_size})
+            manifest = {
+                "build": WORKFLOW_BUILD,
+                "project": self.project_metadata(),
+                "dashboard": self.dashboard(),
+                "files": files,
+                "exported_at": _now(),
+            }
+            manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("MANUALSYNC_PROJECT_MANIFEST.json", manifest_bytes)
+                for meta in files:
+                    zf.write(self.project_dir / meta["path"], arcname=meta["path"])
+            os.replace(partial, archive)
+            return archive
+        except BaseException:
+            if partial is not None:
+                partial.unlink(missing_ok=True)
+            if created_out:
+                shutil.rmtree(out, ignore_errors=True)
+            raise
 
     @staticmethod
     def restore_project_archive(archive_zip: str | Path, out_dir: str | Path | None = None) -> Path:

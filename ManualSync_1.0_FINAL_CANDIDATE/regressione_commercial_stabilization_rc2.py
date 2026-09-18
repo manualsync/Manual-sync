@@ -53,8 +53,12 @@ check("Uninstaller detects legacy pythonw ManualSync", "Get-CimInstance Win32_Pr
 
 # RC1 incident 2: New Project panel was below quick actions and outside the initial viewport.
 panel_pos = app_source.find('elem_id="new-project-panel"')
-card_pos = app_source.find('project_card=gr.HTML(_project_card(INITIAL_PROJECT))')
-quick_pos = app_source.find("gr.HTML(\"<div class='ms-quick-head'")
+# Anchors re-aimed, not relaxed: the project card and the quick-actions
+# heading are now registered with LOC so a language switch re-renders them,
+# so their source spelling changed. The property checked here is the ORDER
+# of the panels, which is unaffected by how each one is constructed.
+card_pos = app_source.find('project_card=LOC.add(gr.HTML(_project_card(INITIAL_PROJECT))')
+quick_pos = app_source.find("quick_head=LOC.html(")
 check("New project panel exists", panel_pos >= 0)
 check("New project panel is before project card", 0 <= panel_pos < card_pos, (panel_pos, card_pos))
 check("New project panel is before quick actions", 0 <= panel_pos < quick_pos, (panel_pos, quick_pos))
@@ -111,7 +115,16 @@ check("Uninstaller preserves ManualSyncData", "Remove-Item -Recurse -Force $Data
 
 # The full RC1 commercial regression is executed as an independent preceding
 # gate by BUILD_WINDOWS.ps1; RC2 intentionally avoids nesting it a second time.
-check("RC1 commercial regression remains wired into builder", "regressione_commercial_stabilization_rc1.py" in build_source)
+# Gate 1: the builder no longer names suites one Step at a time -- that list
+# had stopped at RC2.2 -- it discovers every regressione_*.py. "Wired in" now
+# means: discovery is on, the RC1 suite exists to be discovered, and it is
+# not among the browser suites the builder deliberately skips.
+_browser_skip = build_source[build_source.index("$BrowserSuites = @("):]
+_browser_skip = _browser_skip[:_browser_skip.index(")")]
+check("RC1 commercial regression remains wired into builder",
+      "-Filter 'regressione_*.py'" in build_source
+      and (BASE / "regressione_commercial_stabilization_rc1.py").exists()
+      and "regressione_commercial_stabilization_rc1.py" not in _browser_skip)
 
 summary = {
     "build": "ManualSync 1.0 Commercial Stabilization RC2.2",

@@ -12,15 +12,93 @@ BASE = Path(__file__).resolve().parent
 REPORT_JSON = BASE / "RUNTIME_SELF_TEST_FINAL.json"
 REPORT_TXT = BASE / "RUNTIME_SELF_TEST_FINAL.txt"
 
-EXPECTED_PACKAGES = {
-    "gradio": "6.5.1",
-    "pandas": "2.2.3",
-    "numpy": "2.3.5",
-    "PyMuPDF": "1.26.7",
-    "Pillow": "12.3.0",
-    "rapidfuzz": "3.14.3",
-    "python-docx": "1.2.0",
-}
+# The lock that describes an environment able to RUN THE PRODUCT AND ITS
+# TESTS. requirements.runtime.lock.txt is a superset: it adds pywebview,
+# which only the packaged desktop shell needs and which a headless test
+# environment deliberately does not install. Asserting the runtime lock
+# here would make the guard refuse the project's own .venv.
+BASE_LOCK = BASE / "requirements.lock.txt"
+RUNTIME_LOCK = BASE / "requirements.runtime.lock.txt"
+
+SUPPORTED_PYTHON = (3, 12)
+
+
+def expected_packages(lock_path: Path | None = None) -> dict[str, str]:
+    """The pinned runtime versions, read from the lock file.
+
+    These used to be a dict written out here by hand, duplicating
+    requirements.runtime.lock.txt. Two copies of the same seven versions
+    is one copy too many: the guard would keep passing against versions
+    the distribution no longer installs. The lock is the source; this
+    reads it.
+
+    Only ``name==version`` lines are honoured. Anything looser is not a
+    pin and cannot be asserted, so it is skipped rather than guessed at.
+    """
+    path = lock_path or BASE_LOCK
+    pins: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or "==" not in line:
+            continue
+        name, _, ver = line.partition("==")
+        name, ver = name.strip(), ver.strip()
+        if name and ver:
+            pins[name] = ver
+    if not pins:
+        raise RuntimeError(f"Nessuna versione bloccata leggibile da {path}")
+    return pins
+
+
+EXPECTED_PACKAGES = expected_packages()
+
+
+def environment_problems() -> list[str]:
+    """Everything wrong with THIS interpreter, as plain sentences.
+
+    Kept separate from main() so build scripts, the packaging regression
+    and any future runner can all ask the same question without running
+    the full self-test (which imports the product and takes minutes).
+    """
+    problems: list[str] = []
+    if sys.version_info[:2] != SUPPORTED_PYTHON:
+        problems.append(
+            f"Python {'.'.join(map(str, SUPPORTED_PYTHON))}.x richiesto, "
+            f"in esecuzione {platform.python_version()} ({sys.executable})")
+    for pkg, expected in EXPECTED_PACKAGES.items():
+        try:
+            actual = version(pkg)
+        except PackageNotFoundError:
+            problems.append(f"{pkg}: non installato (atteso {expected})")
+            continue
+        if actual != expected:
+            problems.append(f"{pkg}: atteso {expected}, installato {actual}")
+    return problems
+
+
+def assert_supported_environment() -> None:
+    """Refuse to continue on an interpreter the product is not built for.
+
+    This exists because of a real and expensive misreading: an entire
+    regression sweep was run on the system interpreter (Python 3.14,
+    PyMuPDF 1.28) instead of the project environment (3.12, 1.26.7).
+    PyMuPDF's table detector changed between those versions, so a suite
+    that pins a table count reported a product regression that did not
+    exist, and it was believed twice.
+
+    An environment mismatch is not a test failure; it makes every test
+    result meaningless. So this raises instead of returning a status.
+    """
+    problems = environment_problems()
+    if problems:
+        detail = "\n".join(f"  - {p}" for p in problems)
+        raise RuntimeError(
+            "Ambiente non conforme: i risultati di build e test non sarebbero "
+            f"significativi.\n{detail}\n"
+            "  Usare l'ambiente del progetto (.venv) o reinstallare da "
+            f"{BASE_LOCK.name}.")
+
+
 EXPECTED_BENCHMARK_HASHES = {
     "benchmark/siemens/old_EN.pdf": "cac23898a21414ae313af1ba96ddad9f2917b81be5502dbcff7bfd4cf2a133ab",
     "benchmark/siemens/old_IT.pdf": "4719aebe721c96764032598040f3e50d411c41995315e1d4643bc0e9f711ab48",
@@ -52,8 +130,9 @@ def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     results = []
-    py_ok = sys.version_info[:2] == (3, 12)
-    add_result(results, "Python 3.12", py_ok, platform.python_version())
+    py_ok = sys.version_info[:2] == SUPPORTED_PYTHON
+    add_result(results, f"Python {SUPPORTED_PYTHON[0]}.{SUPPORTED_PYTHON[1]}", py_ok,
+               platform.python_version())
 
     for pkg, expected in EXPECTED_PACKAGES.items():
         try:

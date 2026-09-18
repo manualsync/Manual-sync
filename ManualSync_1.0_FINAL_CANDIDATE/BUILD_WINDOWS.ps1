@@ -2,7 +2,15 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-$BuildId = '1.0.0-final-candidate-20260822'
+# Build id: UNICA FONTE product_version.py. Era ripetuto a mano qui,
+# nell'installer e nel validatore pilota; cambiarlo richiedeva sei modifiche
+# coordinate e una di esse (regressione_final_candidate) lo imponeva come
+# letterale. PowerShell non puo importare il modulo, quindi lo legge.
+$ProductVersionFile = Join-Path $Root 'product_version.py'
+if (!(Test-Path $ProductVersionFile)) { throw "product_version.py assente: $ProductVersionFile" }
+$BuildIdMatch = [regex]::Match((Get-Content -LiteralPath $ProductVersionFile -Raw), "PRODUCT_BUILD\s*=\s*[`"']([^`"']+)[`"']")
+if (!$BuildIdMatch.Success) { throw 'PRODUCT_BUILD non leggibile da product_version.py' }
+$BuildId = $BuildIdMatch.Groups[1].Value
 $SetupZipName = 'ManualSync_Setup_FINAL_CANDIDATE.zip'
 $PortableZipName = 'ManualSync_Portable_FINAL_CANDIDATE.zip'
 $SetupHashName = 'ManualSync_Setup_FINAL_CANDIDATE.sha256.txt'
@@ -23,6 +31,25 @@ try {
 
 function Step([string]$Message) {
   Write-Host "`n==> $Message" -ForegroundColor Cyan
+}
+
+# Esegue Python con stdout/stderr su file e restituisce l'exit code.
+# NON usare `& python ...` qui: in Windows PowerShell 5.1, con
+# ErrorActionPreference='Stop' e un output reindirizzato, la prima riga
+# scritta su stderr da un processo nativo diventa un NativeCommandError
+# TERMINANTE. Un solo traceback interrompeva l'intera sweep senza nemmeno
+# stampare FAIL, e nascondeva l'esito di tutte le suite successive.
+function Invoke-PythonLogged([string]$Exe, [string[]]$Arguments, [string]$WorkDir, [string]$OutFile, [string]$ErrFile) {
+  $quoted = @($Arguments | ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' })
+  $p = Start-Process -FilePath $Exe -ArgumentList $quoted -WorkingDirectory $WorkDir `
+        -NoNewWindow -Wait -PassThru -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile
+  return [int]$p.ExitCode
+}
+
+function Show-Tail([string]$Path, [int]$Lines = 6) {
+  if ((Test-Path $Path) -and (Get-Item -LiteralPath $Path).Length -gt 0) {
+    Get-Content -LiteralPath $Path -Tail $Lines | ForEach-Object { Write-Host "       $_" -ForegroundColor DarkRed }
+  }
 }
 
 Step 'Verifica Python 3.12 x64'
@@ -60,105 +87,44 @@ if ($LASTEXITCODE -ne 0) { throw 'Aggiornamento pip fallito.' }
 & $Pip install -r (Join-Path $Root 'requirements.desktop.lock.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Installazione dipendenze build fallita.' }
 
-Step 'R23.2 UI structure polish + overflow menu fix (core R18 invariato)'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r23_ui.py')
-if ($LASTEXITCODE -ne 0) { throw 'R23.2 UX UI gate fallito.' }
+Step 'Guardia ambiente - prima di qualunque test'
+# Prima veniva eseguita DOPO ventidue suite: un ambiente sbagliato si
+# scopriva dopo venti minuti, e i risultati intermedi erano gia privi di
+# significato. Un ambiente non conforme non e un test fallito: rende ogni
+# altro risultato non interpretabile, quindi va accertato per primo.
+& $BuildPython -c "import environment_guard; environment_guard.assert_supported_environment()"
+if ($LASTEXITCODE -ne 0) { throw 'Ambiente di build non conforme al lock. Nessun test eseguito.' }
 
-Step 'Regressione Grounded Authoring R7 (invariata in R18)'
-& $BuildPython (Join-Path $Root 'regressione_grounded_r7.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione Grounded Authoring R7 fallita: R23.2 UI Structure Polish non distribuibile.' }
+Step 'Regressione completa - ogni suite del repository'
+# Qui stavano ventidue Step enumerati a mano, fermi a RC2.2: non
+# includevano Gate 2A, localization, domain errors, impact intelligence,
+# impact center ne translation intelligence. E lo stesso difetto della
+# allowlist del payload -- un elenco che invecchia in silenzio -- con la
+# stessa correzione: derivarlo. Le suite browser restano escluse perche
+# pilotano Chrome e un server applicativo propri, non il pacchetto.
+$BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py')
+$Suites = @(Get-ChildItem -LiteralPath $Root -File -Filter 'regressione_*.py' | Sort-Object Name | Where-Object { $BrowserSuites -notcontains $_.Name })
+if ($Suites.Count -lt 40) { throw "Elenco suite sospetto: solo $($Suites.Count) trovate." }
+Write-Host "Suite di regressione da eseguire: $($Suites.Count)" -ForegroundColor Green
+$SuiteLogDir = Join-Path $Root 'build_reports\regressione'
+New-Item -ItemType Directory -Path $SuiteLogDir -Force | Out-Null
+$FailedSuites = @()
+foreach ($suite in $Suites) {
+  $SuiteOut = Join-Path $SuiteLogDir ($suite.BaseName + '.out.txt')
+  $SuiteErr = Join-Path $SuiteLogDir ($suite.BaseName + '.err.txt')
+  $rc = Invoke-PythonLogged $BuildPython @($suite.FullName) $Root $SuiteOut $SuiteErr
+  if ($rc -ne 0) {
+    $FailedSuites += $suite.Name
+    Write-Host "  FAIL $($suite.Name) (exit $rc)" -ForegroundColor Red
+    Show-Tail $SuiteErr
+  }
+}
+if ($FailedSuites.Count -gt 0) { throw "Regressione fallita: $($FailedSuites -join ', '). Log: $SuiteLogDir" }
+Write-Host "Regressione completa: $($Suites.Count)/$($Suites.Count) verdi" -ForegroundColor Green
 
-Step 'R18 canonicalizzazione codici lingua + compatibilita stato persistente legacy'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r18.py')
-if ($LASTEXITCODE -ne 0) { throw 'R18 language canonicalization / persistent-state hardening fallito.' }
-
-Step 'R17 atomic release preflight + immutable ID safety'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r17.py')
-if ($LASTEXITCODE -ne 0) { throw 'R17 atomic release preflight / ID safety fallito.' }
-
-Step 'R16 friendly fail-closed release feedback'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r16.py')
-if ($LASTEXITCODE -ne 0) { throw 'R16 friendly fail-closed release feedback fallito.' }
-
-Step 'R15 production/test release safety + commercial UX (regressione)'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r15.py')
-if ($LASTEXITCODE -ne 0) { throw 'R15 production/test release safety / commercial UX fallito.' }
-
-Step 'R14 publishing normalization + DOCX quality gate'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r14.py')
-if ($LASTEXITCODE -ne 0) { throw 'R14 publishing normalization / quality gate fallito.' }
-
-Step 'R13 release isolation + CAT safety + UX cleanup gate (regressione)'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r13.py')
-if ($LASTEXITCODE -ne 0) { throw 'R13 release isolation / CAT safety gate fallito.' }
-
-Step 'Regressione R12 translation completeness + release hardening'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r12.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione R12 translation completeness fallita.' }
-
-Step 'Regressione invarianti readiness R11 -> R12'
-& $BuildPython (Join-Path $Root 'regressione_desktop_r11.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione invarianti readiness fallita.' }
-
-Step 'Regressione migrazione semantica RC1.9'
-& $BuildPython (Join-Path $Root 'regressione_rc19_semantic_migration.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione semantic migration fallita.' }
-
-Step 'Benchmark sintetico auto-allineamento >=95%'
-& $BuildPython (Join-Path $Root 'regressione_alignment_benchmark.py')
-if ($LASTEXITCODE -ne 0) { throw 'Benchmark sintetico auto-allineamento fallito.' }
-
-Step 'Benchmark reale pre-allineamento bilingue industriale'
-& $BuildPython (Join-Path $Root 'regressione_alignment_real_world.py')
-if ($LASTEXITCODE -ne 0) { throw 'Benchmark reale pre-allineamento bilingue fallito.' }
-
-Step 'Policy di sicurezza confidence: auto-reuse >=90, review 80-89'
-& $BuildPython (Join-Path $Root 'regressione_alignment_policy.py')
-if ($LASTEXITCODE -ne 0) { throw 'Policy di confidence dell auto-allineamento fallita.' }
-
-Step 'Regressione Translation Work Package v0.23'
-& $BuildPython (Join-Path $Root 'regressione_v23.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione Translation Work Package v0.23 fallita.' }
-
-Step 'Regressione Round-Trip QA v0.24'
-& $BuildPython (Join-Path $Root 'regressione_v24.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione Round-Trip QA v0.24 fallita.' }
-
-Step 'Regressione Workflow v0.25'
-& $BuildPython (Join-Path $Root 'regressione_v25.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione Workflow v0.25 fallita.' }
-
-Step 'Regressione Release / Readiness / Lifecycle v0.26-v0.28'
-& $BuildPython (Join-Path $Root 'regressione_v26_v28.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione Release / Readiness / Lifecycle fallita.' }
-
-Step 'Regressione end-to-end core'
-& $BuildPython (Join-Path $Root 'regressione_e2e_v1.py')
-if ($LASTEXITCODE -ne 0) { throw 'Regressione end-to-end fallita.' }
-
-Step 'Commercial Stabilization RC1 — regressione legacy completa, 3x E2E'
-& $BuildPython (Join-Path $Root 'regressione_commercial_stabilization_rc1.py')
-if ($LASTEXITCODE -ne 0) { throw 'Commercial Stabilization RC1 regression gate fallito.' }
-
-Step 'Commercial Stabilization RC2 — startup, shortcut, project-start UX e packaging safety'
-& $BuildPython (Join-Path $Root 'regressione_commercial_stabilization_rc2.py')
-if ($LASTEXITCODE -ne 0) { throw 'Commercial Stabilization RC2 gate fallito.' }
-
-Step 'RC2 UI callback end-to-end — progetto -> traduzione -> QA -> release -> backup/restore'
-& $BuildPython (Join-Path $Root 'regressione_ui_callbacks_rc2.py')
-if ($LASTEXITCODE -ne 0) { throw 'RC2 UI callback E2E fallito.' }
-
-Step 'RC2.2 commercial linguistic safety — QA, production fail-closed, repeats, non-translatables'
-& $BuildPython (Join-Path $Root 'regressione_commercial_safety_rc22.py')
-if ($LASTEXITCODE -ne 0) { throw 'RC2.2 commercial linguistic safety gate fallito.' }
-
-Step 'Final Candidate commercial acceptance — callback E2E + production safety'
+Step 'Commercial acceptance sorgente'
 & $BuildPython (Join-Path $Root 'commercial_acceptance.py')
 if ($LASTEXITCODE -ne 0) { throw 'Commercial acceptance sorgente fallita.' }
-
-Step 'Final Candidate static packaging / installer / UX gate'
-& $BuildPython (Join-Path $Root 'regressione_final_candidate.py')
-if ($LASTEXITCODE -ne 0) { throw 'Final Candidate static gate fallito.' }
 
 Step 'Runtime self-test completo'
 & $BuildPython (Join-Path $Root 'environment_guard.py')
@@ -190,21 +156,35 @@ Step 'Installa dipendenze runtime bloccate nella distribuzione'
 & $BuildPython -m pip install --no-compile --upgrade --target $RuntimeSite -r (Join-Path $Root 'requirements.runtime.lock.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Installazione dipendenze nel runtime portabile fallita.' }
 
-Step 'Copia applicazione ManualSync — runtime allowlist pulita'
-$RuntimeFiles = @(
-  'app.py','authoring_ccms.py','cat_batch.py','cat_tm.py','ccms_industrial.py',
-  'generative_orchestrator.py','grounded_authoring.py','idml_hardening.py','impact_economics.py',
-  'language_codes.py','layout_engine.py','manualsync_desktop.py','product_version.py',
-  'project_lifecycle.py','publishing_bridges.py','release_manager.py','release_readiness.py','support_diagnostics.py',
-  'translation_impact.py','translation_roundtrip.py','translation_work_package.py','linguistic_safety.py','workflow_management.py','commercial_acceptance.py',
-  'manualsync.png','VERSION.txt','qa_profile_esempio.json','glossario_equivalenze_esempio.csv',
-  'terminologia_cat_esempio.csv','vendor_rates_esempio.csv'
-)
-foreach ($name in $RuntimeFiles) {
-  $src = Join-Path $Root $name
-  if (!(Test-Path $src)) { throw "Runtime source mancante: $name" }
-  Copy-Item -LiteralPath $src -Destination $App -Force
+Step 'Copia applicazione ManualSync - payload derivato dagli import'
+# La allowlist scritta a mano che stava qui elencava 24 file mentre il
+# runtime ne richiede 53: fra Gate 2A e Impact Center il prodotto e
+# cresciuto di ventuno moduli e di una cartella locales, e l'elenco no.
+# Il payload e ora calcolato da packaging_payload.py come chiusura
+# transitiva degli import dei veri entry point, piu i dati letti a runtime.
+$PayloadList = & $BuildPython (Join-Path $Root 'packaging_payload.py') --print
+if ($LASTEXITCODE -ne 0) { throw 'Calcolo del payload fallito.' }
+$PayloadEntries = @($PayloadList | Where-Object { $_.Trim() -ne '' })
+if ($PayloadEntries.Count -lt 40) { throw "Payload sospetto: solo $($PayloadEntries.Count) elementi." }
+foreach ($rel in $PayloadEntries) {
+  $src = Join-Path $Root $rel
+  if (!(Test-Path $src)) { throw "Runtime source mancante: $rel" }
+  $dst = Join-Path $App $rel
+  $dstDir = Split-Path -Parent $dst
+  if (!(Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
+  Copy-Item -LiteralPath $src -Destination $dst -Force
 }
+Write-Host "Payload copiato: $($PayloadEntries.Count) elementi" -ForegroundColor Green
+
+Step 'Verifica statica del payload prima di qualunque smoke test'
+# Uno smoke test non puo sostituire questa verifica. Un MODULO mancante
+# blocca l'avvio ed e quindi visibile; una cartella DATI mancante no:
+# i18n.load_catalog degrada deliberatamente a catalogo vuoto, percio
+# resource-check, headless smoke e commercial acceptance passerebbero
+# tutti e il cliente installerebbe un prodotto che mostra le chiavi di
+# localizzazione al posto delle etichette. Questo controllo e statico.
+& $BuildPython (Join-Path $Root 'packaging_payload.py') --verify $App
+if ($LASTEXITCODE -ne 0) { throw 'Payload incompleto: build interrotta prima di creare un installer difettoso.' }
 
 # Hard gates for the exact data-file failures seen in R2/R3. Because the runtime
 # is copied as normal site-packages, these should be physically present.
@@ -348,10 +328,15 @@ $ProbeManifest = Get-Content -LiteralPath $ProbeManifestPath -Raw | ConvertFrom-
 $ProbePayload = Join-Path $ZipProbe 'payload'
 $ProbeFiles = @(Get-ChildItem -LiteralPath $ProbePayload -File -Recurse -Force)
 if ($ProbeFiles.Count -ne [int]$ProbeManifest.file_count) { throw "ZIP cliente alterato: file payload $($ProbeFiles.Count) != manifest $($ProbeManifest.file_count)." }
+# -LiteralPath: i percorsi vengono dal manifest, cioe' dai nomi dei file dei
+# pacchetti installati. python-docx contiene [Content_Types].xml, e per
+# Test-Path senza -LiteralPath le parentesi quadre sono caratteri jolly:
+# il file c'e' ma risulta assente. Bloccava la build e avrebbe bloccato
+# l'installazione sulla macchina del cliente.
 foreach ($item in @($ProbeManifest.files)) {
   $rel = ([string]$item.path).Replace('/','\')
   $path = Join-Path $ProbePayload $rel
-  if (!(Test-Path $path)) { throw "ZIP cliente incompleto: manca $rel" }
+  if (!(Test-Path -LiteralPath $path)) { throw "ZIP cliente incompleto: manca $rel" }
   $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($hash -ne ([string]$item.sha256).ToLowerInvariant()) { throw "ZIP cliente corrotto: hash non valido per $rel" }
 }

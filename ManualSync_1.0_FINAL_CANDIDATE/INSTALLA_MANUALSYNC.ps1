@@ -1,3 +1,12 @@
+# -SandboxRoot: SOLO per la verifica automatica dell'installazione.
+# Senza parametro -- che e' come lo invocano i .cmd consegnati al cliente --
+# il comportamento e' identico a prima: profilo utente reale, Desktop reale,
+# Start Menu reale. Con il parametro, installazione, dati, collegamenti e
+# Path.home() dei processi figli finiscono sotto quella cartella, cosi' il
+# ciclo installa -> verifica -> aggiorna -> disinstalla si puo' eseguire su
+# una macchina di lavoro senza toccarne il Desktop ne' un'installazione vera.
+param([string]$SandboxRoot = '')
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
@@ -5,11 +14,29 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Payload = Join-Path $Root 'payload'
 $PayloadExe = Join-Path $Payload 'ManualSync.exe'
 $PayloadManifest = Join-Path $Root 'PAYLOAD_MANIFEST_SHA256.json'
-$Programs = Join-Path $env:LOCALAPPDATA 'Programs'
+if ($SandboxRoot) {
+  $SandboxRoot = [IO.Path]::GetFullPath($SandboxRoot)
+  $LocalAppDataRoot = Join-Path $SandboxRoot 'LocalAppData'
+  $ProfileRoot = Join-Path $SandboxRoot 'UserProfile'
+  $RoamingRoot = Join-Path $SandboxRoot 'AppData'
+  $DesktopRoot = Join-Path $SandboxRoot 'Desktop'
+  foreach ($d in @($LocalAppDataRoot, $ProfileRoot, $RoamingRoot, $DesktopRoot)) {
+    New-Item -ItemType Directory -Path $d -Force | Out-Null
+  }
+  # Il ManualSync.exe installato risolve Path.home() da USERPROFILE: senza
+  # questa riga log e dati dei test finirebbero nel profilo reale.
+  $env:USERPROFILE = $ProfileRoot
+} else {
+  $LocalAppDataRoot = $env:LOCALAPPDATA
+  $ProfileRoot = $env:USERPROFILE
+  $RoamingRoot = $env:APPDATA
+  $DesktopRoot = [Environment]::GetFolderPath('Desktop')
+}
+$Programs = Join-Path $LocalAppDataRoot 'Programs'
 $InstallDir = Join-Path $Programs 'ManualSync'
-$DataDir = Join-Path $env:USERPROFILE 'ManualSyncData'
-$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ManualSync.lnk'
-$StartMenuDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\ManualSync'
+$DataDir = Join-Path $ProfileRoot 'ManualSyncData'
+$DesktopShortcut = Join-Path $DesktopRoot 'ManualSync.lnk'
+$StartMenuDir = Join-Path $RoamingRoot 'Microsoft\Windows\Start Menu\Programs\ManualSync'
 $StartMenuShortcut = Join-Path $StartMenuDir 'ManualSync.lnk'
 $InstallLogDir = Join-Path $DataDir 'Logs'
 $InstallLog = Join-Path $InstallLogDir 'ManualSync_Installer.log'
@@ -20,6 +47,15 @@ $Stage = $null
 $Previous = $null
 $HadPreviousInstall = $false
 $ShortcutsWritten = $false
+
+# Build id: letto dal payload, mai riscritto qui. Vedi product_version.py.
+function Get-ProductBuildId([string]$AppDir) {
+  $file = Join-Path $AppDir 'product_version.py'
+  if (!(Test-Path $file)) { throw "product_version.py assente in $AppDir" }
+  $m = [regex]::Match((Get-Content -LiteralPath $file -Raw), "PRODUCT_BUILD\s*=\s*[`"']([^`"']+)[`"']")
+  if (!$m.Success) { throw "PRODUCT_BUILD non leggibile da $file" }
+  return $m.Groups[1].Value
+}
 
 function Fail([string]$Message) {
   Write-Host "ERRORE: $Message" -ForegroundColor Red
@@ -69,6 +105,11 @@ function Assert-Shortcut([string]$Path, [string]$ExpectedTarget, [string]$Expect
   if (!$argsOk) { Fail "Argomenti residui nel collegamento: $Path -> $($Shortcut.Arguments)" }
 }
 
+# -LiteralPath: i percorsi vengono dal manifest, cioe' dai nomi dei file dei
+# pacchetti installati. python-docx contiene [Content_Types].xml, e per
+# Test-Path senza -LiteralPath le parentesi quadre sono caratteri jolly:
+# il file c'e' ma risulta assente. Bloccava la build e avrebbe bloccato
+# l'installazione sulla macchina del cliente.
 function Assert-PayloadManifest([string]$BaseDir, [string]$ManifestPath) {
   if (!(Test-Path $ManifestPath)) { Fail "Manifest integrita payload mancante: $ManifestPath" }
   $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
@@ -79,7 +120,7 @@ function Assert-PayloadManifest([string]$BaseDir, [string]$ManifestPath) {
   foreach ($item in $expected) {
     $rel = ([string]$item.path).Replace('/','\')
     $path = Join-Path $BaseDir $rel
-    if (!(Test-Path $path)) { Fail "Payload incompleto: manca $rel" }
+    if (!(Test-Path -LiteralPath $path)) { Fail "Payload incompleto: manca $rel" }
     if ((Get-Item -LiteralPath $path).Length -ne [int64]$item.bytes) { Fail "Payload alterato: dimensione non valida per $rel" }
     $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($hash -ne ([string]$item.sha256).ToLowerInvariant()) { Fail "Payload alterato: checksum non valido per $rel" }
@@ -150,7 +191,7 @@ try {
 
     $Meta = @{
       installed_at = (Get-Date).ToString('o')
-      build = '1.0.0-final-candidate-20260822'
+      build = (Get-ProductBuildId (Join-Path $InstallDir 'app'))
       install_dir = $InstallDir
       data_dir = $DataDir
       version_file = (Join-Path $InstallDir 'app\VERSION.txt')

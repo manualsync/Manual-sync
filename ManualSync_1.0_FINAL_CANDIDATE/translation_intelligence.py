@@ -51,6 +51,7 @@ guessed at.
 from __future__ import annotations
 
 import re
+import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -494,45 +495,56 @@ def _run_tier2(repo: IndustrialRepository, project_dir: Path, kind: str, object_
 
     targets = [l.language for l in languages if l.language]
     tmp = Path(tempfile.mkdtemp(prefix="manualsync_translation_intel_"))
+    # The engine writes a consolidated TM and three CSV/JSON reports into
+    # tmp, and returns detail and language_summary as in-memory DataFrames.
+    # Only those DataFrames are read below; the file paths it also returns
+    # are never used. So tmp is removed in `finally`, which runs after the
+    # return value has been built on every path -- success, the two early
+    # returns, a failure the engine reports, and an unexpected exception
+    # while reading the result (which still propagates, as before). It used
+    # to be left behind on every "Analisi impatto traduzione".
     try:
-        result = analyze_translation_impact(
-            repo, object_id, kind=kind,
-            tm_paths=[str(p) for p in _project_tm_paths(project_dir)],
-            target_langs=targets, require_approved=True, out_dir=tmp)
-    except Exception:
-        # The engine fails closed on its own preconditions. Anything it
-        # refuses is reported as an unavailable state, never as a stack
-        # trace in a read-only panel.
-        return (), TIER2_FAILED
+        try:
+            result = analyze_translation_impact(
+                repo, object_id, kind=kind,
+                tm_paths=[str(p) for p in _project_tm_paths(project_dir)],
+                target_langs=targets, require_approved=True, out_dir=tmp)
+        except Exception:
+            # The engine fails closed on its own preconditions. Anything it
+            # refuses is reported as an unavailable state, never as a stack
+            # trace in a read-only panel.
+            return (), TIER2_FAILED
 
-    detail = result.get("detail")
-    summary = result.get("language_summary")
-    out: list[LanguageImpact] = []
-    if summary is None or summary.empty:
-        return (), TIER2_AVAILABLE
-    for _, s in summary.iterrows():
-        lang = canonical_lang(str(s.get("target_lang") or ""))
-        rows = detail[detail["target_lang"].astype(str).map(canonical_lang) == lang] \
-            if detail is not None and not detail.empty else None
-        cats = (rows["match_category"].map(classify_match_category).tolist()
-                if rows is not None and not rows.empty and "match_category" in rows else [])
-        buckets = (rows["work_bucket"].astype(str).tolist()
-                   if rows is not None and not rows.empty and "work_bucket" in rows else [])
-        out.append(LanguageImpact(
-            language=lang,
-            segments=int(s.get("segments") or 0),
-            words=int(s.get("source_words") or 0),
-            reusable_segments=sum(1 for b in buckets
-                                  if b in ("AUTO_REUSE", "INTRA_DOCUMENT_REUSE", "NOT_TRANSLATABLE")),
-            context_segments=cats.count(MATCH_CONTEXT),
-            exact_segments=cats.count(MATCH_EXACT),
-            fuzzy_segments=cats.count(MATCH_FUZZY),
-            new_segments=cats.count(MATCH_NEW),
-            technical_block_segments=sum(1 for b in buckets if b == "TECHNICAL_REVIEW"),
-            tm_available=bool(s.get("tm_available")),
-            reuse_pct=float(s.get("reuse_pct") or 0.0),
-            reasons=_reasons_for_language(rows) if rows is not None and not rows.empty else ()))
-    return tuple(out), TIER2_AVAILABLE
+        detail = result.get("detail")
+        summary = result.get("language_summary")
+        out: list[LanguageImpact] = []
+        if summary is None or summary.empty:
+            return (), TIER2_AVAILABLE
+        for _, s in summary.iterrows():
+            lang = canonical_lang(str(s.get("target_lang") or ""))
+            rows = detail[detail["target_lang"].astype(str).map(canonical_lang) == lang] \
+                if detail is not None and not detail.empty else None
+            cats = (rows["match_category"].map(classify_match_category).tolist()
+                    if rows is not None and not rows.empty and "match_category" in rows else [])
+            buckets = (rows["work_bucket"].astype(str).tolist()
+                       if rows is not None and not rows.empty and "work_bucket" in rows else [])
+            out.append(LanguageImpact(
+                language=lang,
+                segments=int(s.get("segments") or 0),
+                words=int(s.get("source_words") or 0),
+                reusable_segments=sum(1 for b in buckets
+                                      if b in ("AUTO_REUSE", "INTRA_DOCUMENT_REUSE", "NOT_TRANSLATABLE")),
+                context_segments=cats.count(MATCH_CONTEXT),
+                exact_segments=cats.count(MATCH_EXACT),
+                fuzzy_segments=cats.count(MATCH_FUZZY),
+                new_segments=cats.count(MATCH_NEW),
+                technical_block_segments=sum(1 for b in buckets if b == "TECHNICAL_REVIEW"),
+                tm_available=bool(s.get("tm_available")),
+                reuse_pct=float(s.get("reuse_pct") or 0.0),
+                reasons=_reasons_for_language(rows) if rows is not None and not rows.empty else ()))
+        return tuple(out), TIER2_AVAILABLE
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ----------------------------------------------------------------------

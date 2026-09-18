@@ -1,5 +1,5 @@
 ManualSync 1.0 — FINAL CANDIDATE
-Build 1.0.0-final-candidate-20260822
+Build 1.0.0-final-candidate-20260917
 Core baseline: R18 stable + validated commercial safety fixes
 UI baseline: R23.2 + project-creation idempotency + workflow/release guardrails
 Packaging: exact customer ZIP re-extracted, hash-verified and commercial-acceptance tested before PASS

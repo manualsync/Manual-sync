@@ -31,6 +31,7 @@ import translation_view as tv
 import impact_center as ic
 import impact_center_view as icv
 import export_links
+import temp_artifacts
 import rich_text
 from translation_work_package import generate_translation_work_packages, TranslationFormatNotSupportedError
 from cat_tm import TranslationMemory, source_target_safe
@@ -844,32 +845,35 @@ def _unreviewed_topic_count(project_dir: str | Path) -> int:
 
 def _project_card(project_dir: str | None) -> str:
     if not project_dir:
-        return "<div class='ms-project-card ms-empty'><b>Nessun progetto aperto</b><br><span class='ms-muted'>Crea o riapri un progetto per iniziare.</span></div>"
+        return (f"<div class='ms-project-card ms-empty'><b>{t('project.card.empty.title')}</b><br>"
+                f"<span class='ms-muted'>{t('project.card.empty.hint')}</span></div>")
     h=project_health(project_dir)
     open_jobs=max(0, int(h.get("total_jobs",0))-int(h.get("approved",0)))
     unreviewed=_unreviewed_topic_count(project_dir)
     if int(h.get("qa_blocked",0)) > 0:
-        next_action="Apri <b>Job & fornitori</b> e correggi i job bloccati dal controllo qualità."
+        next_action=t("project.card.next.qa_blocked")
     elif open_jobs > 0:
-        next_action="Apri <b>Job & fornitori</b> e completa i job di traduzione ancora aperti."
+        next_action=t("project.card.next.open_jobs")
     elif int(h.get("publications",0)) <= 0:
-        next_action="Apri <b>Redazione & contenuti</b> e importa/approva la sorgente strutturata."
+        next_action=t("project.card.next.no_publications")
     elif unreviewed > 0:
-        next_action="Il contenuto importato non è ancora stato revisionato. <b>Rivedi il contenuto importato</b> prima di procedere."
+        next_action=t("project.card.next.unreviewed")
     else:
-        next_action="Il workflow operativo non ha blocchi aperti. Prossimo step: <b>Release → verifica readiness</b>."
-    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>{t('context.active_project')}</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{_project_meta_line(h)}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>Pubblicazioni</div><b>{h['publications']}</b><small>nel progetto</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Blocchi</div><b>{h['blocks']}</b><small>contenuto strutturato</small></div><div class='ms-kpi'><div class='ms-kpi-label'>Job aperti</div><b>{open_jobs}</b><small>workflow traduzione</small></div><div class='ms-kpi'><div class='ms-kpi-label'>QA bloccati</div><b>{h['qa_blocked']}</b><small>richiedono intervento</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>Azione consigliata</b><br>{next_action}</div></div></div>"""
+        next_action=t("project.card.next.clear")
+    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>{t('context.active_project')}</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{_project_meta_line(h)}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.publications')}</div><b>{h['publications']}</b><small>{t('project.card.kpi.publications_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.blocks')}</div><b>{h['blocks']}</b><small>{t('project.card.kpi.blocks_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.open_jobs')}</div><b>{open_jobs}</b><small>{t('project.card.kpi.open_jobs_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.qa_blocked')}</div><b>{h['qa_blocked']}</b><small>{t('project.card.kpi.qa_blocked_sub')}</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>{t('project.card.next.title')}</b><br>{next_action}</div></div></div>"""
 
 def _sidebar_context(project_dir: str | None) -> str:
     if not project_dir:
-        return "<div class='ms-sidebar-context'><div class='ctx-label'>Progetto</div><div class='ctx-name'>Nessun progetto attivo</div><div class='ctx-sub'>Workspace locale</div></div>"
+        return (f"<div class='ms-sidebar-context'><div class='ctx-label'>{t('context.project_label')}</div>"
+                f"<div class='ctx-name'>{t('context.no_project')}</div>"
+                f"<div class='ctx-sub'>{t('context.local_workspace')}</div></div>")
     try:
         h=project_health(project_dir)
         name=h.get('project_name') or Path(project_dir).name
-        client=h.get('client') or 'Workspace locale'
-        return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{name}</div><div class='ctx-sub'>{client}</div></div>"
+        client=h.get('client') or t('context.local_workspace')
+        return f"<div class='ms-sidebar-context'><div class='ctx-label'>{t('context.active_project_label')}</div><div class='ctx-name'>{name}</div><div class='ctx-sub'>{client}</div></div>"
     except Exception:
-        return f"<div class='ms-sidebar-context'><div class='ctx-label'>Progetto attivo</div><div class='ctx-name'>{Path(project_dir).name}</div><div class='ctx-sub'>Workspace locale</div></div>"
+        return f"<div class='ms-sidebar-context'><div class='ctx-label'>{t('context.active_project_label')}</div><div class='ctx-name'>{Path(project_dir).name}</div><div class='ctx-sub'>{t('context.local_workspace')}</div></div>"
 
 # ======================================================================
 # Domain error -> sentence. The ONLY place a code becomes words.
@@ -1078,6 +1082,9 @@ def export_project_ui(project_dir):
     wf=WorkflowManager(project_dir)
     try: z=wf.export_project_archive()
     finally: wf.close()
+    # The archive sits in a temp directory that Gradio copies into its own
+    # cache once this returns; keep only the latest and release it on exit.
+    temp_artifacts.hand_over(Path(z).parent, group="project_backup", keep=1)
     return str(z)
 
 def refresh_ui(project_dir):
@@ -4000,18 +4007,27 @@ def studio_export_html_ui(project_dir, publication_id, profile_id):
         repo.close()
 
     zip_path = None
+    tmp_dir = None
     try:
-        tmp_dir = Path(tempfile.mkdtemp(prefix="ms_html_zip_"))
+        tmp_dir = temp_artifacts.make_dir("ms_html_zip_")
         zip_path = shutil.make_archive(str(tmp_dir / "pacchetto-html"), "zip",
                                        root_dir=str(res["output_dir"]))
     except Exception as e:
         _app_log("HTML package zip failed (package itself is valid)", e)
+        temp_artifacts.discard(tmp_dir)
+        tmp_dir = None
     if not _ensure_export_routes():
+        temp_artifacts.discard(tmp_dir)  # no link will ever point at this ZIP
         return _export_error_html("Pacchetto HTML creato, ma il collegamento per aprirlo non è "
                                   "disponibile. Riavvia l'applicazione e riprova.")
     token = export_links.register_export(
         root=res["output_dir"], primary_rel="index.html", download_path=zip_path,
         download_name=f"{po._slug(res['publication_title'])}-{po._slug(res['profile_name'])}.zip")
+    if tmp_dir is not None:
+        # Served later by the "Scarica" link. At most _MAX_ENTRIES tokens are
+        # alive, all among the latest registrations, so keeping that many ZIPs
+        # never deletes one a live link still needs.
+        temp_artifacts.hand_over(tmp_dir, group="html_export_zip", keep=export_links._MAX_ENTRIES)
     return _export_result_card(
         headline="Pacchetto HTML creato correttamente",
         subtitle=f"{res['publication_title']} · {res['profile_name']}",
@@ -5553,7 +5569,10 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         ws_lang=gr.Radio([(i18n.LANGUAGE_NAMES[c], c) for c in i18n.SUPPORTED_LANGUAGES],
                          value=i18n.get_language(), show_label=False,
                          elem_classes=["ms-lang"], container=False)
-        sidebar_context=gr.HTML(_sidebar_context(INITIAL_PROJECT))
+        # Registered with LOC: the context line is catalogue text, so a
+        # language switch has to re-render it like every other label.
+        sidebar_context=LOC.add(gr.HTML(_sidebar_context(INITIAL_PROJECT)),
+                                value=lambda: _sidebar_context(_load_active_project()))
 
     # ================================================================
     # UX Gate 1 — persistent workspace context.
@@ -5626,11 +5645,12 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # when no project is active yet (state-driven, see project_state.change below).
             # Does not replace or hide the existing "+ Nuovo progetto" advanced path.
             with gr.Column(visible=not bool(INITIAL_PROJECT),elem_id="onboarding-choice-panel",elem_classes=["ms-panel"]) as onboarding_choice_panel:
-                gr.HTML("<div class='ms-section-title'>Benvenuto</div><div class='ms-section-sub'>Non hai ancora un progetto. Non serve sapere cosa sono XML, DITA o XLIFF per iniziare.</div>")
+                onboarding_head=LOC.html(lambda: f"<div class='ms-section-title'>{t('home.welcome.title')}</div>"
+                                                 f"<div class='ms-section-sub'>{t('home.welcome.subtitle')}</div>")
                 with gr.Row():
-                    choice_empty=gr.Button("Crea un progetto vuoto",variant="secondary")
-                    choice_legacy=gr.Button("Ho già dei manuali: importali",variant="primary")
-                    choice_multi=gr.Button("Ho più manuali o revisioni",variant="secondary")
+                    choice_empty=LOC.button(lambda: t("home.choice.empty"),variant="secondary")
+                    choice_legacy=LOC.button(lambda: t("home.choice.legacy"),variant="primary")
+                    choice_multi=LOC.button(lambda: t("home.choice.multi"),variant="secondary")
             # Milestone 3C: multi-document/folder legacy intake. Fully separate from the
             # single-document guided path above -- this only detects and, on explicit
             # human confirmation, persists family/revision/language lineage. It does not
@@ -5694,23 +5714,33 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     p_create=gr.Button("Crea progetto",variant="primary")
                     p_cancel=gr.Button("Annulla")
                 p_msg=gr.Markdown()
-            project_card=gr.HTML(_project_card(INITIAL_PROJECT))
-            gr.HTML("<div class='ms-quick-head'><div class='ms-section-title'>Azioni rapide</div><div class='ms-section-sub'>Apri direttamente le attività più frequenti.</div></div>")
+            project_card=LOC.add(gr.HTML(_project_card(INITIAL_PROJECT)),
+                                 value=lambda: _project_card(_load_active_project()))
+            quick_head=LOC.html(lambda: f"<div class='ms-quick-head'><div class='ms-section-title'>{t('home.quick.title')}</div>"
+                                        f"<div class='ms-section-sub'>{t('home.quick.subtitle')}</div></div>")
             with gr.Row(elem_classes=["ms-quick-grid"]):
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    gr.HTML("<div class='ms-quick-icon'>↺</div><div class='ms-quick-title'>Analizza revisione</div><div class='ms-quick-desc'>Confronta originale precedente, traduzione e nuova revisione.</div>")
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>↺</div>"
+                                     f"<div class='ms-quick-title'>{t('home.card.revision.title')}</div>"
+                                     f"<div class='ms-quick-desc'>{t('home.card.revision.desc')}</div>")
                     home_revision=LOC.add(gr.Button(t("home.cta.revision"),elem_classes=["ms-card-cta"]), value="home.cta.revision")
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    gr.HTML("<div class='ms-quick-icon'>文</div><div class='ms-quick-title'>Genera pacchetto lingua</div><div class='ms-quick-desc'>Prepara XLIFF e code di revisione per le lingue target.</div>")
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>文</div>"
+                                     f"<div class='ms-quick-title'>{t('home.card.translation.title')}</div>"
+                                     f"<div class='ms-quick-desc'>{t('home.card.translation.desc')}</div>")
                     home_translation=LOC.add(gr.Button(t("home.cta.translation"),elem_classes=["ms-card-cta"]), value="home.cta.translation")
                 # 4F.2 UX: Compliance had no entry point from the project
                 # workspace itself -- only the sidebar. A user who did not
                 # already know the area existed had no reason to open it.
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    gr.HTML("<div class='ms-quick-icon'>☑</div><div class='ms-quick-title'>Copertura documentale</div><div class='ms-quick-desc'>Requisiti applicabili, evidenze collegate e cosa manca ancora.</div>")
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>☑</div>"
+                                     f"<div class='ms-quick-title'>{t('home.card.conformity.title')}</div>"
+                                     f"<div class='ms-quick-desc'>{t('home.card.conformity.desc')}</div>")
                     home_compliance=LOC.add(gr.Button(t("home.cta.conformity"),elem_classes=["ms-card-cta"]), value="home.cta.conformity")
                 with gr.Column(elem_classes=["ms-quick-card","brand"]):
-                    gr.HTML("<div class='ms-quick-icon'>✓</div><div class='ms-quick-title'>Verifica readiness</div><div class='ms-quick-desc'>Controlla i gate e prepara una release controllata.</div>")
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>✓</div>"
+                                     f"<div class='ms-quick-title'>{t('home.card.release.title')}</div>"
+                                     f"<div class='ms-quick-desc'>{t('home.card.release.desc')}</div>")
                     home_release=LOC.add(gr.Button(t("home.cta.release"),elem_classes=["ms-card-cta"]), value="home.cta.release")
             home_new_project.click(lambda:(gr.update(visible=True),""),None,[new_project_panel,p_msg],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             p_cancel.click(lambda:(gr.update(visible=False),""),None,[new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)

@@ -333,6 +333,10 @@ with tempfile.TemporaryDirectory() as tmp:
 # =====================================================================
 import app  # noqa: E402
 
+_APP_SRC = Path(app.__file__).read_text(encoding="utf-8")
+# A localization key that leaked into rendered output looks like this.
+KEY_SHAPED_HOME = re.compile(r"(?:home|project|context|nav|page)\.[a-z0-9_]+(?:\.[a-z0-9_]+)*")
+
 check("reg1: the registry holds every localized component",
       len(app.LOC) > 60, len(app.LOC))
 check("reg2: components and updates are the same length, by construction",
@@ -354,6 +358,103 @@ check("reg6: an update only ever carries presentation props -- never a value tha
       all(set(u) <= {"value", "label", "info", "placeholder", "choices", "__type__"}
           for u in _en_updates),
       sorted({k for u in _en_updates for k in u}))
+
+# =====================================================================
+# 6. The Panoramica (home) screen -- the one screen that was NOT localized
+#
+# A sandbox cycle on the installed build found it: with English selected,
+# the welcome panel, the quick-action cards, the project card and the
+# sidebar context line stayed in Italian, because those strings were
+# written straight into app.py instead of the catalogue. Everything below
+# pins the fix, in both directions, so the screen cannot drift back.
+# =====================================================================
+_HOME_KEYS = [
+    "home.welcome.title", "home.welcome.subtitle",
+    "home.choice.empty", "home.choice.legacy", "home.choice.multi",
+    "home.quick.title", "home.quick.subtitle",
+    "home.card.revision.title", "home.card.revision.desc",
+    "home.card.translation.title", "home.card.translation.desc",
+    "home.card.conformity.title", "home.card.conformity.desc",
+    "home.card.release.title", "home.card.release.desc",
+    "project.card.empty.title", "project.card.empty.hint",
+    "project.card.kpi.publications", "project.card.kpi.publications_sub",
+    "project.card.kpi.blocks", "project.card.kpi.blocks_sub",
+    "project.card.kpi.open_jobs", "project.card.kpi.open_jobs_sub",
+    "project.card.kpi.qa_blocked", "project.card.kpi.qa_blocked_sub",
+    "project.card.next.title", "project.card.next.qa_blocked",
+    "project.card.next.open_jobs", "project.card.next.no_publications",
+    "project.card.next.unreviewed", "project.card.next.clear",
+    "context.project_label", "context.no_project", "context.local_workspace",
+    "context.active_project_label",
+]
+check("home1: every home-screen string has a key in BOTH catalogs",
+      all(i18n.has_key(k, "it") and i18n.has_key(k, "en") for k in _HOME_KEYS),
+      [k for k in _HOME_KEYS if not (i18n.has_key(k, "it") and i18n.has_key(k, "en"))])
+check("home2: each of them is really translated, not copied",
+      all(i18n.translate(k, "it") != i18n.translate(k, "en") for k in _HOME_KEYS),
+      [k for k in _HOME_KEYS if i18n.translate(k, "it") == i18n.translate(k, "en")])
+check("home3: app.py refers to them by literal key, so they stay greppable",
+      all(k in _APP_SRC for k in _HOME_KEYS),
+      [k for k in _HOME_KEYS if k not in _APP_SRC])
+
+# The strings the sandbox cycle actually saw on screen, in Italian, while
+# English was selected. None may be a literal in app.py any more.
+_WAS_HARDCODED = [
+    "Benvenuto</div>", "Non hai ancora un progetto", "Crea un progetto vuoto",
+    # The two "Ho gia'/Ho piu' manuali" strings deliberately stay in app.py:
+    # they are also the HEADINGS of the legacy intake panels, which are a
+    # different screen and out of this fix's scope. What matters here is that
+    # the HOME buttons no longer carry them -- see home10.
+    "Azioni rapide", "Apri direttamente le attività", "Analizza revisione</div>",
+    "Genera pacchetto lingua", "Copertura documentale</div>", "Verifica readiness</div>",
+    "Nessun progetto aperto", "Crea o riapri un progetto", "Azione consigliata",
+    "Nessun progetto attivo</div>", "Workspace locale", "Progetto attivo</div>",
+]
+check("home4: no home-screen text is hardcoded in Italian in app.py any more",
+      not [x for x in _WAS_HARDCODED if x in _APP_SRC],
+      [x for x in _WAS_HARDCODED if x in _APP_SRC])
+
+def _home_html(lang: str, project: Path) -> str:
+    with i18n.use_language(lang):
+        return (app._project_card(None) + app._project_card(str(project))
+                + app._sidebar_context(None) + app._sidebar_context(str(project)))
+
+
+# Its own disposable project: this suite leaves nothing behind in %TEMP%.
+with tempfile.TemporaryDirectory(prefix="ms_loc_home_") as _home_tmp:
+    _home_project = create_project(Path(_home_tmp), project_name="Localization_Home",
+                                   source_lang="it-IT")
+    _home_it = _home_html("it", _home_project)
+    _home_en = _home_html("en", _home_project)
+_IT_ON_SCREEN = ["Nessun progetto aperto", "Crea o riapri un progetto", "Pubblicazioni",
+                 "Blocchi", "Job aperti", "QA bloccati", "Azione consigliata",
+                 "Nessun progetto attivo", "Workspace locale", "Progetto attivo"]
+_EN_ON_SCREEN = ["No project open", "Create or reopen a project", "Publications", "Blocks",
+                 "Open jobs", "QA blocked", "Recommended next step", "No active project",
+                 "Local workspace", "Active project"]
+check("home5: in Italian the project card and the sidebar context read Italian",
+      all(x in _home_it for x in _IT_ON_SCREEN), [x for x in _IT_ON_SCREEN if x not in _home_it])
+check("home6: in English they read English",
+      all(x in _home_en for x in _EN_ON_SCREEN), [x for x in _EN_ON_SCREEN if x not in _home_en])
+check("home7: in English NO Italian text is left on them -- the defect itself",
+      not [x for x in _IT_ON_SCREEN if x in _home_en], [x for x in _IT_ON_SCREEN if x in _home_en])
+check("home8: and no raw key leaks into either rendering",
+      not KEY_SHAPED_HOME.search(_home_it) and not KEY_SHAPED_HOME.search(_home_en),
+      (KEY_SHAPED_HOME.findall(_home_it), KEY_SHAPED_HOME.findall(_home_en)))
+
+# Every next-step sentence, not just the one this fixture happens to hit.
+for _suffix in ("qa_blocked", "open_jobs", "no_publications", "unreviewed", "clear"):
+    _k = f"project.card.next.{_suffix}"
+    check(f"home9: next-step sentence '{_suffix}' is translated in both languages",
+          i18n.translate(_k, "it") != _k and i18n.translate(_k, "en") != _k
+          and i18n.translate(_k, "it") != i18n.translate(_k, "en"), _k)
+
+check("home10: the home components are registered, so a switch re-renders them",
+      "value=lambda: _project_card(_load_active_project())" in _APP_SRC
+      and "value=lambda: _sidebar_context(_load_active_project())" in _APP_SRC
+      and all(f'LOC.button(lambda: t("{k}")' in _APP_SRC
+              for k in ("home.choice.empty", "home.choice.legacy", "home.choice.multi"))
+      and "LOC.html(lambda: f\"<div class='ms-quick-head'>" in _APP_SRC, None)
 
 i18n.set_language(i18n.DEFAULT_LANGUAGE)
 check("end1: the suite leaves the process on the default language",

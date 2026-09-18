@@ -1110,7 +1110,13 @@ def _pos(needle: str) -> int:
 check("nav1: Compliance has an entry point in the project workspace itself, not only the sidebar -- "
       "a user who does not already know the area exists now has a reason to open it",
       'home_compliance=LOC.add(gr.Button(t("home.cta.conformity")' in _SRC
-      and "Copertura documentale</div><div class='ms-quick-desc'>" in _SRC, None)
+      # The card's title and description moved onto the IT/EN catalogue, so the
+      # Italian literal that used to be asserted here no longer exists in the
+      # source. This check pins the information architecture, not the wording:
+      # the card is still there, still described, and now in both languages.
+      and "home.card.conformity.title" in _SRC and "home.card.conformity.desc" in _SRC
+      and i18n.translate("home.card.conformity.title", "it") == "Copertura documentale"
+      and i18n.translate("home.card.conformity.title", "en") != "Copertura documentale", None)
 check("nav1b: that Home card actually navigates to the compliance tab",
       "home_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)" in _SRC, None)
 check("nav1c: the sidebar entry is unchanged -- no second navigation paradigm was introduced",

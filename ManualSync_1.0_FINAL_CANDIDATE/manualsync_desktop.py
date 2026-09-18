@@ -105,6 +105,13 @@ def packaged_resource_check() -> list[str]:
     diagnostics: list[str] = []
     icon = resource_path("manualsync.png")
     diagnostics.append(f"manualsync.png exists={icon.exists()} path={icon}")
+    # Locale catalogues. i18n.load_catalog degrades to raw keys when these
+    # are missing rather than refusing to start, so without these lines a
+    # damaged installation passes every startup check and shows
+    # "nav.conformity" where a label belongs. exists=False fails the check.
+    for lang in ("it", "en"):
+        catalog = resource_path(f"locales/{lang}.json")
+        diagnostics.append(f"locales/{lang}.json exists={catalog.exists()} path={catalog}")
     try:
         gradio_root = Path(str(importlib.resources.files("gradio")))
         diagnostics.append(f"gradio_root exists={gradio_root.exists()} path={gradio_root}")
