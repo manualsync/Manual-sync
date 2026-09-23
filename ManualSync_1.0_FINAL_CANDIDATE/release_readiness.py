@@ -8,7 +8,7 @@ import pandas as pd
 
 from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
-from workflow_management import WorkflowManager
+from workflow_management import STATUS_LABELS, WorkflowManager
 from product_version import PRODUCT_BUILD
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import collect_cross_language_issues, cross_language_issue
@@ -168,7 +168,14 @@ def assess_release_readiness(project_dir: str | Path, publication_id: str, *, ta
             overdue = 0
             if not lang_jobs.empty:
                 open_jobs = int((~lang_jobs["status_label"].astype(str).isin(["Approvato", "Annullato"])).sum())
-                qa_blocked = int((lang_jobs["qa_status"].astype(str) == "BLOCKED").sum())
+                # A CANCELLED job keeps the qa_status its last QA run left
+                # behind -- typically BLOCKED, because cancelling is the only
+                # way out of a job whose source changed after export. Counting
+                # it here made the language unreleasable for good, with no
+                # action anywhere able to clear it. Only jobs still in play
+                # block; a live QA-blocked job still blocks exactly as before.
+                live_jobs = lang_jobs[lang_jobs["status_label"].astype(str) != STATUS_LABELS["CANCELLED"]]
+                qa_blocked = int((live_jobs["qa_status"].astype(str) == "BLOCKED").sum())
                 overdue = int((lang_jobs["overdue"].astype(str) == "SI").sum())
             if open_jobs:
                 issues.append(f"{open_jobs} job di traduzione ancora aperti")

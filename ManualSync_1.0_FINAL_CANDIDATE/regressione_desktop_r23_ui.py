@@ -12,15 +12,26 @@ ck('Footer Gradio disabilitato', 'footer_links=[]' in src)
 # Localization Foundation V1: the label comes from the catalog (and the
 # section is now "Panoramica"/"Overview"), so this checks what the test
 # actually cares about -- the landing entry is the one built active.
+# Checkpoint 4: the entry's label is words only (its icon is an SVG drawn
+# by the stylesheet), and the active state is keyed on the SECTION a page
+# belongs to -- same guarantees, new literals.
 ck('Home inizialmente attiva',
-   'nav_home=LOC.button(lambda: f"⌂   {t(' in src and 'variant="primary")' in
+   'nav_home=LOC.button(lambda: f"{t(' in src and 'variant="primary"' in
    src.split('nav_home=LOC.button(')[1][:90])
-ck('Navigazione usa stato active dinamico', "gr.update(variant='primary' if item==tab_id else 'secondary')" in src)
+ck('Navigazione usa stato active dinamico', "gr.update(variant='primary' if item==section else 'secondary')" in src)
 # Milestone 3.5B added the Compliance tab/nav entry to the shipped, checkpointed
 # product (published at e2fde61) -- this expectation was stale against that
 # real, approved navigation, not the other way around. Updated to match the
 # actual current _NAV_IDS in app.py, verified by direct grep, not guessed.
-ck('Tutte le sezioni sidebar partecipano allo stato', "_NAV_IDS=['home','revision','authoring','compliance','translations','jobs','release','settings']" in src)
+# Checkpoint 3: the list above was missing 'impact' -- the Analisi impatto
+# entry existed in the sidebar but never lit up, so on that page no entry
+# was highlighted. The guarantee is the same (EVERY sidebar section takes
+# part in the active state); the expected list now actually is every one.
+# Checkpoint 4: seven entries for nine pages. The two pages without an
+# entry of their own light up the section they belong to.
+ck('Tutte le sezioni sidebar partecipano allo stato',
+   "_NAV_IDS=['home','authoring','impact','translations','compliance','release','settings']" in src
+   and "_NAV_SECTION_OF={'revision':'impact','jobs':'translations'}" in src)
 ck('Quick actions sincronizzano sidebar', "home_release.click(lambda:_navigate('release')" in src and "home_translation.click(lambda:_navigate('translations')" in src)
 ck('Stile sidebar active presente', '#ms-sidebar button.primary' in src and 'inset 3px 0 0 var(--ui-primary)' in src)
 ck('Tab strip tecnica resta nascosta', '[role="tablist"]' in src and 'display:none!important' in src)

@@ -28,6 +28,10 @@ import impact_intelligence as ii
 import impact_view as iv
 import translation_intelligence as ti
 import translation_view as tv
+import ux_components as ux
+import erylos_theme as theme
+import project_view as pv
+import shell_view as sv
 import impact_center as ic
 import impact_center_view as icv
 import export_links
@@ -54,7 +58,7 @@ from i18n import t
 _LEGACY_DOC_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo documento Word. Il file potrebbe essere danneggiato, protetto o in un formato non supportato."
 _LEGACY_IDML_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo pacchetto InDesign (.idml). Il file potrebbe essere danneggiato, incompleto o non essere un IDML valido."
 
-BRAND_NAME = "ManualSync"  # Nome provvisorio; il rebrand cambierà questo solo punto UI.
+BRAND_NAME = "ERYLOS"  # Checkpoint 4: the product name shown in the interface.
 BRAND_TAGLINE = "Technical Content Intelligence"
 DATA_HOME = Path.home() / "ManualSyncData"
 DATA_ROOT = DATA_HOME / "Projects"
@@ -358,14 +362,14 @@ else {
 }
 """
 
-CSS = """
+CSS = theme.FONT_IMPORT + """
 :root {
-  --ui-bg:#f5f7fb; --ui-surface:#ffffff; --ui-surface-2:#f9fafb;
-  --ui-ink:#101828; --ui-muted:#667085; --ui-line:#e4e7ec;
-  --ui-primary:#2563eb; --ui-primary-hover:#1d4ed8; --ui-primary-soft:#eff6ff;
-  --ui-brand:#f97316; --ui-brand-soft:#fff7ed;
-  --ui-green:#079455; --ui-green-soft:#ecfdf3; --ui-red:#d92d20; --ui-red-soft:#fef3f2;
-  --ui-amber:#dc6803; --ui-amber-soft:#fffaeb;
+  --ui-bg:#F7F8FA; --ui-surface:#ffffff; --ui-surface-2:#FBFBFC;
+  --ui-ink:#111318; --ui-muted:#6B7185; --ui-line:#E4E6EC;
+  --ui-primary:#6A48F2; --ui-primary-hover:#5634E0; --ui-primary-soft:#F0EDFE;
+  --ui-brand:#6A48F2; --ui-brand-soft:#FBFBFC;
+  --ui-green:#0F7A55; --ui-green-soft:#E9F7F1; --ui-red:#C0262D; --ui-red-soft:#FDECEC;
+  --ui-amber:#A35A00; --ui-amber-soft:#FFF4E0;
 }
 html,body{background:var(--ui-bg)!important}
 body,.gradio-container{background:var(--ui-bg)!important;color:var(--ui-ink)!important}
@@ -377,121 +381,118 @@ footer{display:none!important}
 #workspace-tabs .overflow-menu{display:none!important;visibility:hidden!important;width:0!important;height:0!important;min-width:0!important;min-height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;pointer-events:none!important}
 #ms-sidebar{background:#fff!important;border-right:1px solid var(--ui-line)!important;padding:12px 10px!important;width:210px!important;min-width:210px!important;height:100vh!important;max-height:100vh!important;overflow:hidden!important;display:flex!important;flex-direction:column!important}
 #ms-sidebar::-webkit-scrollbar,#ms-sidebar *::-webkit-scrollbar{display:none!important;width:0!important}
-.ms-brand{display:flex;align-items:center;gap:10px;padding:3px 6px 14px}
-.ms-logo{width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#f97316,#fbbf24);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;font-size:17px;box-shadow:0 6px 16px rgba(249,115,22,.18)}
-.ms-brand-title{font-size:17px;font-weight:800;line-height:1.05}.ms-brand-sub{font-size:10px;color:#98a2b3;margin-top:4px;letter-spacing:.01em}
-#ms-sidebar button{justify-content:flex-start!important;text-align:left!important;border:0!important;background:transparent!important;color:#344054!important;box-shadow:none!important;border-radius:10px!important;font-weight:650!important;padding:8px 9px!important;min-height:36px!important;font-size:12.5px!important}
-#ms-sidebar button:hover{background:#f2f4f7!important;color:#101828!important;transform:none!important}
-#ms-sidebar button.primary{background:var(--ui-primary-soft)!important;color:#175cd3!important;box-shadow:inset 3px 0 0 var(--ui-primary)!important;font-weight:800!important}
-#ms-sidebar button.secondary{background:transparent!important;color:#344054!important}
-.ms-side-section{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:#98a2b3;font-weight:800;padding:10px 8px 4px}
-.ms-side-user{margin-top:14px;border-top:1px solid var(--ui-line);padding:14px 8px 2px;display:flex;gap:10px;align-items:center}.ms-avatar{width:32px;height:32px;border-radius:50%;background:#175cd3;color:white;display:flex;align-items:center;justify-content:center;font-weight:800}.ms-user-name{font-weight:700;font-size:12px}.ms-user-role{font-size:10px;color:var(--ui-muted)}
+#ms-sidebar button{justify-content:flex-start!important;text-align:left!important;border:0!important;background:transparent!important;color:#2E3240!important;box-shadow:none!important;border-radius:10px!important;font-weight:600!important;padding:8px 9px!important;min-height:36px!important;font-size:13px!important}
+#ms-sidebar button:hover{background:#F2F3F6!important;color:#111318!important;transform:none!important}
+#ms-sidebar button.primary{background:var(--ui-primary-soft)!important;color:#5634E0!important;box-shadow:inset 3px 0 0 var(--ui-primary)!important;font-weight:600!important}
+#ms-sidebar button.secondary{background:transparent!important;color:#2E3240!important}
+.ms-side-section{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#6B7185;font-weight:600;padding:10px 8px 4px}
+.ms-side-user{margin-top:14px;border-top:1px solid var(--ui-line);padding:14px 8px 2px;display:flex;gap:10px;align-items:center}.ms-avatar{width:32px;height:32px;border-radius:50%;background:#5634E0;color:white;display:flex;align-items:center;justify-content:center;font-weight:600}.ms-user-name{font-weight:600;font-size:12px}.ms-user-role{font-size:12px;color:var(--ui-muted)}
 #workspace-tabs{padding:0 24px 28px!important;max-width:1860px!important;margin:0 auto!important;width:100%!important}
-.ms-pagehead{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 2px 11px;border-bottom:1px solid #eaecf0;margin-bottom:13px}.ms-pagehead h1{margin:0;font-size:26px;line-height:1.15;letter-spacing:-.025em}.ms-pagehead p{margin:5px 0 0;color:var(--ui-muted);font-size:13px}.ms-page-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;color:#98a2b3;font-weight:800;margin-bottom:5px}
-.ms-panel{background:#fff;border:1px solid var(--ui-line);border-radius:15px;padding:18px;box-shadow:0 1px 2px rgba(16,24,40,.03)}.ms-panel + .ms-panel{margin-top:14px}.ms-section-title{font-size:15px;font-weight:800;margin:0 0 4px}.ms-section-sub{font-size:12px;color:var(--ui-muted);margin-bottom:14px}
-.ms-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}.ms-kpi{background:#fbfcfe;border:1px solid var(--ui-line);border-radius:12px;padding:10px 12px;min-height:76px}.ms-kpi-label{font-size:10.5px;color:var(--ui-muted);font-weight:750}.ms-kpi b{display:block;font-size:22px;line-height:1.1;margin-top:5px;letter-spacing:-.03em}.ms-kpi small{color:#98a2b3;font-size:9.5px}
-.ms-project-card{background:#fff;border:1px solid var(--ui-line);border-left:4px solid var(--ui-brand);border-radius:16px;padding:16px 17px 13px;box-shadow:0 2px 10px rgba(16,24,40,.035)}.ms-project-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.ms-project-card h2{font-size:19px;margin:5px 0 2px}.ms-eyebrow{display:inline-block;background:var(--ui-brand-soft);color:#c2410c;border:1px solid #fed7aa;border-radius:999px;padding:5px 8px;font-size:9px;font-weight:850;letter-spacing:.05em}.ms-meta{font-size:12px;color:var(--ui-muted)}.ms-path{font-size:10px;color:#98a2b3;margin-top:11px;padding-top:10px;border-top:1px solid #f2f4f7;word-break:break-all}
-.ms-next{margin-top:10px;padding:11px 13px;border-radius:12px;background:var(--ui-brand-soft);border:1px solid #fed7aa;color:#9a3412;font-size:12px;display:flex;align-items:center;gap:10px}.ms-next b{font-weight:850}.ms-next-icon{width:26px;height:26px;border-radius:8px;background:#fff;border:1px solid #fed7aa;display:inline-flex;align-items:center;justify-content:center;flex:none}.ms-empty{padding:28px;text-align:center;color:var(--ui-muted)}
-.ms-stepper{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 18px}.ms-step{display:flex;align-items:center;gap:8px;color:#98a2b3;font-size:11px;font-weight:750}.ms-step:after{content:"";height:1px;background:#e4e7ec;flex:1}.ms-step:last-child:after{display:none}.ms-step-num{width:23px;height:23px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid #d0d5dd;background:#fff;font-size:10px}.ms-step.active{color:#175cd3}.ms-step.active .ms-step-num{background:var(--ui-primary-soft);border-color:#84adff;color:#175cd3}
-.ms-ok{color:#067647;font-weight:700}.ms-block{color:#b42318;font-weight:700}.ms-muted{color:var(--ui-muted)}.ms-prod{padding:10px 12px;border-radius:10px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;margin:8px 0 12px}.ms-test{padding:10px 12px;border-radius:10px;background:var(--ui-primary-soft);border:1px solid #bfdbfe;color:#1e40af;margin:8px 0 12px}
+.ms-pagehead{display:flex;justify-content:space-between;align-items:flex-end;padding:16px 2px 11px;border-bottom:1px solid #E4E6EC;margin-bottom:13px}.ms-pagehead h1{margin:0;font-size:24px;line-height:1.15;letter-spacing:-.025em}.ms-pagehead p{margin:5px 0 0;color:var(--ui-muted);font-size:13px}.ms-page-kicker{font-size:12px;text-transform:uppercase;letter-spacing:.09em;color:#6B7185;font-weight:600;margin-bottom:5px}
+.ms-panel{background:#fff;border:1px solid var(--ui-line);border-radius:15px;padding:18px;box-shadow:0 1px 2px rgba(17,19,24,.03)}.ms-panel + .ms-panel{margin-top:14px}.ms-section-title{font-size:15px;font-weight:600;margin:0 0 4px}.ms-section-sub{font-size:12px;color:var(--ui-muted);margin-bottom:14px}
+.ms-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:12px 0}.ms-kpi{background:#FBFBFC;border:1px solid var(--ui-line);border-radius:12px;padding:10px 12px;min-height:76px}.ms-kpi-label{font-size:12px;color:var(--ui-muted);font-weight:600}.ms-kpi b{display:block;font-size:24px;line-height:1.1;margin-top:5px;letter-spacing:-.03em}.ms-kpi small{color:#6B7185;font-size:12px}
+.ms-project-card{background:#fff;border:1px solid var(--ui-line);border-left:4px solid var(--ui-brand);border-radius:16px;padding:16px 17px 13px;box-shadow:0 2px 10px rgba(17,19,24,.035)}.ms-project-top{display:flex;justify-content:space-between;gap:14px;align-items:flex-start}.ms-project-card h2{font-size:18px;margin:5px 0 2px}.ms-eyebrow{display:inline-block;background:var(--ui-brand-soft);color:#5634E0;border:1px solid #E4E6EC;border-radius:999px;padding:5px 8px;font-size:12px;font-weight:600;letter-spacing:.05em}.ms-meta{font-size:12px;color:var(--ui-muted)}.ms-path{font-size:12px;color:#6B7185;margin-top:11px;padding-top:10px;border-top:1px solid #F2F3F6;word-break:break-all}
+.ms-next{margin-top:10px;padding:11px 13px;border-radius:12px;background:var(--ui-brand-soft);border:1px solid #E4E6EC;color:#111318;font-size:12px;display:flex;align-items:center;gap:10px}.ms-next b{font-weight:600}.ms-next-icon{width:26px;height:26px;border-radius:8px;background:#fff;border:1px solid #E4E6EC;display:inline-flex;align-items:center;justify-content:center;flex:none}.ms-empty{padding:28px;text-align:center;color:var(--ui-muted)}
+.ms-stepper{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 18px}.ms-step{display:flex;align-items:center;gap:8px;color:#6B7185;font-size:12px;font-weight:600}.ms-step:after{content:"";height:1px;background:#E4E6EC;flex:1}.ms-step:last-child:after{display:none}.ms-step-num{width:23px;height:23px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid #CFD3DC;background:#fff;font-size:12px}.ms-step.active{color:#5634E0}.ms-step.active .ms-step-num{background:var(--ui-primary-soft);border-color:#B7A6FA;color:#5634E0}
+.ms-ok{color:#0F7A55;font-weight:600}.ms-block{color:#C0262D;font-weight:600}.ms-muted{color:var(--ui-muted)}.ms-prod{padding:10px 12px;border-radius:10px;background:#FDECEC;border:1px solid #F5C2C4;color:#C0262D;margin:8px 0 12px}.ms-test{padding:10px 12px;border-radius:10px;background:var(--ui-primary-soft);border:1px solid #C3CFF7;color:#3558D6;margin:8px 0 12px}
 /* R23: UX brand-ready, sidebar unica, header compatto e CTA gerarchiche. */
 .ms-quick-grid{gap:12px!important}
-.ms-quick-card{background:#fff!important;border:1px solid var(--ui-line)!important;border-radius:14px!important;padding:15px!important;box-shadow:0 1px 2px rgba(16,24,40,.02)!important;min-height:170px!important}
-.ms-quick-card:hover{border-color:#b2ccff!important;box-shadow:0 5px 16px rgba(37,99,235,.08)!important}
-.ms-quick-card.brand{border-color:#fed7aa!important;background:#fffbf7!important}
-.ms-quick-icon{width:31px;height:31px;border-radius:9px;background:var(--ui-primary-soft);color:#175cd3;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:15px;margin-bottom:12px}
-.ms-quick-card.brand .ms-quick-icon{background:var(--ui-brand-soft);color:#c2410c}
-.ms-quick-title{font-size:14px;font-weight:800;color:#101828;margin-bottom:5px}
-.ms-quick-desc{font-size:11px;line-height:1.45;color:var(--ui-muted);min-height:48px}
-.ms-card-cta{margin-top:8px!important;min-height:34px!important;border-radius:9px!important;font-size:11px!important;font-weight:750!important}
+.ms-quick-card{background:#fff!important;border:1px solid var(--ui-line)!important;border-radius:14px!important;padding:15px!important;box-shadow:0 1px 2px rgba(17,19,24,.02)!important;min-height:170px!important}
+.ms-quick-card:hover{border-color:#CFD3DC!important;box-shadow:0 5px 16px rgba(106,72,242,.08)!important}
+.ms-quick-card.brand{border-color:#E4E6EC!important;background:#FFFFFF!important}
+.ms-quick-icon{width:31px;height:31px;border-radius:9px;background:var(--ui-primary-soft);color:#5634E0;display:flex;align-items:center;justify-content:center;font-weight:600;font-size:15px;margin-bottom:12px}
+.ms-quick-card.brand .ms-quick-icon{background:var(--ui-brand-soft);color:#5634E0}
+.ms-quick-title{font-size:14px;font-weight:600;color:#111318;margin-bottom:5px}
+.ms-quick-desc{font-size:12px;line-height:1.45;color:var(--ui-muted);min-height:48px}
+.ms-card-cta{margin-top:8px!important;min-height:34px!important;border-radius:9px!important;font-size:12px!important;font-weight:600!important}
 .ms-pagebar{align-items:center!important;gap:14px!important}
 .ms-pagebar .ms-pagehead{flex:1!important;margin-bottom:12px!important}
 .ms-new-project-btn{max-width:132px!important;min-width:132px!important;min-height:36px!important;margin-top:8px!important;font-size:12px!important;padding:8px 12px!important}
 .ms-create-project-panel{background:#fff!important;border:1px solid var(--ui-line)!important;border-radius:15px!important;padding:18px!important;margin-top:14px!important}
 .ms-sidebar-context{margin-top:auto;padding:9px 6px 0;border-top:1px solid var(--ui-line)}
-.ms-sidebar-context .ctx-label{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:#98a2b3;font-weight:800}
-.ms-sidebar-context .ctx-name{font-size:10.5px;font-weight:800;color:#344054;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ms-sidebar-context .ctx-sub{font-size:8.5px;color:#98a2b3;margin-top:2px}
+.ms-sidebar-context .ctx-label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#6B7185;font-weight:600}
+.ms-sidebar-context .ctx-name{font-size:12px;font-weight:600;color:#2E3240;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ms-sidebar-context .ctx-sub{font-size:12px;color:#6B7185;margin-top:2px}
 .ms-quick-head{padding:12px 2px 8px;margin-top:10px}.ms-quick-head .ms-section-sub{margin-bottom:0}.ms-settings-card{background:#fff;border:1px solid var(--ui-line);border-radius:14px;padding:16px}
-button.primary{background:var(--ui-primary)!important;border-color:var(--ui-primary)!important;border-radius:10px!important}button.primary:hover{background:var(--ui-primary-hover)!important}button.secondary{border-radius:10px!important}.gradio-container table{font-size:12px!important}.gradio-container thead th{background:#f9fafb!important;color:#475467!important;font-weight:700!important}
+button.primary{background:var(--ui-primary)!important;border-color:var(--ui-primary)!important;border-radius:10px!important}button.primary:hover{background:var(--ui-primary-hover)!important}button.secondary{border-radius:10px!important}.gradio-container table{font-size:12px!important}.gradio-container thead th{background:#FBFBFC!important;color:#555B6E!important;font-weight:600!important}
 /* Gli accordion di gestione restano secondari e non rubano spazio alla dashboard. */
-.ms-secondary-note{font-size:11px;color:#98a2b3;margin-top:12px}
+.ms-secondary-note{font-size:12px;color:#6B7185;margin-top:12px}
 @media(max-width:1100px){#ms-sidebar{width:204px!important;min-width:204px!important}.ms-kpis{grid-template-columns:repeat(2,1fr)}#workspace-tabs{padding-left:20px!important;padding-right:20px!important}}
 /* Required-field inline validation (e.g. "Il tuo nome" on legacy family confirm) --
    a plain form error, never a global gr.Error popup. */
 .ms-field-invalid textarea,.ms-field-invalid input{border-color:var(--ui-red)!important;box-shadow:0 0 0 1px var(--ui-red) inset!important}
-.ms-inline-error{color:var(--ui-red);font-size:11.5px;font-weight:650;margin:2px 2px 8px}
+.ms-inline-error{color:var(--ui-red);font-size:12px;font-weight:600;margin:2px 2px 8px}
 /* 4E.2: Publishing Preview -- read-only rendering, deliberately visually
    distinct (soft border, no editable-looking chrome) from the Studio
    editor panels right next to it. */
-.ms-pp-summary{background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.7;margin:10px 0}
-.ms-pp-warning{background:var(--ui-amber-soft);border:1px solid #fde68a;color:#93450a;border-radius:12px;padding:12px 14px;font-size:12.5px;line-height:1.7;margin:10px 0}
-.ms-pp-note-line{color:var(--ui-muted);font-size:11.5px;margin:2px 2px 10px}
+.ms-pp-summary{background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.7;margin:10px 0}
+.ms-pp-warning{background:var(--ui-amber-soft);border:1px solid #F1D3A1;color:#A35A00;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.7;margin:10px 0}
+.ms-pp-note-line{color:var(--ui-muted);font-size:12px;margin:2px 2px 10px}
 .ms-pp-topic{border:1px solid var(--ui-line);border-radius:14px;padding:14px 16px;margin:12px 0;background:#fff}
-.ms-pp-topic h2{font-size:16px;margin:0 0 8px;font-weight:800}
+.ms-pp-topic h2{font-size:18px;margin:0 0 8px;font-weight:600}
 .ms-pp-topic.ms-pp-excluded{background:var(--ui-surface-2);opacity:.85}
-.ms-pp-block{border-top:1px solid #f2f4f7;padding:10px 2px}
+.ms-pp-block{border-top:1px solid #F2F3F6;padding:10px 2px}
 .ms-pp-block:first-of-type{border-top:0}
-.ms-pp-block-head{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#98a2b3;font-weight:750;margin-bottom:4px}
+.ms-pp-block-head{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#6B7185;font-weight:600;margin-bottom:4px}
 .ms-pp-block p{margin:2px 0;font-size:13px;line-height:1.6}
-.ms-pp-badge{display:inline-block;background:var(--ui-primary-soft);color:#175cd3;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:700;margin-left:6px}
-.ms-pp-badge-warn{display:inline-block;background:var(--ui-amber-soft);color:#93450a;border-radius:999px;padding:2px 8px;font-size:10px;font-weight:700;margin-left:6px}
-.ms-pp-status{display:inline-block;color:#98a2b3;font-size:10px;font-weight:700;margin-left:6px}
-.ms-pp-reason{color:#93450a;font-size:12px;background:var(--ui-amber-soft);border-radius:8px;padding:6px 9px;margin-top:4px}
+.ms-pp-badge{display:inline-block;background:var(--ui-primary-soft);color:#5634E0;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:600;margin-left:6px}
+.ms-pp-badge-warn{display:inline-block;background:var(--ui-amber-soft);color:#A35A00;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:600;margin-left:6px}
+.ms-pp-status{display:inline-block;color:#6B7185;font-size:12px;font-weight:600;margin-left:6px}
+.ms-pp-reason{color:#A35A00;font-size:12px;background:var(--ui-amber-soft);border-radius:8px;padding:6px 9px;margin-top:4px}
 .ms-pp-note{color:var(--ui-muted);font-size:12px;font-style:italic}
-.ms-pp-table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px}
+.ms-pp-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
 .ms-pp-table th,.ms-pp-table td{border:1px solid var(--ui-line);padding:6px 9px;text-align:left}
-.ms-pp-table th{background:var(--ui-surface-2);font-weight:750}
-.ms-pp-table-title{font-weight:750;font-size:13px;margin-top:4px}
-.ms-pp-table-caption{color:var(--ui-muted);font-size:11.5px;margin-bottom:2px}
+.ms-pp-table th{background:var(--ui-surface-2);font-weight:600}
+.ms-pp-table-title{font-weight:600;font-size:13px;margin-top:4px}
+.ms-pp-table-caption{color:var(--ui-muted);font-size:12px;margin-bottom:2px}
 .ms-pp-figure{max-width:100%;border-radius:8px;margin-top:6px;display:block}
-.ms-pp-figure-caption{color:var(--ui-muted);font-size:11.5px;margin-top:4px}
+.ms-pp-figure-caption{color:var(--ui-muted);font-size:12px;margin-top:4px}
 /* 4F.1 export result card: the deliverable's own small product surface.
    Two real actions (open / download) instead of a filename card, so the
    user never has to work out where to click. Failure uses the same card
    shape in an error tone -- always contained, never a global toast. */
-.ms-export-card{background:var(--ui-green-soft);border:1px solid #a6f4c5;border-radius:12px;
+.ms-export-card{background:var(--ui-green-soft);border:1px solid #B3E2CD;border-radius:12px;
   padding:14px 16px;margin:10px 0 4px}
-.ms-export-card-err{background:var(--ui-red-soft);border-color:#fecaca}
+.ms-export-card-err{background:var(--ui-red-soft);border-color:#F5C2C4}
 /* Publishing preflight: a refusal has to be readable, so each finding and
    its "dove / cosa fare" lines keep their own shape instead of collapsing
    into one paragraph. */
 .ms-export-pf{margin-top:8px;font-size:12px;line-height:1.55}
 .ms-export-pf-item{font-weight:600;margin-top:7px}
 .ms-export-pf-detail{padding-left:14px;color:var(--ui-muted)}
-.ms-export-headline{font-size:14px;font-weight:800;color:#067647}
-.ms-export-card-err .ms-export-headline{color:#b42318}
-.ms-export-subtitle{color:#475467;font-size:12.5px;margin-top:3px}
-.ms-export-warn{background:var(--ui-amber-soft);border:1px solid #fde68a;color:#93450a;border-radius:8px;
-  padding:6px 9px;font-size:11.5px;margin-top:8px}
+.ms-export-headline{font-size:14px;font-weight:600;color:#0F7A55}
+.ms-export-card-err .ms-export-headline{color:#C0262D}
+.ms-export-subtitle{color:#555B6E;font-size:13px;margin-top:3px}
+.ms-export-warn{background:var(--ui-amber-soft);border:1px solid #F1D3A1;color:#A35A00;border-radius:8px;
+  padding:6px 9px;font-size:12px;margin-top:8px}
 .ms-export-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:12px}
-.ms-export-btn{display:inline-block;border-radius:9px;padding:8px 16px;font-size:12.5px;font-weight:750;
+.ms-export-btn{display:inline-block;border-radius:9px;padding:8px 16px;font-size:13px;font-weight:600;
   text-decoration:none!important;border:1px solid transparent;cursor:pointer}
 .ms-export-btn-primary{background:var(--ui-primary);color:#fff!important;border-color:var(--ui-primary)}
 .ms-export-btn-primary:hover{background:var(--ui-primary-hover)}
-.ms-export-btn-secondary{background:#fff;color:#344054!important;border-color:#d0d5dd}
-.ms-export-btn-secondary:hover{background:#f9fafb}
-.ms-export-tech{margin-top:11px;font-size:11px;color:var(--ui-muted)}
-.ms-export-tech summary{cursor:pointer;color:#98a2b3}
+.ms-export-btn-secondary{background:#fff;color:#2E3240!important;border-color:#CFD3DC}
+.ms-export-btn-secondary:hover{background:#FBFBFC}
+.ms-export-tech{margin-top:11px;font-size:12px;color:var(--ui-muted)}
+.ms-export-tech summary{cursor:pointer;color:#6B7185}
 .ms-export-tech div{margin-top:5px;word-break:break-all;font-family:ui-monospace,Consolas,monospace}
 /* 4F.2 compliance starter pack: source-first presentation. The pack's
    provenance (fonte, versione, revisione, data di applicazione) is shown
    BEFORE the import button, and the "not automatic certification" notice
    is never optional chrome. */
 .ms-cp-pack{background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:12px;padding:14px 16px;margin:8px 0}
-.ms-cp-pack-title{font-size:14px;font-weight:800;color:#101828}
+.ms-cp-pack-title{font-size:14px;font-weight:600;color:#111318}
 .ms-cp-pack-sub{color:var(--ui-muted);font-size:12px;margin-top:4px}
 .ms-cp-pack-meta{width:100%;border-collapse:collapse;margin:10px 0 4px;font-size:12px}
 .ms-cp-pack-meta td{padding:4px 6px;border-top:1px solid var(--ui-line);vertical-align:top}
 .ms-cp-pack-meta td:first-child{color:var(--ui-muted);width:190px}
 .ms-cp-pack ul{margin:4px 0 0 18px;font-size:12px}
-.ms-cp-notice{background:var(--ui-primary-soft);border:1px solid #bfdbfe;color:#1e40af;border-radius:9px;
-  padding:8px 11px;font-size:11.5px;line-height:1.5;margin-top:10px}
-.ms-cp-notice-warn{background:var(--ui-amber-soft);border-color:#fde68a;color:#93450a}
+.ms-cp-notice{background:var(--ui-primary-soft);border:1px solid #C3CFF7;color:#3558D6;border-radius:9px;
+  padding:8px 11px;font-size:12px;line-height:1.5;margin-top:10px}
+.ms-cp-notice-warn{background:var(--ui-amber-soft);border-color:#F1D3A1;color:#A35A00}
 .ms-cp-packbar{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start;background:var(--ui-surface-2);
   border:1px solid var(--ui-line);border-radius:10px;padding:10px 14px;font-size:12px;margin-top:6px}
 .ms-cp-packbar>div{min-width:150px}
-.ms-cp-packbar-label{color:var(--ui-muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;
+.ms-cp-packbar-label{color:var(--ui-muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;
   margin-bottom:2px}
 /* 4F.2 polish: the two compliance tables read as product tables, not as
    debug dumps. Gradio's dataframe defaults to a tabular/monospace-ish
@@ -506,7 +507,7 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
      resolving against the visible width, so a long list does not gain a
      phantom horizontal scrollbar the moment it starts scrolling. */
   scrollbar-gutter:stable!important}
-.ms-cp-grid td,.ms-cp-grid th{font-family:inherit!important;font-size:12.5px!important;
+.ms-cp-grid td,.ms-cp-grid th{font-family:inherit!important;font-size:13px!important;
   line-height:1.45!important;white-space:normal!important;word-break:normal;overflow-wrap:anywhere;
   vertical-align:top;padding:7px 10px!important}
 .ms-cp-grid th{font-weight:600;color:var(--ui-muted);text-transform:none;letter-spacing:0}
@@ -530,7 +531,7 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    container that itself declares the monospace data font, so "inherit"
    resolves back to monospace. Name Gradio's own body-font variable. */
 .ms-cp-grid .body-cell,.ms-cp-grid .body-cell span,.ms-cp-grid .cell-wrap{
-  font-family:var(--font)!important;font-size:12.5px!important;line-height:1.45!important;
+  font-family:var(--font)!important;font-size:13px!important;line-height:1.45!important;
   font-variant-numeric:normal!important;white-space:normal!important;overflow-wrap:anywhere}
 .ms-cp-grid .body-cell{vertical-align:top;padding:7px 10px!important}
 /* A clickable row has to look clickable, or nobody clicks it. */
@@ -549,8 +550,8 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-ctxbar{align-items:flex-end!important;gap:18px!important;background:var(--ui-surface);
   border:1px solid var(--ui-line);border-radius:12px;padding:10px 16px;margin:0 0 10px}
 .ms-ctx-project{min-width:220px;font-size:13px;line-height:1.35}
-.ms-ctx-label{color:var(--ui-muted);font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
-.ms-ctx-sub{color:var(--ui-muted);font-size:11.5px}
+.ms-ctx-label{color:var(--ui-muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+.ms-ctx-sub{color:var(--ui-muted);font-size:12px}
 /* Status filter reads as a segmented control, not a form question. */
 .ms-cp-filter .wrap{gap:4px!important}
 .ms-cp-filter label{font-size:12px!important;padding:4px 10px!important}
@@ -561,7 +562,7 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    screen at 1920x1080 instead of at y=1093. */
 .ms-cp-topbar{align-items:flex-end!important;gap:14px!important}
 .ms-pagehead-tight{margin:0!important;padding:0!important}
-.ms-pagehead-tight h1{margin:0!important;font-size:20px!important}
+.ms-pagehead-tight h1{margin:0!important;font-size:24px!important}
 .ms-cp-statusbar{display:flex;flex-wrap:wrap;gap:20px;align-items:baseline;
   background:var(--ui-surface-2);border:1px solid var(--ui-line);border-radius:10px;
   padding:8px 14px;font-size:12px}
@@ -580,10 +581,10 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .ms-cp-empty{display:flex;gap:12px;align-items:center;color:var(--ui-muted);
   font-size:13px;padding:26px 18px;border:1px dashed var(--ui-line);border-radius:10px;
   background:var(--ui-surface-2)}
-.ms-cp-empty-icon{font-size:20px;opacity:.55}
+.ms-cp-empty-icon{display:flex;color:var(--ui-muted)}
 /* Language switch: a setting, not a workflow step -- small, quiet, last. */
 .ms-lang{margin:6px 10px 2px!important}
-.ms-lang label{font-size:11.5px!important;padding:3px 8px!important}
+.ms-lang label{font-size:12px!important;padding:3px 8px!important}
 .ms-lang .wrap{gap:4px!important}
 .ms-cp-listbar{align-items:center!important;gap:10px!important;margin-bottom:4px}
 /* Sub-tabs inside Conformità need an explicit rule for TWO reasons, both
@@ -605,7 +606,7 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 #cp-subtabs button[role="tab"]{display:inline-block!important;height:auto!important;
   max-height:none!important;opacity:1!important;pointer-events:auto!important;
   padding:7px 14px!important;font-size:13px!important;font-weight:600}
-.ms-cp-table{width:100%;border-collapse:collapse;margin:10px 0 2px;font-size:11.5px;display:block;
+.ms-cp-table{width:100%;border-collapse:collapse;margin:10px 0 2px;font-size:12px;display:block;
   max-height:320px;overflow:auto}
 .ms-cp-table th{text-align:left;color:var(--ui-muted);font-weight:600;padding:4px 6px;
   border-bottom:1px solid var(--ui-line);position:sticky;top:0;background:var(--ui-surface)}
@@ -637,9 +638,9 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    notice the version number changing elsewhere on the page) -- styled
    per-outcome so a failure reads as clearly different from a success,
    never a generic/anonymous message box. */
-.ms-rich-save-status{border-radius:10px;padding:8px 12px;margin:2px 0 10px;font-size:12.5px;font-weight:650;line-height:1.5}
-.ms-rich-save-ok{background:var(--ui-green-soft);border:1px solid #a6f4c5;color:#067647}
-.ms-rich-save-err{background:var(--ui-red-soft);border:1px solid #fecaca;color:#b42318}
+.ms-rich-save-status{border-radius:10px;padding:8px 12px;margin:2px 0 10px;font-size:13px;font-weight:600;line-height:1.5}
+.ms-rich-save-ok{background:var(--ui-green-soft);border:1px solid #B3E2CD;color:#0F7A55}
+.ms-rich-save-err{background:var(--ui-red-soft);border:1px solid #F5C2C4;color:#C0262D}
 .ms-rich-save-info{background:var(--ui-surface-2);border:1px solid var(--ui-line);color:var(--ui-muted)}
 
 /* ================================================================
@@ -670,7 +671,7 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 .tabitem:has(.ms-authoring-workspace)>.ms-pagehead,
 .tabitem:has(.ms-authoring-workspace) .ms-pagehead{
   padding-top:2px!important;padding-bottom:2px!important;margin-bottom:0!important}
-.tabitem:has(.ms-authoring-workspace) .ms-pagehead h1{font-size:21px!important}
+.tabitem:has(.ms-authoring-workspace) .ms-pagehead h1{font-size:24px!important}
 /* Gradio wraps every gr.HTML in a .html-container with 10px of vertical
    padding. On the page head that is 20px spent directly above the
    workspace; zero it for that one block only. */
@@ -714,18 +715,18 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
    without competing with the editor, which is the constraint the whole
    three-zone layout exists to protect. */
 .ms-impact-compact{display:flex;flex-direction:column;gap:3px;margin:2px 0 8px}
-.ms-impact-line{font-size:12.5px;line-height:1.45;color:var(--ui-ink);
+.ms-impact-line{font-size:13px;line-height:1.45;color:var(--ui-ink);
   padding:3px 8px;border-radius:7px;background:var(--ui-surface-2);
   border:1px solid var(--ui-line)}
 /* Only things a human may have to act on are marked. "3 publications" is
    context; "2 translations to check" is a decision waiting to happen. */
-.ms-impact-attention{background:var(--ui-amber-soft,#fffaeb);border-color:#fde68a;
-  color:#92400e;font-weight:650}
-.ms-impact-empty{font-size:12.5px;color:var(--ui-muted);padding:3px 2px}
+.ms-impact-attention{background:var(--ui-amber-soft,#FFF4E0);border-color:#F1D3A1;
+  color:#A35A00;font-weight:600}
+.ms-impact-empty{font-size:13px;color:var(--ui-muted);padding:3px 2px}
 .ms-impact-details{font-size:12px;color:var(--ui-ink)}
 .ms-impact-group{margin-bottom:10px}
-.ms-impact-group-title{font-weight:750;font-size:11px;text-transform:uppercase;
-  letter-spacing:.05em;color:#98a2b3;margin-bottom:3px}
+.ms-impact-group-title{font-weight:600;font-size:12px;text-transform:uppercase;
+  letter-spacing:.05em;color:#6B7185;margin-bottom:3px}
 .ms-impact-details ul{margin:0;padding-left:16px}
 .ms-impact-details li{margin:2px 0;line-height:1.45}
 .ms-impact-limits{border-top:1px solid var(--ui-line);padding-top:8px;margin-top:4px}
@@ -734,83 +735,83 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
 /* ERYLOS Impact Center -- built to be read across a meeting room, not
    squinted at. Three sections, one verdict, technical vocabulary confined
    to the advanced disclosure. */
-.ms-ic-readonly{font-size:11.5px;color:var(--ui-muted);margin:-4px 0 10px}
+.ms-ic-readonly{font-size:12px;color:var(--ui-muted);margin:-4px 0 10px}
 .ms-ic-empty{font-size:13px;color:var(--ui-muted);padding:18px 2px}
 .ms-ic-header{background:var(--ui-surface-2);border:1px solid var(--ui-line);
   border-radius:12px;padding:14px 16px;margin-bottom:14px}
-.ms-ic-kicker{font-size:10px;text-transform:uppercase;letter-spacing:.09em;
-  color:#98a2b3;font-weight:800}
-.ms-ic-object{font-size:19px;font-weight:800;margin:3px 0 5px;line-height:1.25}
+.ms-ic-kicker{font-size:12px;text-transform:uppercase;letter-spacing:.09em;
+  color:#6B7185;font-weight:600}
+.ms-ic-object{font-size:18px;font-weight:600;margin:3px 0 5px;line-height:1.25}
 .ms-ic-meta{display:flex;gap:12px;align-items:center;font-size:12px;color:var(--ui-muted)}
 .ms-ic-badge{background:var(--ui-primary);color:#fff;border-radius:999px;
-  padding:2px 10px;font-weight:750;font-size:11.5px}
+  padding:2px 10px;font-weight:600;font-size:12px}
 .ms-ic-section{background:#fff;border:1px solid var(--ui-line);border-radius:12px;
   padding:14px 16px;margin-bottom:12px}
-.ms-ic-warn{border-color:#fde68a;background:var(--ui-amber-soft,#fffaeb)}
-.ms-ic-allclear{border-color:#a6f4c5;background:var(--ui-green-soft,#f0fdf4)}
-.ms-ic-h{font-size:14.5px;font-weight:800;margin:0 0 10px;display:flex;
+.ms-ic-warn{border-color:#F1D3A1;background:var(--ui-amber-soft,#FFF4E0)}
+.ms-ic-allclear{border-color:#B3E2CD;background:var(--ui-green-soft,#E9F7F1)}
+.ms-ic-h{font-size:15px;font-weight:600;margin:0 0 10px;display:flex;
   align-items:center;gap:8px}
 .ms-ic-cols{display:flex;flex-wrap:wrap;gap:18px}
 .ms-ic-cols>.ms-ic-group{flex:1 1 210px;min-width:190px}
 .ms-ic-group{margin-bottom:10px}
-.ms-ic-group-title{font-size:11px;text-transform:uppercase;letter-spacing:.05em;
-  font-weight:800;color:#98a2b3;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.ms-ic-group-title{font-size:12px;text-transform:uppercase;letter-spacing:.05em;
+  font-weight:600;color:#6B7185;margin-bottom:4px;display:flex;align-items:center;gap:6px}
 .ms-ic-count{background:var(--ui-surface-2);border:1px solid var(--ui-line);
-  border-radius:999px;padding:0 7px;font-size:10.5px;color:var(--ui-ink)}
-.ms-ic-count-warn{background:#fde68a;border-color:#fcd34d;color:#92400e}
-.ms-ic-list{margin:0;padding-left:16px;font-size:12.5px}
+  border-radius:999px;padding:0 7px;font-size:12px;color:var(--ui-ink)}
+.ms-ic-count-warn{background:#F1D3A1;border-color:#F1D3A1;color:#A35A00}
+.ms-ic-list{margin:0;padding-left:16px;font-size:13px}
 .ms-ic-list li{margin:2px 0;line-height:1.45}
-.ms-ic-detail{display:block;font-size:11px;color:var(--ui-muted);font-style:italic}
+.ms-ic-detail{display:block;font-size:12px;color:var(--ui-muted);font-style:italic}
 .ms-ic-none{font-size:12px;color:var(--ui-muted);font-style:italic}
 .ms-ic-lang{padding:5px 0;border-bottom:1px solid var(--ui-line)}
 .ms-ic-lang:last-child{border-bottom:0}
-.ms-ic-lang-head{font-size:13px;font-weight:700}
-.ms-ic-stale .ms-ic-lang-head{color:#92400e}
-.ms-ic-fresh .ms-ic-lang-head{color:#067647}
+.ms-ic-lang-head{font-size:13px;font-weight:600}
+.ms-ic-stale .ms-ic-lang-head{color:#A35A00}
+.ms-ic-fresh .ms-ic-lang-head{color:#0F7A55}
 .ms-ic-missing .ms-ic-lang-head{color:var(--ui-muted)}
-.ms-ic-why{font-size:11.5px;color:var(--ui-muted);line-height:1.45}
-.ms-ic-verdict{font-size:15px;font-weight:800;padding:7px 12px;border-radius:9px;
+.ms-ic-why{font-size:12px;color:var(--ui-muted);line-height:1.45}
+.ms-ic-verdict{font-size:15px;font-weight:600;padding:7px 12px;border-radius:9px;
   display:inline-block;margin:2px 0 7px}
-.ms-ic-verdict-ok{background:var(--ui-green-soft,#f0fdf4);color:#067647;border:1px solid #a6f4c5}
-.ms-ic-verdict-no{background:var(--ui-red-soft,#fef3f2);color:#b42318;border:1px solid #fecaca}
-.ms-ic-scope{font-size:11px;color:var(--ui-muted);font-style:italic;margin-top:5px}
-.ms-ic-adv{font-size:11.5px}
+.ms-ic-verdict-ok{background:var(--ui-green-soft,#E9F7F1);color:#0F7A55;border:1px solid #B3E2CD}
+.ms-ic-verdict-no{background:var(--ui-red-soft,#FDECEC);color:#C0262D;border:1px solid #F5C2C4}
+.ms-ic-scope{font-size:12px;color:var(--ui-muted);font-style:italic;margin-top:5px}
+.ms-ic-adv{font-size:12px}
 .ms-ic-adv-table{border-collapse:collapse;margin-bottom:10px}
 .ms-ic-adv-table th{text-align:left;padding:2px 14px 2px 0;color:var(--ui-muted);font-weight:600}
-.ms-ic-adv-list{margin:0 0 10px;padding-left:16px;font-family:ui-monospace,monospace;font-size:10.5px}
+.ms-ic-adv-list{margin:0 0 10px;padding-left:16px;font-family:ui-monospace,monospace;font-size:12px}
 .ms-ic-adv-list li{margin:1px 0;word-break:break-word}
 
 /* UX Gate 2B.2 -- Affidabilita traduzioni. One block per language,
    status stated in words as well as colour: colour alone is not an
    accessible signal. */
 .ms-tr-panel{display:flex;flex-direction:column;gap:6px;margin:2px 0 8px}
-.ms-tr-version{font-size:11px;color:var(--ui-muted);margin-bottom:2px}
+.ms-tr-version{font-size:12px;color:var(--ui-muted);margin-bottom:2px}
 .ms-tr-lang{padding:6px 9px;border-radius:8px;border:1px solid var(--ui-line);
   background:var(--ui-surface-2)}
-.ms-tr-lang-name{font-size:12.5px;font-weight:700;margin-bottom:1px}
-.ms-tr-lang-status{font-size:12.5px;font-weight:650;margin-bottom:2px}
-.ms-tr-lang-why{font-size:11.5px;color:var(--ui-muted);line-height:1.4}
-.ms-tr-stale{background:var(--ui-red-soft,#fef3f2);border-color:#fecaca}
-.ms-tr-stale .ms-tr-lang-status{color:#b42318}
-.ms-tr-fresh .ms-tr-lang-status{color:#067647}
+.ms-tr-lang-name{font-size:13px;font-weight:600;margin-bottom:1px}
+.ms-tr-lang-status{font-size:13px;font-weight:600;margin-bottom:2px}
+.ms-tr-lang-why{font-size:12px;color:var(--ui-muted);line-height:1.4}
+.ms-tr-stale{background:var(--ui-red-soft,#FDECEC);border-color:#F5C2C4}
+.ms-tr-stale .ms-tr-lang-status{color:#C0262D}
+.ms-tr-fresh .ms-tr-lang-status{color:#0F7A55}
 .ms-tr-missing .ms-tr-lang-status{color:var(--ui-muted)}
-.ms-tr-empty,.ms-tr-note{font-size:11.5px;color:var(--ui-muted);padding:3px 2px;line-height:1.45}
+.ms-tr-empty,.ms-tr-note{font-size:12px;color:var(--ui-muted);padding:3px 2px;line-height:1.45}
 .ms-tr-impact{font-size:12px;margin-top:6px}
 .ms-tr-impact-lang{border-top:1px solid var(--ui-line);padding-top:7px;margin-top:7px}
 .ms-tr-figures,.ms-tr-why{margin:3px 0 0;padding-left:16px}
 .ms-tr-figures li,.ms-tr-why li{margin:1px 0;line-height:1.4}
-.ms-tr-why-title{font-weight:750;font-size:10.5px;text-transform:uppercase;
-  letter-spacing:.05em;color:#98a2b3;margin-top:6px}
-.ms-tr-seg{display:block;font-size:10.5px;color:var(--ui-muted);font-style:italic}
+.ms-tr-why-title{font-weight:600;font-size:12px;text-transform:uppercase;
+  letter-spacing:.05em;color:#6B7185;margin-top:6px}
+.ms-tr-seg{display:block;font-size:12px;color:var(--ui-muted);font-style:italic}
 /* the stepper now says where each step lives */
-.ms-step-where{display:block;font-size:10px;font-weight:500;color:var(--ui-muted);
+.ms-step-where{display:block;font-size:12px;font-weight:500;color:var(--ui-muted);
   text-transform:none;letter-spacing:0;margin-top:1px}
 
 /* Quiet scrollbars in the side panes -- they are navigation, not
    content, and a heavy native bar reads as a second page. */
 .ms-pane-left::-webkit-scrollbar,.ms-pane-right::-webkit-scrollbar{width:8px}
 .ms-pane-left::-webkit-scrollbar-thumb,.ms-pane-right::-webkit-scrollbar-thumb{
-  background:#e4e7ec;border-radius:8px}
+  background:#E4E6EC;border-radius:8px}
 /* The structure list is the primary navigation: give it room and make
    each row read as a target rather than a form option. */
 .ms-pane-left .wrap[data-testid="radio-group"]{gap:1px!important}
@@ -820,7 +821,48 @@ button.primary{background:var(--ui-primary)!important;border-color:var(--ui-prim
      rather than squeeze the editor under its usable width. */
   .ms-pane-left,.ms-pane-right{position:static;max-height:none;overflow:visible}
 }
-"""
+/* UX Phase 0: the one notice and status badge every screen uses
+   (ux_components.py). Meaning is carried by an icon and a word, not by
+   colour alone; every text colour below is >= 4.5:1 on its background. */
+.ms-ux-notice{display:flex;gap:12px;align-items:flex-start;margin:12px 0;padding:14px 16px;
+  border:1px solid;border-left-width:4px;border-radius:10px;font-size:14px;line-height:1.5;color:#2E3240}
+.ms-ux-notice-icon{flex:0 0 20px;display:flex;margin-top:1px}
+.ms-ux-icon{width:20px;height:20px;display:block;flex:0 0 auto}
+.ms-ux-notice-body{flex:1;min-width:0}
+.ms-ux-notice-status{font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:2px}
+.ms-ux-notice-title{font-size:15px;font-weight:600;line-height:1.35;color:#111318}
+.ms-ux-notice-text{margin:6px 0 0!important;color:#2E3240}
+.ms-ux-notice-list{margin:8px 0 0!important;padding-left:22px!important;color:#2E3240;list-style-position:outside!important}
+ul.ms-ux-notice-list{list-style-type:disc!important}
+ol.ms-ux-notice-list{list-style-type:decimal!important}
+.ms-ux-notice-list li{margin:6px 0!important}
+.ms-ux-item-head{display:block;font-weight:600;color:#111318}
+.ms-ux-item-todo{display:block;color:#2E3240}
+.ms-ux-notice-action{margin:10px 0 0!important;color:#111318}
+.ms-ux-details{margin-top:10px;font-size:13px}
+.ms-ux-details summary{cursor:pointer;font-weight:600;color:#555B6E}
+.ms-ux-details pre{margin:6px 0 0;padding:10px 12px;max-height:260px;overflow:auto;white-space:pre-wrap;word-break:break-word;
+  background:#fff;border:1px solid #E4E6EC;border-radius:8px;font-size:12px;color:#2E3240}
+.ms-ux-badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px 2px 8px;border:1px solid;border-radius:999px;
+  font-size:12px;font-weight:600;line-height:1.6;white-space:nowrap}
+.ms-ux-badge .ms-ux-icon{width:14px;height:14px}
+.ms-ux-blocked,.ms-ux-error{background:#FDECEC;border-color:#F5C2C4;border-left-color:#C0262D}
+.ms-ux-warning{background:#FFF4E0;border-color:#F1D3A1;border-left-color:#A35A00}
+.ms-ux-success{background:#E9F7F1;border-color:#B3E2CD;border-left-color:#0F7A55}
+.ms-ux-info{background:#EDF1FE;border-color:#C3CFF7;border-left-color:#3558D6}
+.ms-ux-blocked .ms-ux-notice-icon,.ms-ux-blocked .ms-ux-notice-status,.ms-ux-badge.ms-ux-blocked,
+.ms-ux-error .ms-ux-notice-icon,.ms-ux-error .ms-ux-notice-status,.ms-ux-badge.ms-ux-error{color:#C0262D}
+.ms-ux-warning .ms-ux-notice-icon,.ms-ux-warning .ms-ux-notice-status,.ms-ux-badge.ms-ux-warning{color:#A35A00}
+.ms-ux-success .ms-ux-notice-icon,.ms-ux-success .ms-ux-notice-status,.ms-ux-badge.ms-ux-success{color:#0F7A55}
+.ms-ux-info .ms-ux-notice-icon,.ms-ux-info .ms-ux-notice-status,.ms-ux-badge.ms-ux-info{color:#3558D6}
+.ms-ux-facts{display:grid;grid-template-columns:minmax(150px,max-content) 1fr;gap:8px 20px;margin:12px 0 4px;font-size:14px;line-height:1.45}
+.ms-ux-facts dt{color:#555B6E;font-weight:600}
+.ms-ux-facts dd{margin:0;color:#111318}
+.ms-ux-facts-note{display:block;font-size:13px;color:#6B7185}
+/* Checkpoint 3: header controls (structure only -- visual design is Checkpoint 4). */
+.ms-ctxbar .ms-lang{margin:0!important}
+#ms-shell-persist{display:none!important}
+""" + theme.FOUNDATION_CSS
 
 def _ccms_db(project_dir: str | Path) -> Path:
     base=Path(project_dir)
@@ -860,7 +902,7 @@ def _project_card(project_dir: str | None) -> str:
         next_action=t("project.card.next.unreviewed")
     else:
         next_action=t("project.card.next.clear")
-    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>{t('context.active_project')}</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{_project_meta_line(h)}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.publications')}</div><b>{h['publications']}</b><small>{t('project.card.kpi.publications_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.blocks')}</div><b>{h['blocks']}</b><small>{t('project.card.kpi.blocks_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.open_jobs')}</div><b>{open_jobs}</b><small>{t('project.card.kpi.open_jobs_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.qa_blocked')}</div><b>{h['qa_blocked']}</b><small>{t('project.card.kpi.qa_blocked_sub')}</small></div></div><div class='ms-next'><span class='ms-next-icon'>→</span><div><b>{t('project.card.next.title')}</b><br>{next_action}</div></div></div>"""
+    return f"""<div class='ms-project-card'><div class='ms-project-top'><div><span class='ms-eyebrow'>{t('context.active_project')}</span><h2>{h.get('project_name',Path(project_dir).name)}</h2><div class='ms-meta'>{_project_meta_line(h)}</div></div></div><div class='ms-kpis'><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.publications')}</div><b>{h['publications']}</b><small>{t('project.card.kpi.publications_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.blocks')}</div><b>{h['blocks']}</b><small>{t('project.card.kpi.blocks_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.open_jobs')}</div><b>{open_jobs}</b><small>{t('project.card.kpi.open_jobs_sub')}</small></div><div class='ms-kpi'><div class='ms-kpi-label'>{t('project.card.kpi.qa_blocked')}</div><b>{h['qa_blocked']}</b><small>{t('project.card.kpi.qa_blocked_sub')}</small></div></div><div class='ms-next'><span class='ms-next-icon'>{theme.icon_svg('arrow', 16)}</span><div><b>{t('project.card.next.title')}</b><br>{next_action}</div></div></div>"""
 
 def _sidebar_context(project_dir: str | None) -> str:
     if not project_dir:
@@ -991,26 +1033,6 @@ def _project_meta_line(h: dict) -> str:
     return " · ".join(b for b in bits if b)
 
 
-def _workspace_context_html(project_dir: str | None) -> str:
-    """The project half of the persistent context bar.
-
-    Human name only. The filesystem path is deliberately NOT here: it was
-    printed in full on Home as an absolute filesystem path, which is the
-    same class of internal detail the export cards were cleaned of in 4F.1."""
-    if not project_dir:
-        return (f"<div class='ms-ctx-project'><div class='ms-ctx-label'>{t('context.project')}</div>"
-                f"<b>{t('context.no_project')}</b></div>")
-    try:
-        h = project_health(project_dir)
-        name = h.get("project_name") or Path(project_dir).name
-        client = h.get("client") or ""
-    except Exception:
-        name, client = Path(project_dir).name, ""
-    sub_line = f"<div class='ms-ctx-sub'>{html.escape(str(client))}</div>" if client else ""
-    return (f"<div class='ms-ctx-project'><div class='ms-ctx-label'>{t('context.project')}</div>"
-            f"<b>{html.escape(str(name))}</b>{sub_line}</div>")
-
-
 def _existing_project_by_name(project_name: str):
     """Return an existing ManualSync project with the same logical name.
 
@@ -1043,13 +1065,13 @@ def create_project_ui(name, client, product, manual_code, revision, source_lang,
         if existing is not None:
             active=_set_active_project(existing)
             return active, _project_card(active), _sidebar_context(active), f"ℹ️ Il progetto **{name.strip()}** esiste già ed è stato aperto. Nessun duplicato è stato creato.", gr.update(visible=False)
-        raise gr.Error("Esiste già una cartella con questo nome ma non è un progetto ManualSync valido. Usa un nome diverso o verifica la cartella esistente.")
+        raise gr.Error("Esiste già una cartella con questo nome ma non è un progetto ERYLOS valido. Usa un nome diverso o verifica la cartella esistente.")
     except Exception as exc:
         _app_log("Project creation failed", exc)
         raise gr.Error("Impossibile creare il progetto. I dettagli tecnici sono stati registrati nel log di assistenza.")
 
 def restore_project_ui(archive):
-    if not archive: raise gr.Error("Carica un archivio progetto ManualSync.")
+    if not archive: raise gr.Error("Carica un archivio progetto ERYLOS.")
     try:
         target=_unique_restore_target(archive)
         restored=WorkflowManager.restore_project_archive(archive, target)
@@ -1135,6 +1157,28 @@ def _friendly_work_packages(frame: pd.DataFrame) -> pd.DataFrame:
     })
 
 
+# Checkpoint 4: table VALUES in words. The engine's codes (STATUS_CHANGED,
+# QA_BLOCKED, PASS, "SI", ISO timestamps) stay in the data and in the
+# exported reports; the tables show what they mean. A code nobody mapped
+# passes through unchanged rather than disappearing.
+_LEGACY_ACTORS = {"ManualSync user": "table.actor.user", "ManualSync AI": "table.actor.assistant"}
+
+
+def _word(prefix: str, code) -> str:
+    key = f"{prefix}.{code}"
+    text = t(key)
+    return str(code if code is not None else "") if text == key else text
+
+
+def _when(value) -> str:
+    return str(value or "")[:16].replace("T", " ")
+
+
+def _actor(value) -> str:
+    key = _LEGACY_ACTORS.get(str(value or ""))
+    return t(key) if key else str(value or "")
+
+
 def _friendly_jobs(frame: pd.DataFrame) -> pd.DataFrame:
     if frame is None or frame.empty:
         return pd.DataFrame(columns=["Job","Stato","Lingua","Fornitore","Scadenza","Scaduto","Parole","Revisione tecnica","QA"])
@@ -1146,10 +1190,10 @@ def _friendly_jobs(frame: pd.DataFrame) -> pd.DataFrame:
         "Lingua": c("target_lang"),
         "Fornitore": c("vendor"),
         "Scadenza": c("due_date"),
-        "Scaduto": c("overdue"),
+        "Scaduto": c("overdue").map(lambda v: t("table.flag.yes") if str(v).upper() in ("SI", "SÌ", "YES", "TRUE", "1") else ""),
         "Parole": c("work_words",0),
         "Revisione tecnica": c("technical_review_segments",0),
-        "QA": c("qa_status"),
+        "QA": c("qa_status").map(lambda v: _word("table.qa", v) if v else ""),
     })
 
 
@@ -1162,8 +1206,8 @@ def _friendly_vendors(frame: pd.DataFrame) -> pd.DataFrame:
         "Vendor ID": c("vendor_id"),
         "Fornitore": c("name"),
         "Email": c("email"),
-        "Attivo": c("active"),
-        "Aggiornato": c("updated_at"),
+        "Attivo": c("active").map(lambda v: t("table.flag.yes") if str(v) in ("1", "True", "true") else t("table.flag.no")),
+        "Aggiornato": c("updated_at").map(_when),
     })
 
 
@@ -1174,11 +1218,11 @@ def _friendly_events(frame: pd.DataFrame) -> pd.DataFrame:
         return frame[name] if name in frame.columns else pd.Series([default]*len(frame), index=frame.index)
     return pd.DataFrame({
         "Job": c("job_id"),
-        "Evento": c("event_type"),
-        "Da": c("from_status"),
-        "A": c("to_status"),
-        "Operatore": c("actor"),
-        "Data": c("created_at"),
+        "Evento": c("event_type").map(lambda v: _word("table.event", v)),
+        "Da": c("from_status").map(lambda v: _word("table.jobstatus", v) if v else ""),
+        "A": c("to_status").map(lambda v: _word("table.jobstatus", v) if v else ""),
+        "Operatore": c("actor").map(_actor),
+        "Data": c("created_at").map(_when),
     })
 
 
@@ -1193,7 +1237,35 @@ def _friendly_readiness_matrix(frame: pd.DataFrame) -> pd.DataFrame:
         "open_ccms_reviews":"Review CCMS","grounding_issues":"Problemi grounding","issues":"Problemi",
     }
     cols=[c for c in rename if c in frame.columns]
-    return frame[cols].rename(columns=rename)
+    out=frame[cols].copy()
+    if "role" in out.columns:
+        out["role"]=out["role"].map(lambda v: _word("table.role", v))
+    if "status" in out.columns:
+        out["status"]=out["status"].map(lambda v: _word("table.readiness", v))
+    return out.rename(columns=rename)
+
+
+def _friendly_blockers(frame: pd.DataFrame) -> pd.DataFrame:
+    """Checkpoint 4: the release blockers as a person reads them -- which
+    language, which content, what is missing. The topic/block identifiers
+    stay in the readiness report (JSON/CSV) offered next to the table."""
+    cols=[t("table.blockers.col.language"),t("table.blockers.col.content"),
+          t("table.blockers.col.type"),t("table.blockers.col.problem")]
+    if frame is None or frame.empty:
+        return pd.DataFrame(columns=cols)
+    def c(name):
+        return frame[name] if name in frame.columns else pd.Series([""]*len(frame), index=frame.index)
+    def kind(v):
+        return t("table.blockers.type.title") if v == "topic_title" else av.BLOCK_TYPE_LABELS.get(str(v or ""), str(v or ""))
+    def problem(v):
+        v=str(v or "")
+        if v == "LINGUISTIC_QA_FAIL":
+            return t("table.blockers.problem.linguistic")
+        if v in ("", "nan", "None", "MISSING", "Missing", "NEW", "New"):
+            return t("table.blockers.problem.missing")
+        return t("table.blockers.problem.review")
+    return pd.DataFrame({cols[0]: c("language"), cols[1]: c("content_preview"),
+                         cols[2]: c("block_type").map(kind), cols[3]: c("translation_status").map(problem)})
 
 
 def _friendly_release_artifacts(frame: pd.DataFrame) -> pd.DataFrame:
@@ -1213,7 +1285,7 @@ def revision_analysis_ui(project_dir, old_source, old_translation, new_source, f
     # placeholders. Return a readable diagnostic and persist the traceback.
     p=_valid_project_dir(project_dir)
     if p is None:
-        msg="<div class='ms-card'><h3 class='ms-block'>Progetto non aperto</h3><p>Torna su <b>Home</b> e apri o crea un progetto. ManualSync non avvia analisi senza un progetto persistente.</p></div>"
+        msg="<div class='ms-card'><h3 class='ms-block'>Progetto non aperto</h3><p>Torna su <b>Home</b> e apri o crea un progetto. ERYLOS non avvia analisi senza un progetto persistente.</p></div>"
         _app_log("Revision analysis blocked: no valid active project")
         return msg, pd.DataFrame(), None, None
     if not old_source or not old_translation or not new_source:
@@ -1693,19 +1765,44 @@ def _simple_review_table_live_ui(project_dir, topics_df, blocks_df) -> pd.DataFr
     # come draft") show real table previews too, not just the initial render.
     return _simple_review_table(topics_df, blocks_df, _table_dims_lookup(project_dir))
 
-def _guided_create_and_import(name, pdf_file, source_lang):
+def _guided_target_langs(target_langs):
+    # UX Phase 0 (P0-2): the translation languages picked in the guided
+    # import. A typo is refused before anything is created or imported.
+    plan = pv.plan_language_addition(target_langs, "", [])
+    if plan.invalid:
+        raise gr.Error(t("ux.guided.targets.invalid", values=", ".join(plan.invalid)))
+    return list(plan.add)
+
+def _guided_targets_note(active, requested, targets, source_lang):
+    # One line per thing the user should know about the languages they
+    # picked; empty when they picked none, so that flow reads as before.
+    lines = []
+    applied = set(canonical_langs(read_project(active).get('target_langs') or [])) if targets else set()
+    if targets and set(targets) <= applied:
+        lines.append(t("ux.guided.targets.set", languages=", ".join(pv.language_label(c) for c in targets)))
+    elif targets:
+        lines.append(t("ux.guided.targets.existing"))
+    if len(targets) < len(requested):
+        lines.append(t("ux.guided.targets.skipped_source", language=pv.language_label(source_lang)))
+    return "".join(f"{line}\n\n" for line in lines)
+
+def _guided_create_and_import(name, pdf_file, source_lang, target_langs=None):
     # Milestone 3A: guided legacy onboarding. Pure orchestration — no new domain
     # logic. Reuses create_project_ui/import_manual_ui exactly as already tested.
-    active, _stale_card, sidebar, _create_msg, _panel = create_project_ui(name, "", "", "", "", source_lang, "", "")
+    # The document's own language is never also a translation language.
+    requested = canonical_langs(target_langs or [])
+    targets = [c for c in requested if not pv.same_language(c, source_lang)]
+    active, _stale_card, sidebar, _create_msg, _panel = create_project_ui(name, "", "", "", "", source_lang, targets, "")
     import_msg, topics, blocks = import_manual_ui(active, pdf_file, source_lang, "PUB-MAIN", name)
     # The card returned by create_project_ui is pre-import (0 publications/blocks);
     # recompute it now so the Home reflects what was actually just imported.
     card = _project_card(active)
-    result = f"{import_msg}\n\nProssimo passo: rivedi il contenuto importato prima di procedere."
+    note = _guided_targets_note(active, requested, targets, source_lang)
+    result = f"{import_msg}\n\n{note}Prossimo passo: rivedi il contenuto importato prima di procedere."
     return active, card, sidebar, result, topics, blocks
 
-def _guided_success_outputs(name, pdf_file, source_lang):
-    active, card, sidebar, result, topics, blocks = _guided_create_and_import(name, pdf_file, source_lang)
+def _guided_success_outputs(name, pdf_file, source_lang, target_langs=None):
+    active, card, sidebar, result, topics, blocks = _guided_create_and_import(name, pdf_file, source_lang, target_langs)
     return (
         active, card, sidebar, result,
         gr.update(visible=False), gr.update(visible=False), gr.update(visible=True),
@@ -1714,17 +1811,29 @@ def _guided_success_outputs(name, pdf_file, source_lang):
     )
 
 def _guided_ask_language_outputs():
+    # Checkpoint 3: the question goes into the prompt shown above the
+    # choices. It used to be written into the «Nuovo progetto» form's
+    # message, which is hidden, so the prompt appeared empty.
     return (
-        gr.update(), gr.update(), gr.update(),
-        "Non riconosco con sicurezza la lingua del documento. Scegli quella corretta qui sotto per continuare.",
+        gr.update(), gr.update(), gr.update(), gr.update(),
         gr.update(), gr.update(visible=True), gr.update(visible=False),
-        gr.update(visible=True), gr.update(visible=True), gr.update(visible=True),
+        gr.update(value="Non riconosco con sicurezza la lingua del documento. Scegli quella corretta qui sotto per continuare.",
+                  visible=True),
+        gr.update(visible=True), gr.update(visible=True),
         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
     )
 
-def guided_new_project_from_pdf_ui(project_name, pdf_file):
+def _guided_success(name, pdf_file, source_lang, targets):
+    # Without languages the call keeps its original three arguments: that is
+    # the seam regressione_legacy_doc_3b1 replaces to observe the routing.
+    if targets:
+        return _guided_success_outputs(name, pdf_file, source_lang, targets)
+    return _guided_success_outputs(name, pdf_file, source_lang)
+
+def guided_new_project_from_pdf_ui(project_name, pdf_file, target_langs=None):
     if not pdf_file:
         raise gr.Error("Carica un file PDF o Word (.docx o .doc) per continuare.")
+    targets = _guided_target_langs(target_langs)
     name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
     suffix = Path(pdf_file).suffix.lower()
     if suffix == ".doc":
@@ -1742,17 +1851,18 @@ def guided_new_project_from_pdf_ui(project_name, pdf_file):
         detected, confidence, _basis = detect_document_language(pdf_file)
     source_lang = _GUIDED_LANG_DETECTED_TO_CODE.get(detected)
     if source_lang and confidence >= _GUIDED_LANG_CONFIDENCE_MIN:
-        return _guided_success_outputs(name, pdf_file, source_lang)
+        return _guided_success(name, pdf_file, source_lang, targets)
     return _guided_ask_language_outputs()
 
-def guided_confirm_language_ui(project_name, pdf_file, lang_choice):
+def guided_confirm_language_ui(project_name, pdf_file, lang_choice, target_langs=None):
     if not pdf_file:
         raise gr.Error("Carica un file PDF per continuare.")
     source_lang = _GUIDED_LANG_DISPLAY_TO_CODE.get(lang_choice or "")
     if not source_lang:
         raise gr.Error("Scegli la lingua del documento per continuare.")
+    targets = _guided_target_langs(target_langs)
     name = (project_name or "").strip() or Path(pdf_file).stem or "Nuovo manuale"
-    return _guided_success_outputs(name, pdf_file, source_lang)
+    return _guided_success(name, pdf_file, source_lang, targets)
 
 _LEGACY_FAMILY_EVIDENCE_LABELS = {
     "manual_code_match": "stesso codice manuale/prodotto",
@@ -2176,9 +2286,9 @@ def _studio_status_html(detail: dict) -> str:
         parts.append(" · <span class='ms-block'>Archiviato</span>")
     parts.append("</div>")
     if detail.get("draft_notice"):
-        parts.append(f"<div class='ms-prod' style='margin-top:6px'>📝 {html.escape(detail['draft_notice'])}</div>")
+        parts.append(f"<div class='ms-prod' style='margin-top:6px'>{html.escape(detail['draft_notice'])}</div>")
     if detail.get("open_review_notice"):
-        parts.append(f"<div class='ms-prod' style='margin-top:6px'>👁 {html.escape(detail['open_review_notice'])}</div>")
+        parts.append(f"<div class='ms-prod' style='margin-top:6px'>{html.escape(detail['open_review_notice'])}</div>")
     return "".join(parts)
 
 def _studio_tech_html_topic(detail: dict) -> str:
@@ -2244,7 +2354,9 @@ def _studio_pub_header_html(repo, publication_id: str) -> str:
     if not row:
         return (f"<div class='ms-muted'>"
                 f"{t('content.pubheader.missing', publication_id=html.escape(publication_id))}</div>")
-    return (f"<div class='ms-prod'>{t('content.pubheader.label')}: "
+    # Checkpoint 4: a neutral context line (it used the red "production"
+    # box, which read as a warning); "Manuale" as in the header.
+    return (f"<div class='ms-context-line'>{t('content.pubheader.label')}: "
             f"<b>{html.escape(row['title'])}</b></div>")
 
 def studio_context_relabel_ui(project_dir, publication_id, lang):
@@ -2534,10 +2646,10 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     ris = tdetail["reuse_impact_summary"]
                     if shared_confirmed:
                         shared_notice_upd = gr.update(
-                            value=f"🔗 Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
+                            value=f"Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
                                   f"{tdetail['reference_count']} riferimenti.", visible=True)
                     else:
-                        shared_notice_upd = gr.update(value=f"🔗 {tdetail['shared_notice']}", visible=True)
+                        shared_notice_upd = gr.update(value=f"{tdetail['shared_notice']}", visible=True)
                         update_everywhere_btn_visible = not detail["archived"]
                         fork_local_btn_visible = not detail["archived"]
                     lines = [ris["usage_line"]] + ris["topic_lines"] + ris["notes"]
@@ -2561,10 +2673,10 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     ris = fdetail["reuse_impact_summary"]
                     if shared_confirmed:
                         shared_notice_upd = gr.update(
-                            value=f"🔗 Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
+                            value=f"Modalità «Aggiorna ovunque» attiva — il salvataggio aggiornerà tutti i "
                                   f"{fdetail['reference_count']} riferimenti.", visible=True)
                     else:
-                        shared_notice_upd = gr.update(value=f"🔗 {fdetail['shared_notice']}", visible=True)
+                        shared_notice_upd = gr.update(value=f"{fdetail['shared_notice']}", visible=True)
                         update_everywhere_btn_visible = not detail["archived"]
                         fork_local_btn_visible = not detail["archived"]
                     lines = [ris["usage_line"]] + ris["topic_lines"] + ris["notes"]
@@ -2572,7 +2684,7 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                 elif detail["archived"]:
                     readonly_notice = gr.update(value=f"⛔ {av.archived_message('block', object_id)}", visible=True)
                 elif fdetail["asset_missing"]:
-                    readonly_notice = gr.update(value="🖼️ Immagine non disponibile.", visible=True)
+                    readonly_notice = gr.update(value="Immagine non disponibile.", visible=True)
                 history = pd.DataFrame(av.figure_history_rows(svc, object_ref_id))
                 tech_html = _studio_tech_html_shared_object(repo, "figure", object_ref_id, fdetail, detail)
             else:
@@ -2597,7 +2709,7 @@ def _studio_full_bundle(project_dir, publication_id, kind, object_id, show_archi
                     notice = "ℹ️ Componente riusabile — non ancora editabile in questo Studio."
                     if cimpact["is_shared"]:
                         cris = av.reuse_impact_summary(cimpact)
-                        notice += f" 🔗 Utilizzato in {cimpact['reference_count']} punti."
+                        notice += f" Utilizzato in {cimpact['reference_count']} punti."
                         lines = [cris["usage_line"]] + cris["topic_lines"] + cris["notes"]
                         reuse_impact_upd = gr.update(value="  \n".join(x for x in lines if x), visible=True)
                     readonly_notice = gr.update(value=notice, visible=True)
@@ -2780,7 +2892,7 @@ def studio_save_draft_ui(project_dir, kind, object_id, block_type, object_ref_id
                        payload=_studio_draft_payload(draft_kind, title_val, text_val, table_title_val,
                                                      table_caption_val, table_grid_val, figure_caption_val, figure_alt_val),
                        actor=(actor or "").strip() or "Autore sconosciuto")
-        return "💾 Bozza salvata in locale (nessuna nuova versione creata)."
+        return "Bozza salvata in locale (nessuna nuova versione creata)."
     except Exception:
         return ""
     finally:
@@ -2832,7 +2944,7 @@ def _table_rowcol_op(project_dir, kind, object_id, block_type, object_ref_id, ex
                                payload=_studio_draft_payload(draft_kind, "", "", table_title_val,
                                                              table_caption_val, new_df, "", ""),
                                actor=(actor or "").strip() or "Autore sconosciuto")
-                msg = "💾 Bozza salvata in locale (nessuna nuova versione creata)."
+                msg = "Bozza salvata in locale (nessuna nuova versione creata)."
             except Exception:
                 msg = ""
             finally:
@@ -3840,6 +3952,103 @@ def studio_preview_refresh_ui(project_dir, publication_id, profile_id, show_excl
         repo.close()
 
 
+# ---- Rilascio: the publishing profile preview and export need ----
+# UX Phase 0 (P0-3). A project without an active variant profile had an
+# empty picker, a preview asking to "select a profile" and an export
+# refusing for the same reason, with no way forward on the page. Now the
+# page says so and offers to create one right here; nothing is created
+# until the user confirms. The profile is made by the same
+# create_variant_profile service call Settings › Varianti uses (audited,
+# operator required), and the preview/export callbacks are unchanged.
+#
+# Every callback below returns the same 12 outputs: notice, "Crea
+# profilo", name, the dimension pickers, "Crea e usa", "Annulla", and the
+# dimension ids the pickers stand for.
+_PROFILE_DIM_SLOTS = 6
+_PROFILE_DIM_NONE = "__none__"
+
+def _active_profiles(project_dir):
+    repo, svc = av.open_service(project_dir)
+    try:
+        return svc.list_variant_profiles(include_inactive=False)
+    finally:
+        repo.close()
+
+def _profile_form_hidden():
+    return [gr.update(visible=False) for _ in range(_PROFILE_DIM_SLOTS + 3)]
+
+def release_profile_notice_ui(project_dir):
+    missing = False
+    if project_dir:
+        try:
+            missing = not _active_profiles(project_dir)
+        except Exception as exc:  # the notice is guidance only: never block the tab on it
+            _app_log("Profile list for the release notice failed", exc)
+    return (pv.no_profile_notice() if missing else "", gr.update(visible=missing), *_profile_form_hidden(), [])
+
+def release_profile_open_ui(project_dir):
+    if not project_dir:
+        return release_profile_notice_ui(project_dir)
+    repo, svc = av.open_service(project_dir)
+    try:
+        dims = [(d, svc.list_condition_values(d["dimension_id"], include_inactive=False))
+                for d in svc.list_condition_dimensions(include_inactive=False)]
+    finally:
+        repo.close()
+    dims = [(d, values) for d, values in dims if values]  # a dimension with no value offers no choice
+    shown, hidden = dims[:_PROFILE_DIM_SLOTS], dims[_PROFILE_DIM_SLOTS:]
+    none = (t("ux.prof.dim.none"), _PROFILE_DIM_NONE)
+    pickers = []
+    for i in range(_PROFILE_DIM_SLOTS):
+        if i < len(shown):
+            d, values = shown[i]
+            pickers.append(gr.update(visible=True, label=d["name"], value=_PROFILE_DIM_NONE,
+                                     choices=[none] + [(v["label"], v["value_id"]) for v in values]))
+        else:
+            pickers.append(gr.update(visible=False, value=_PROFILE_DIM_NONE, choices=[none]))
+    return (pv.profile_form_notice([d["name"] for d, _ in shown], [d["name"] for d, _ in hidden]),
+            gr.update(visible=False), gr.update(visible=True, value=t("ux.prof.name.default")),
+            *pickers, gr.update(visible=True), gr.update(visible=True),
+            [d["dimension_id"] for d, _ in shown])
+
+def release_profile_create_ui(project_dir, name, actor, dim_ids, *dim_values):
+    """The 12 outputs, then the Rilascio picker and profile_state: the new
+    profile is selected, so preview and export can run at once."""
+    def keep_form(notice):
+        return (notice, gr.update(), gr.update(), *[gr.update() for _ in range(_PROFILE_DIM_SLOTS)],
+                gr.update(), gr.update(), dim_ids or [], gr.update(), gr.update())
+    if not project_dir:
+        return (*release_profile_notice_ui(None), gr.update(), gr.update())
+    actor = str(actor or "").strip()
+    if not actor:
+        return keep_form(pv.profile_no_actor_notice(t("context.operator")))
+    name = str(name or "").strip()
+    if not name:
+        return keep_form(pv.profile_no_name_notice())
+    dims = {d: v for d, v in zip(dim_ids or [], dim_values) if v and v != _PROFILE_DIM_NONE}
+    repo, svc = av.open_service(project_dir)
+    try:
+        pid = pv.profile_id_for(name, [p["profile_id"] for p in svc.list_variant_profiles()])
+        svc.create_variant_profile(pid, name, dims, actor=actor)
+    except Exception as exc:
+        _app_log("Profile creation from Rilascio failed", exc)
+        return keep_form(pv.profile_error_notice(ui_error_text(exc)))
+    finally:
+        repo.close()
+    picker, kept = studio_preview_profile_choices_ui(project_dir, pid)
+    return (pv.profile_done_notice(name), gr.update(visible=False), *_profile_form_hidden(), [], picker, kept)
+
+def release_export_profile_check_ui(project_dir, profile_id, dim_ids):
+    # Runs beside the unchanged export callback on the same click: when
+    # the project has no profile at all, the way forward is shown again
+    # next to the export's own "select a profile" card.
+    if project_dir and not profile_id:
+        out = release_profile_notice_ui(project_dir)
+        if out[0]:
+            return out
+    return (gr.update(), gr.update(), *[gr.update() for _ in range(_PROFILE_DIM_SLOTS + 3)], dim_ids or [])
+
+
 # ----------------------------------------------------------------
 # 4F.1 Production publishing outputs -- the smallest additive export UI
 # that exposes publishing_output.py's real deliverables. Deliberately
@@ -4037,6 +4246,101 @@ def studio_export_html_ui(project_dir, publication_id, profile_id):
         warnings=_export_warnings_detail(res["warnings"]))
 
 
+# ---- Impostazioni > Progetto: project details and translation languages ----
+# UX Phase 0 (P0-2 / 8b). Every callback returns the same 9 outputs:
+# facts, add picker, add button, remove picker, remove button, notice,
+# confirm yes, confirm no, the language awaiting confirmation. The
+# languages are saved through update_project exactly as the project
+# manifest already stores them; nothing else about the project changes.
+
+def _settings_project_outputs(project_dir, notice="", confirm_code=""):
+    meta=None
+    if project_dir:
+        try:
+            meta=read_project(project_dir)
+        except Exception as exc:
+            _app_log("Project settings read failed", exc)
+            notice=notice or pv.save_error_notice(ui_error_text(exc))
+    has=bool(meta)
+    targets=canonical_langs((meta or {}).get('target_langs') or [])
+    source=str((meta or {}).get('source_lang') or '')
+    add_choices=pv.language_choices(exclude=[*targets, source]) if has else []
+    remove_choices=[(pv.language_label(c), c) for c in targets]
+    confirming=bool(confirm_code)
+    return (pv.project_facts_html(meta),
+            gr.update(choices=add_choices, value=[], visible=has),
+            gr.update(visible=has),
+            gr.update(choices=remove_choices, value=confirm_code or None, visible=has, interactive=not confirming),
+            gr.update(visible=has, interactive=not confirming),
+            notice,
+            gr.update(visible=confirming), gr.update(visible=confirming),
+            confirm_code)
+
+def settings_project_ui(project_dir):
+    return _settings_project_outputs(project_dir)
+
+def settings_add_languages_ui(project_dir, chosen):
+    if not project_dir:
+        return _settings_project_outputs(None)
+    meta=read_project(project_dir)
+    plan=pv.plan_language_addition(chosen, meta.get('source_lang') or '', meta.get('target_langs') or [])
+    if plan.add and not plan.invalid:
+        try:
+            update_project(project_dir, target_langs=[*canonical_langs(meta.get('target_langs') or []), *plan.add])
+        except Exception as exc:
+            _app_log("Project languages save failed", exc)
+            return _settings_project_outputs(project_dir, pv.save_error_notice(ui_error_text(exc)))
+    return _settings_project_outputs(project_dir, pv.add_result_notice(plan))
+
+def _settings_language_usage(project_dir, code):
+    """(usage, None) or (None, error notice) -- a failed check never reads as 'no data'."""
+    try:
+        return pv.language_usage(project_dir, code), None
+    except Exception as exc:
+        _app_log(f"Language usage check failed lang={code}", exc)
+        return None, pv.check_error_notice(code, ui_error_text(exc))
+
+def settings_remove_language_ui(project_dir, chosen):
+    if not project_dir:
+        return _settings_project_outputs(None)
+    code=canonical_lang(chosen or '')
+    if not code:
+        return _settings_project_outputs(project_dir, pv.remove_none_notice())
+    targets=canonical_langs(read_project(project_dir).get('target_langs') or [])
+    if not any(pv.same_language(code, x) for x in targets):
+        return _settings_project_outputs(project_dir, pv.remove_not_target_notice(code))
+    usage, error=_settings_language_usage(project_dir, code)
+    if error:
+        return _settings_project_outputs(project_dir, error)
+    if usage.in_use:
+        return _settings_project_outputs(project_dir, pv.remove_blocked_notice(usage))
+    return _settings_project_outputs(project_dir, pv.remove_confirm_notice(code), confirm_code=code)
+
+def settings_remove_confirmed_ui(project_dir, pending):
+    # Re-checked on confirmation: work may have been recorded for the
+    # language between the question and the answer.
+    code=canonical_lang(pending or '')
+    if not project_dir or not code:
+        return _settings_project_outputs(project_dir)
+    targets=canonical_langs(read_project(project_dir).get('target_langs') or [])
+    if not any(pv.same_language(code, x) for x in targets):
+        return _settings_project_outputs(project_dir, pv.remove_not_target_notice(code))
+    usage, error=_settings_language_usage(project_dir, code)
+    if error:
+        return _settings_project_outputs(project_dir, error)
+    if usage.in_use:
+        return _settings_project_outputs(project_dir, pv.remove_blocked_notice(usage))
+    try:
+        update_project(project_dir, target_langs=[x for x in targets if not pv.same_language(code, x)])
+    except Exception as exc:
+        _app_log("Project languages save failed", exc)
+        return _settings_project_outputs(project_dir, pv.save_error_notice(ui_error_text(exc)))
+    return _settings_project_outputs(project_dir, pv.remove_done_notice(code))
+
+def settings_remove_back_ui(project_dir):
+    return _settings_project_outputs(project_dir)
+
+
 # ---- Impostazioni > Varianti: minimal dimension/value/profile management ----
 
 def settings_variant_dimensions_table_ui(project_dir):
@@ -4057,7 +4361,7 @@ def settings_variant_dimensions_table_ui(project_dir):
 def settings_variant_create_dimension_ui(project_dir, dimension_id, name, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.create_condition_dimension(dimension_id, name, actor=actor)
@@ -4072,7 +4376,7 @@ def settings_variant_create_dimension_ui(project_dir, dimension_id, name, actor)
 def settings_variant_rename_dimension_ui(project_dir, dimension_id, new_name, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.rename_condition_dimension(dimension_id, name=new_name, actor=actor)
@@ -4087,7 +4391,7 @@ def settings_variant_rename_dimension_ui(project_dir, dimension_id, new_name, ac
 def settings_variant_set_dimension_active_ui(project_dir, dimension_id, active, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_dimensions_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.set_condition_dimension_active(dimension_id, bool(active), actor=actor)
@@ -4117,7 +4421,7 @@ def settings_variant_values_table_ui(project_dir):
 def settings_variant_create_value_ui(project_dir, dimension_id, value_id, label, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.create_condition_value(value_id, dimension_id, label, actor=actor)
@@ -4132,7 +4436,7 @@ def settings_variant_create_value_ui(project_dir, dimension_id, value_id, label,
 def settings_variant_rename_value_ui(project_dir, value_id, new_label, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.rename_condition_value(value_id, label=new_label, actor=actor)
@@ -4147,7 +4451,7 @@ def settings_variant_rename_value_ui(project_dir, value_id, new_label, actor):
 def settings_variant_set_value_active_ui(project_dir, value_id, active, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_values_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.set_condition_value_active(value_id, bool(active), actor=actor)
@@ -4198,7 +4502,7 @@ def _parse_profile_config(text: str) -> dict[str, str]:
 def settings_variant_create_profile_ui(project_dir, profile_id, name, config_text, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     dims = _parse_profile_config(config_text)
     repo, svc = av.open_service(project_dir)
     try:
@@ -4214,7 +4518,7 @@ def settings_variant_create_profile_ui(project_dir, profile_id, name, config_tex
 def settings_variant_set_profile_active_ui(project_dir, profile_id, active, actor):
     if not project_dir: raise gr.Error("Nessun progetto attivo.")
     if not str(actor or "").strip():
-        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome (tab Redazione & contenuti) per continuare."
+        return settings_variant_profiles_table_ui(project_dir), "Inserisci il tuo nome nel campo «Operatore» in alto per continuare."
     repo, svc = av.open_service(project_dir)
     try:
         svc.set_variant_profile_active(profile_id, bool(active), actor=actor)
@@ -4340,6 +4644,75 @@ def work_package_ui(project_dir, object_id, kind, tm_files):
     friendly=_friendly_work_packages(result['packages'])
     return f"✅ Creati **{len(result['language_zips'])} pacchetti lingua**.{tm_note}{export_note}", gr.update(value=friendly, visible=not friendly.empty), str(result['master_zip']), [str(x) for x in result['language_zips']]
 
+_NO_TARGET_LANGS_PREFIX = "Nessuna lingua target trovata"
+
+
+def work_package_view_ui(project_dir, object_id, kind, tm_files, publication_id=None):
+    """UX Phase 0 (P0-1): "Genera pacchetti lingua" as the user now sees it.
+
+    The engine stays exactly as fail-closed as before -- work_package_ui is
+    unchanged and still does all the work. What changes is that a refusal is
+    no longer a bare "Error": the user learns what stops the packages, which
+    content is involved (every item, not just the first the engine meets),
+    why, and what to do -- with a way to open the content straight away.
+
+    Which content blocks is read by project_view.unapproved_for_packages, a
+    read-only mirror of the engine's own approval gate pinned to it by a
+    regression test. Which LANGUAGES the engine would use is NOT
+    re-derived here (it also counts translation-memory languages); its own
+    refusal is recognised instead.
+
+    Outputs: notice, summary table, master ZIP, language ZIPs, picker of
+    content to open, "Apri nell'editor", "Aggiungi lingue di destinazione".
+    """
+    def out(msg, table=None, master=None, files=None, items=(), add_langs=False):
+        openable=[i for i in items if i.openable]
+        pick=gr.update(choices=[(tv._item_line(i), i.open_value) for i in openable],
+                       value=openable[0].open_value if openable else None, visible=bool(openable))
+        return (msg, table if table is not None else gr.update(visible=False), master, files, pick,
+                gr.update(visible=bool(openable)), gr.update(visible=add_langs))
+    if not project_dir:
+        return out(ux.notice(ux.WARNING, t("ux.no_project.title"), t("ux.no_project.body")))
+    kind=(str(kind or "").strip() or "publication")
+    oid=str(object_id or "").strip()
+    if not oid and kind == "publication":
+        # The manual in context: no identifier to type for the normal case.
+        oid=str(publication_id or "").strip() or "PUB-MAIN"
+    if not oid:
+        return out(tv.package_not_found_notice("—"))
+    try:
+        repo=IndustrialRepository(_ccms_db(project_dir))
+    except FileNotFoundError:
+        return out(tv.package_unapproved_notice([pv.BlockingItem("publication", oid, oid, "EMPTY")]))
+    try:
+        items=pv.unapproved_for_packages(repo, kind, oid)
+    except KeyError:
+        return out(tv.package_not_found_notice(oid))
+    except ValueError as exc:
+        return out(tv.package_error_notice(ui_error_text(exc)))
+    finally:
+        repo.close()
+    if items:
+        return out(tv.package_unapproved_notice(items), items=items)
+    try:
+        msg, table, master, files = work_package_ui(project_dir, oid, kind, tm_files)
+    except gr.Error as exc:
+        return out(ux.notice(ux.WARNING, t("ux.pkg.error.title"), str(getattr(exc, "message", exc))))
+    except ValueError as exc:
+        reason = ui_error_text(exc)
+        if reason.startswith(_NO_TARGET_LANGS_PREFIX):
+            return out(tv.package_no_langs_notice(), add_langs=True)
+        _app_log("Translation package generation refused", exc)
+        return out(tv.package_error_notice(reason))
+    except Exception as exc:
+        _app_log("Translation package generation failed", exc)
+        return out(tv.package_error_notice(f"{type(exc).__name__}: {ui_error_text(exc)}"))
+    where=re.search(r"automaticamente in \*\*(.+?)\*\*", str(msg))
+    plain=re.sub(r"\*\*", "", str(msg))
+    return out(tv.package_done_notice(list(files or []), where.group(1) if where else "", details=plain),
+               table=table, master=master, files=files)
+
+
 def workflow_refresh_ui(project_dir):
     if not project_dir: raise gr.Error("Apri un progetto.")
     wf=WorkflowManager(project_dir)
@@ -4431,6 +4804,69 @@ def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, stri
     except Exception as e: raise gr.Error(ui_error_text(e))
     finally: wf.close()
 
+def _job_row(project_dir, job_id) -> dict:
+    wf=WorkflowManager(project_dir)
+    try: return wf.get_job(job_id)
+    finally: wf.close()
+
+
+def job_action_view_ui(project_dir, job_id, action, returned_xliff, terminology, strict, reviewer, human_approved,
+                       confirmed=False):
+    """UX Phase 0 (P0-4): the Jobs action button as the user now sees it.
+
+    job_action_ui is unchanged and still does all the work -- this only
+    decides what to SAY around it: why a quality check blocked (read from
+    the summary the engine already stored on the job), what a state allows,
+    and -- before "Annulla" -- an explicit confirmation. Validation messages
+    that used to surface as a global red "Error" become a notice in place.
+
+    Outputs: notice, jobs, events, readable QA table, raw QA table
+    (technical details), approval file, TM file, confirm-yes, confirm-no,
+    and the job the pending confirmation is about. The confirmation remembers
+    WHICH job it asked about, so editing the Job ID field before answering
+    can never cancel a different job from the one named in the question.
+    """
+    keep=gr.update()
+    def out(msg, jobs=keep, events=keep, qa=None, raw=keep, approval=None, tm=None, confirm=False, pending=""):
+        qa_upd=gr.update(visible=False) if qa is None else gr.update(value=qa, visible=not qa.empty)
+        return (msg, jobs, events, qa_upd, raw, approval, tm, gr.update(visible=confirm), gr.update(visible=confirm),
+                pending)
+    if not project_dir:
+        return out(ux.notice(ux.WARNING, t("ux.no_project.title"), t("ux.no_project.body")))
+    jid=str(job_id or "").strip()
+    if not jid:
+        return out(ux.notice(ux.WARNING, t("ux.job.no_job.title"), t("ux.job.no_job.body")))
+    try:
+        job=_job_row(project_dir, jid)
+    except KeyError:
+        return out(ux.notice(ux.WARNING, t("ux.job.not_found.title"), t("ux.job.not_found.body", job=jid)))
+    if action not in _JOB_ACTIONS_BY_STATE.get(str(job.get("status") or ""), set()):
+        return out(tv.job_not_available_notice(action, job))
+    if action == "Annulla" and not confirmed:
+        return out(tv.job_cancel_confirm_notice(job), confirm=True, pending=jid)
+    try:
+        _msg, jobs, events, qa, approval, tm = job_action_ui(project_dir, jid, action, returned_xliff, terminology,
+                                                            strict, reviewer, human_approved)
+    except gr.Error as exc:
+        return out(ux.notice(ux.WARNING, t("ux.job.error.title"), str(getattr(exc, "message", exc))))
+    after=_job_row(project_dir, jid)
+    if tv.JOB_ACTION_KEYS.get(action) in ("received", "rerun"):
+        raw=qa.get("value") if isinstance(qa, dict) else qa
+        notice_html, readable=tv.qa_notice(after, raw)
+        return out(notice_html, jobs, events, qa=readable, raw=gr.update(value=raw), approval=approval, tm=tm)
+    return out(tv.job_result_notice(action, after), jobs, events, approval=approval, tm=tm)
+
+
+def job_cancel_confirmed_ui(project_dir, pending_job, *rest):
+    """'Sì, annulla il lavoro': cancels exactly the job the question named."""
+    return job_action_view_ui(project_dir, pending_job, "Annulla", *rest, confirmed=True)
+
+
+def job_cancel_back_ui():
+    """'No, torna indietro': nothing was changed, the question is withdrawn."""
+    return "", gr.update(visible=False), gr.update(visible=False), ""
+
+
 def _compliance_readiness_html(compliance: dict | None) -> str:
     """3.5C: minimal Release-tab integration for the Compliance gate --
     read-only formatting of the SAME canonical dict release_readiness.py /
@@ -4447,8 +4883,9 @@ def _compliance_readiness_html(compliance: dict | None) -> str:
     blockers_html = ""
     if items:
         rows = "".join(
-            f"<li>{html.escape(b['scope_id'])} / {html.escape(b['requirement_id'])} — "
-            f"{html.escape(b['title'])} ({html.escape(b['status'])})</li>" for b in items[:20])
+            f"<li title='{html.escape(b['scope_id'])}'>{html.escape(b['title'])} — "
+            f"<b>{html.escape(cv.status_label(b['status']))}</b> "
+            f"<span class='ms-code ms-muted'>{html.escape(b['requirement_id'])}</span></li>" for b in items[:20])
         more = f"<li class='ms-muted'>… e altri {len(items) - 20}</li>" if len(items) > 20 else ""
         blockers_html = f"<ul style='margin:6px 0 0 18px;padding:0'>{rows}{more}</ul>"
     return (
@@ -4464,7 +4901,8 @@ def readiness_ui(project_dir, publication_id, target_langs, profile_id, release_
     if not langs: langs=canonical_langs(read_project(project_dir).get('target_langs',[]))
     r=assess_release_readiness(project_dir,publication_id,target_langs=langs,profile_id=(profile_id or '').strip() or None,require_linguistic_plausibility=require_linguistic)
     out=Path(project_dir)/'ReleaseReadiness'; files=export_readiness_report(r,out)
-    msg="<span class='ms-ok'>✅ RELEASE PRONTA</span>" if r['release_ready'] else "<span class='ms-block'>⛔ RELEASE BLOCCATA</span>"
+    msg=(f"<span class='ms-ok ms-status-line'>{ux.icon(ux.SUCCESS)}RELEASE PRONTA</span>" if r['release_ready']
+         else f"<span class='ms-block ms-status-line'>{ux.icon(ux.BLOCKED)}RELEASE BLOCCATA</span>")
     sm=r['summary']
     source='pronta' if sm.get('source_ready') else 'bloccata'
     detail=f"Lingua sorgente: <b>{source}</b> · Lingue target pronte: <b>{sm.get('target_languages_ready',0)}/{sm.get('target_languages_total',0)}</b>."
@@ -4474,7 +4912,7 @@ def readiness_ui(project_dir, publication_id, target_langs, profile_id, release_
     return (
         f"<div class='ms-card'><h3>{msg}</h3><p>{detail}</p>{compliance_html}</div>",
         gr.update(value=_friendly_readiness_matrix(r['matrix']), visible=True),
-        gr.update(value=r['blocking_items'], visible=not r['blocking_items'].empty),
+        gr.update(value=_friendly_blockers(r['blocking_items']), visible=not r['blocking_items'].empty),
         str(files['json']),
         gr.update(interactive=bool(r['release_ready']))
     )
@@ -4482,7 +4920,7 @@ def readiness_ui(project_dir, publication_id, target_langs, profile_id, release_
 def _release_mode_help(release_mode_label):
     mode='test' if str(release_mode_label or '').startswith('Collaudo') else 'production'
     if mode == 'test':
-        return "<div class='ms-card'><b>Collaudo interno:</b> crea un pacchetto TEST non consegnabile. I gate strutturali restano attivi, ma i marker ManualSync di collaudo sono ammessi.</div>"
+        return "<div class='ms-card'><b>Collaudo interno:</b> crea un pacchetto TEST non consegnabile. I gate strutturali restano attivi, ma i marker di collaudo sono ammessi.</div>"
     return "<div class='ms-prod'><b>Produzione cliente:</b> fail-closed. Marker di collaudo, anomalie linguistiche cross-language o incoerenze tecniche bloccano la release; nessun pacchetto cliente viene creato.</div>"
 
 
@@ -4558,7 +4996,7 @@ def release_ui(project_dir, publication_id, target_langs, released_by, release_i
 # persisted (i.e. unchanged, since ComplianceService validates before any
 # write).
 # ============================================================================
-_COMPLIANCE_STATUS_COLOR = {"Covered": "#067647", "To verify": "#b54708", "Missing": "#b42318", "Not applicable": "#475467"}
+_COMPLIANCE_STATUS_COLOR = {"Covered": "#0F7A55", "To verify": "#A35A00", "Missing": "#C0262D", "Not applicable": "#555B6E"}
 # 4F.2: the raw requirement_id column was dropped from this standard-mode
 # table. It was redundant next to Titolo + Riferimento, and once a curated
 # pack supplies the ids ("MR2023-A3-17442-TOOLS") it read as an internal
@@ -4622,14 +5060,14 @@ def _compliance_status_badge(status: str) -> str:
     # Colour keys off the ENGINE status; only the visible text is
     # translated, so the persisted vocabulary stays the single source of
     # truth and nothing downstream has to parse Italian.
-    color = _COMPLIANCE_STATUS_COLOR.get(status, "#475467")
-    return (f"<span style='color:{color};font-weight:700'>"
+    color = _COMPLIANCE_STATUS_COLOR.get(status, "#555B6E")
+    return (f"<span style='color:{color};font-weight:600'>"
             f"{html.escape(cv.status_label(status))}</span>")
 
 def _compliance_dashboard_html(d: dict) -> str:
     if not d.get("has_scope"):
         return ("<div class='ms-prod'><b>Nessuna valutazione di compliance attiva per questa pubblicazione.</b><br>"
-                "ManualSync non sta confrontando questa pubblicazione con nessun perimetro normativo al momento — "
+                "ERYLOS non sta confrontando questa pubblicazione con nessun perimetro normativo al momento — "
                 "non significa che sia tutto a posto, significa che non è stata ancora impostata una valutazione. "
                 "Seleziona uno scope compliance esistente (o creane uno in modalità avanzata) per iniziare.</div>")
     c = d["counts"]; scope = d.get("scope") or {}
@@ -4703,7 +5141,7 @@ def _fmt_ts(ts: str | None) -> str:
 
 def _compliance_detail_placeholder() -> tuple:
     return (
-        f"<div class='ms-cp-empty'><div class='ms-cp-empty-icon'>☑</div>"
+        f"<div class='ms-cp-empty'><div class='ms-cp-empty-icon'>{theme.icon_svg('compliance', 20)}</div>"
         f"<div>{t('conformity.detail.empty')}</div></div>",
         "<div class='ms-muted'>—</div>", gr.update(value=None),
         "", "<div class='ms-muted'>—</div>", gr.update(value=None),
@@ -5510,6 +5948,269 @@ class LocalizedUI:
 LOC = LocalizedUI()
 
 
+# ======================================================================
+# Checkpoint 3 -- the application shell follows the SESSION's project.
+#
+# Before: the header was drawn once at start-up (and on a language switch,
+# from the on-disk pointer), so after creating, importing or restoring a
+# project it kept naming the previous one; nothing could open an existing
+# project; and every section kept showing the previous project's results
+# until the user happened to refresh it. Now the same routine runs after
+# every project change: shell_ui redraws header, sidebar and Home from
+# project_state, and project_scope_ui clears every on-screen result that
+# belongs to a project (PROJECT_SCOPED, filled where those components are
+# declared, so a new result panel is registered next to its declaration).
+# ======================================================================
+
+def _localized(fn):
+    """The same callback, rendered in the session's language.
+
+    Gradio passes the language as the FIRST input; the callback keeps its
+    own signature, which is the one the regression suites call directly.
+    Not functools.wraps: Gradio reads the callable's signature, and must
+    see this one."""
+    def run(lang, *args):
+        with i18n.use_language(lang):
+            return fn(*args)
+    run.__name__ = fn.__name__
+    run.__doc__ = fn.__doc__
+    return run
+
+
+def shell_ui(project_dir, publication_id=None, lang=None):
+    """Everything outside the sections that names the open project.
+
+    Outputs: header project selector, header manual selector, Contenuti's
+    publication field (the same manual, so Contenuti and Rilascio can never
+    work on a different one from the header), sidebar context, project
+    card, the welcome panel, and the quick actions (heading and cards),
+    which have nothing to act on without a project."""
+    with i18n.use_language(lang):
+        choices, key = sv.project_choices(DATA_ROOT, project_dir)
+        pubs = sv.publication_choices(project_dir)
+        pub = sv.pick_publication(pubs, publication_id)
+        has = bool(project_dir)
+        return (gr.update(choices=choices, value=key),
+                gr.update(choices=pubs, value=pub),
+                pub,
+                _sidebar_context(project_dir or None),
+                _project_card(project_dir or None),
+                gr.update(visible=False) if has else gr.update(),
+                gr.update(visible=has), gr.update(visible=has))
+
+
+def open_project_ui(choice, project_dir, lang=None):
+    """The header's project selector: open the chosen project for this
+    session and make it the one ERYLOS reopens next time.
+
+    Returns (project_state, Home notice). Only a project inside the data
+    root can be opened -- the selector offers folder names, never paths --
+    and choosing the project already open changes nothing."""
+    choice = str(choice or "").strip()
+    if not choice or (project_dir and Path(project_dir).name == choice):
+        return gr.skip(), gr.skip()
+    with i18n.use_language(lang):
+        target = sv.resolve_project(DATA_ROOT, choice)
+        if target is None:
+            return gr.skip(), sv.open_error_notice()
+        active = _set_active_project(target)
+        if not active:
+            return gr.skip(), sv.open_error_notice()
+        return active, sv.opened_notice(active)
+
+
+# (component, reset) for every on-screen RESULT that belongs to one
+# project. Appended where each component is declared.
+PROJECT_SCOPED: list = []
+
+
+def _scoped(component, reset=None):
+    """Register a project-scoped result; returns the component. Without an
+    explicit reset it goes back to how a freshly opened page shows it."""
+    PROJECT_SCOPED.append((component, reset or _fresh(component)))
+    return component
+
+
+def _fresh(component):
+    visible = getattr(component, "visible", True)
+    if isinstance(component, gr.State):
+        initial = component.value
+        return lambda: initial
+    if isinstance(component, gr.Button):
+        interactive = getattr(component, "interactive", None)
+        extra = {} if interactive is None else {"interactive": interactive}
+        return lambda: gr.update(visible=visible, **extra)
+    if isinstance(component, gr.Dropdown):
+        return lambda: gr.update(choices=[], value=None, visible=visible)
+    if isinstance(component, (gr.HTML, gr.Markdown, gr.Textbox)):
+        initial = component.value if isinstance(component.value, str) else ""
+        return lambda: gr.update(value=initial, visible=visible)
+    return lambda: gr.update(value=None, visible=visible)
+
+
+def studio_reload_ui(project_dir, publication_id, show_archived):
+    """Contenuti's editor, reloaded for the project now open. Without one
+    there is nothing to load -- and studio_load_ui would refuse."""
+    if not project_dir:
+        return tuple(gr.skip() for _ in ST_OUT_FULL)
+    return studio_load_ui(project_dir, publication_id, show_archived)
+
+
+# Decisions 8c/8d, kept entirely in the browser: the interface language is
+# remembered on this computer (localStorage); the operator only for this
+# browser tab's session (sessionStorage), so a new session starts without
+# an audit identity -- nobody inherits the previous user's name. Nothing
+# here is a server event, so no server response can ever overwrite what
+# the user typed in «Operatore» (regressione_authoring_editor_4b2 g30.9).
+_SHELL_PERSIST_JS = r"""
+(() => {
+  if (window.__erylosShellPersist) return;
+  window.__erylosShellPersist = true;
+  const LANG = 'erylos.ui.language', OP = 'erylos.operator';
+  const get = (s, k) => { try { return s.getItem(k); } catch (e) { return null; } };
+  const put = (s, k, v) => { try { s.setItem(k, v); } catch (e) {} };
+  const box = () => document.querySelector('#ms-ui-lang');
+  const opField = () => document.querySelector('#ms-operator textarea, #ms-operator input');
+  const labels = () => box() ? [...box().querySelectorAll('label')] : [];
+  const current = () => { const l = labels().find(x => x.querySelector('input:checked')); return l ? l.textContent.trim() : null; };
+  // Checkpoint 4: <html lang> follows the interface language, so text the
+  // stylesheet supplies (the upload zone's words) is in that language too,
+  // and screen readers pronounce the page correctly.
+  const syncLang = () => {
+    const i = box() && box().querySelector('input:checked');
+    if (i && i.value) document.documentElement.lang = i.value;
+  };
+  // Restoring too early is lost: the page's components take a moment to
+  // start listening. So each restore retries until what it set is really
+  // there -- and never replaces a name the user has started typing.
+  const restoreLang = (n) => {
+    const saved = get(localStorage, LANG);
+    if (!saved || n > 8 || current() === saved) return;
+    const l = labels().find(x => x.textContent.trim() === saved);
+    if (l) (l.querySelector('input') || l).click();
+    setTimeout(() => restoreLang(n + 1), 1500);
+  };
+  let typed = false;
+  const restoreOp = (n, stable) => {
+    const saved = get(sessionStorage, OP), el = opField();
+    if (!saved || !el || typed || n > 10 || stable >= 2) return;
+    if (el.value === saved) { setTimeout(() => restoreOp(n + 1, stable + 1), 800); return; }
+    if (!el.value) {
+      el.value = saved;
+      el.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+    setTimeout(() => restoreOp(n + 1, 0), 800);
+  };
+  let tries = 0;
+  const wire = () => {
+    if (!box() || !opField()) { if (++tries < 150) setTimeout(wire, 100); return; }
+    // The option that was clicked, not the one the page still shows as
+    // checked: the component updates its own state after this event.
+    box().addEventListener('change', (e) => {
+      const l = e.target && e.target.closest('label');
+      if (l && e.target.checked) put(localStorage, LANG, l.textContent.trim());
+      if (e.target.checked && e.target.value) document.documentElement.lang = e.target.value;
+    });
+    syncLang();
+    opField().addEventListener('input', (e) => {
+      if (e.isTrusted) typed = true;
+      put(sessionStorage, OP, opField().value);
+    });
+    setTimeout(() => { restoreLang(0); restoreOp(0, 0); }, 1200);
+  };
+  wire();
+})();
+"""
+
+
+def project_scope_ui(project_dir, shown_project, lang=None):
+    """Clears the previous project's results from every section.
+
+    `shown_project` is the project the screens were last filled for; when
+    it is still the open one (a language prompt during an import, the same
+    project picked again) nothing is touched. Outputs: the new
+    shown_project, then PROJECT_SCOPED in order."""
+    if str(project_dir or "") == str(shown_project or ""):
+        return (gr.skip(),) * (len(PROJECT_SCOPED) + 1)
+    with i18n.use_language(lang):
+        return (str(project_dir or ""), *[reset() for _component, reset in PROJECT_SCOPED])
+
+
+def project_changed_ui(project_dir, publication_id, shown_project, profile_id, lang=None):
+    """Everything visible that a project change updates, in ONE response.
+
+    Measured in the browser: as a chain of separate steps it took about
+    seven seconds -- each step is a round trip, though the work itself
+    takes a few hundredths of a second -- and all that time the header
+    named the new project over the previous one's data. Order of outputs:
+    the shell, the cleared results (project_scope_ui), Lavorazioni's
+    tables, Rilascio's profile picker and notice, Impostazioni › Progetto
+    and variants, Analisi impatto's picker."""
+    return (*shell_ui(project_dir, publication_id, lang),
+            *project_scope_ui(project_dir, shown_project, lang),
+            *workflow_tables_ui(project_dir),
+            *studio_preview_profile_choices_ui(project_dir, profile_id),
+            *_localized(release_profile_notice_ui)(lang, project_dir),
+            *_localized(settings_project_ui)(lang, project_dir),
+            *settings_variant_tables_ui(project_dir),
+            impact_center_choices_ui(project_dir, lang))
+
+
+def workflow_tables_ui(project_dir):
+    """Lavorazioni's jobs / vendors / events for the open project; hidden
+    and empty without one (workflow_refresh_ui itself refuses that case)."""
+    if not project_dir:
+        hidden = gr.update(value=None, visible=False)
+        return hidden, hidden, hidden
+    return workflow_refresh_ui(project_dir)
+
+
+def settings_variant_tables_ui(project_dir):
+    return (settings_variant_dimensions_table_ui(project_dir), settings_variant_values_table_ui(project_dir),
+            settings_variant_profiles_table_ui(project_dir))
+
+
+def create_project_view_ui(name, client, product, manual_code, revision, source_lang, target_langs, owner, lang=None):
+    """create_project_ui as wired on Home, plus the notice the user now SEES:
+    the form it reported into is hidden as soon as it succeeds."""
+    out = create_project_ui(name, client, product, manual_code, revision, source_lang, target_langs, owner)
+    # create_project_ui answers "ℹ️ ... esiste già ed è stato aperto" when the
+    # name belongs to an existing project, and "✅ ..." when it made one.
+    existed = str(out[3]).startswith("ℹ")
+    with i18n.use_language(lang):
+        return (*out, sv.created_notice(out[0], existed))
+
+
+def restore_project_view_ui(archive, lang=None):
+    out = restore_project_ui(archive)
+    with i18n.use_language(lang):
+        return (*out, sv.opened_notice(out[0]))
+
+
+def _guided_home_notice(out, lang):
+    # A successful import returns the project as its first output; asking
+    # for the document language returns an update and has nothing to report.
+    if isinstance(out[0], str) and out[0]:
+        with i18n.use_language(lang):
+            return sv.imported_notice(out[0], out[3])
+    return gr.skip()
+
+
+def guided_import_view_ui(project_name, pdf_file, target_langs=None, lang=None):
+    """The guided import as wired on Home: its 16 outputs, then the Home
+    notice. The import's own result used to land in the hidden «Nuovo
+    progetto» form, so nothing on screen confirmed it."""
+    with i18n.use_language(lang):
+        out = guided_new_project_from_pdf_ui(project_name, pdf_file, target_langs)
+    return (*out, _guided_home_notice(out, lang))
+
+
+def guided_confirm_view_ui(project_name, pdf_file, lang_choice, target_langs=None, lang=None):
+    with i18n.use_language(lang):
+        out = guided_confirm_language_ui(project_name, pdf_file, lang_choice, target_langs)
+    return (*out, _guided_home_notice(out, lang))
+
+
 def switch_language_ui(code):
     """Apply a language to every registered component.
 
@@ -5549,26 +6250,24 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # ================================================================
     actor_state = gr.State("")
     profile_state = gr.State(None)
-    with gr.Sidebar(width=236, elem_id="ms-sidebar"):
-        gr.HTML(f"<div class='ms-brand'><div class='ms-logo'>M</div><div><div class='ms-brand-title'>{BRAND_NAME}</div><div class='ms-brand-sub'>Brand provvisorio · Technical Content Intelligence</div></div></div>")
-        nav_home=LOC.button(lambda: f"⌂   {t('nav.overview')}",variant="primary")
+    # Checkpoint 3: the project the sections were last filled for. When
+    # project_state moves away from it, project_scope_ui clears them.
+    shown_project = gr.State(INITIAL_PROJECT)
+    # Checkpoint 4: seven entries for nine pages -- "Versioni e impatto" and
+    # "Traduzioni" each hold two pages, reached from a sub-navigation at the
+    # top of those pages. The labels are words only: each entry's icon is an
+    # SVG drawn by the stylesheet from its elem_id, never a character in the
+    # label. The brand lives in the header; "Aiuto" returns when it exists.
+    with gr.Sidebar(width=224, elem_id="ms-sidebar"):
+        nav_home=LOC.button(lambda: f"{t('nav.overview')}",variant="primary",elem_id="ms-nav-home")
         side_workflow=LOC.html(lambda: f"<div class='ms-side-section'>{t('kicker.workflow')}</div>")
-        nav_revision=LOC.button(lambda: f"◫   {t('nav.revision')}",variant="secondary")
-        nav_authoring=LOC.button(lambda: f"✎   {t('nav.content')}",variant="secondary")
-        nav_impact=LOC.button(lambda: f"◈   {t('nav.impact')}",variant="secondary")
-        nav_compliance=LOC.button(lambda: f"☑   {t('nav.conformity')}",variant="secondary")
-        nav_translation=LOC.button(lambda: f"⇄   {t('nav.translation')}",variant="secondary")
-        nav_jobs=LOC.button(lambda: f"▣   {t('nav.jobs')}",variant="secondary")
-        nav_release=LOC.button(lambda: f"✓   {t('nav.release')}",variant="secondary")
+        nav_authoring=LOC.button(lambda: f"{t('nav.content')}",variant="secondary",elem_id="ms-nav-content")
+        nav_impact=LOC.button(lambda: f"{t('nav.impact')}",variant="secondary",elem_id="ms-nav-changes")
+        nav_translation=LOC.button(lambda: f"{t('nav.translation')}",variant="secondary",elem_id="ms-nav-translation")
+        nav_compliance=LOC.button(lambda: f"{t('nav.conformity')}",variant="secondary",elem_id="ms-nav-compliance")
+        nav_release=LOC.button(lambda: f"{t('nav.release')}",variant="secondary",elem_id="ms-nav-publishing")
         side_system=LOC.html(lambda: f"<div class='ms-side-section'>{t('kicker.system')}</div>")
-        nav_settings=LOC.button(lambda: f"⚙   {t('nav.settings')}",variant="secondary")
-        nav_help=LOC.button(lambda: f"?   {t('nav.help')}", interactive=False)
-        # Discreet, and deliberately the LAST thing in the sidebar: a
-        # language switch is a setting, not a workflow step. One language
-        # at a time -- never a bilingual interface.
-        ws_lang=gr.Radio([(i18n.LANGUAGE_NAMES[c], c) for c in i18n.SUPPORTED_LANGUAGES],
-                         value=i18n.get_language(), show_label=False,
-                         elem_classes=["ms-lang"], container=False)
+        nav_settings=LOC.button(lambda: f"{t('nav.settings')}",variant="secondary",elem_id="ms-nav-settings")
         # Registered with LOC: the context line is catalogue text, so a
         # language switch has to re-render it like every other label.
         sidebar_context=LOC.add(gr.HTML(_sidebar_context(INITIAL_PROJECT)),
@@ -5612,17 +6311,36 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # identity restored silently at the next launch could attribute a new
     # user's decisions to whoever used the machine last.
     # ================================================================
+    # Checkpoint 3: the project is now CHOSEN here, not only displayed, and
+    # the manual is offered by title. Both are filled by shell_ui from the
+    # session's project_state after every project change -- never from the
+    # on-disk pointer another session may have moved. The interface
+    # language sits here too (decision 8d): it is a setting of the whole
+    # screen, and it must not be mistaken for the project's languages,
+    # which live in Impostazioni › Progetto.
+    _initial_projects, _initial_key = sv.project_choices(DATA_ROOT, INITIAL_PROJECT)
+    _initial_pubs = sv.publication_choices(INITIAL_PROJECT)
     with gr.Row(elem_classes=["ms-ctxbar"]):
-        ws_project = LOC.add(gr.HTML(_workspace_context_html(INITIAL_PROJECT)),
-                             value=lambda: _workspace_context_html(_load_active_project()))
-        cp_pub = LOC.add(gr.Textbox(label=t("context.publication"), value="PUB-MAIN", scale=1,
-                                    info=t("context.publication.hint")),
+        # Checkpoint 4: the ERYLOS lock-up opens the header (the sidebar no
+        # longer carries a brand block). The name is never translated.
+        gr.HTML(theme.brand_html(), elem_id="ms-brand-head")
+        ws_project = LOC.add(gr.Dropdown(choices=_initial_projects, value=_initial_key, label=t("context.project"),
+                                         info=t("context.project.hint"), scale=2, elem_id="ms-project-picker"),
+                             label="context.project", info="context.project.hint")
+        cp_pub = LOC.add(gr.Dropdown(choices=_initial_pubs, value=sv.pick_publication(_initial_pubs, "PUB-MAIN"),
+                                     allow_custom_value=True, label=t("context.publication"), scale=2,
+                                     info=t("context.publication.hint"), elem_id="ms-publication-picker"),
                          label="context.publication", info="context.publication.hint")
-        ws_operator = LOC.add(gr.Textbox(label=t("context.operator"), value="", scale=1,
+        ws_operator = LOC.add(gr.Textbox(label=t("context.operator"), value="", scale=2,
                                          placeholder=t("context.operator.placeholder"),
-                                         info=t("context.operator.hint")),
+                                         info=t("context.operator.hint"), elem_id="ms-operator"),
                               label="context.operator", info="context.operator.hint",
                               placeholder="context.operator.placeholder")
+        # One language at a time -- never a bilingual interface.
+        ws_lang = LOC.add(gr.Radio([(i18n.LANGUAGE_NAMES[c], c) for c in i18n.SUPPORTED_LANGUAGES],
+                                   value=i18n.get_language(), label=t("context.ui_language"), scale=1,
+                                   elem_id="ms-ui-lang", elem_classes=["ms-lang"]),
+                          label="context.ui_language")
     # UX Gate 2A: the shell operator now feeds Authoring's actor_state.
     # .change() rather than .input() for the reason established in 4B.2
     # against this exact Gradio build: .input() on a plain gr.Textbox
@@ -5641,6 +6359,17 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 home_new_project=LOC.add(gr.Button(t("home.new_project"),variant="primary",
                                                    elem_classes=["ms-new-project-btn"]),
                                      value="home.new_project")
+                # Checkpoint 3: the guided import was reachable only while NO
+                # project was open (from the welcome panel). A second manual
+                # had no way in.
+                home_import_manual=LOC.add(gr.Button(t("home.import_manual"),variant="secondary",
+                                                     elem_classes=["ms-new-project-btn"]),
+                                           value="home.import_manual")
+            # What just happened to the project -- created, opened, imported.
+            # The forms that used to report it hide themselves on success.
+            home_notice=gr.HTML(elem_id="ms-home-notice")
+            lg_review=LOC.add(gr.Button(t("home.review_import"),variant="primary",visible=False),
+                              value="home.review_import")
             # Milestone 3A: guided first-run entry point. Purely additive — shown only
             # when no project is active yet (state-driven, see project_state.change below).
             # Does not replace or hide the existing "+ Nuovo progetto" advanced path.
@@ -5659,7 +6388,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # via _stamp_legacy_family_if_known.
             with gr.Column(visible=False,elem_id="legacy-multi-doc-panel",elem_classes=["ms-panel"]) as legacy_multi_panel:
                 gr.HTML("<div class='ms-section-title'>Ho più manuali o revisioni</div><div class='ms-section-sub'>Carica più documenti (PDF, Word .docx/.doc) o una cartella intera: proviamo a capire quali sono revisioni successive o lingue diverse dello stesso manuale.</div>")
-                lm_back=gr.Button("← Cambia scelta",size="sm")
+                lm_back=gr.Button("Cambia scelta",size="sm")
                 with gr.Row():
                     lm_files=gr.File(label="Seleziona più file",type='filepath',file_count='multiple',file_types=['.pdf','.docx','.doc','.idml'])
                     lm_dir=gr.File(label="Oppure seleziona una cartella",type='filepath',file_count='directory')
@@ -5691,20 +6420,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     lm_confirm=gr.Button("Conferma selezione",variant="primary")
             with gr.Column(visible=False,elem_id="guided-legacy-onboarding-panel",elem_classes=["ms-panel"]) as legacy_onboarding_panel:
                 gr.HTML("<div class='ms-section-title'>Importa quello che hai già</div><div class='ms-section-sub'>Carica un PDF o un documento Word: creiamo il progetto e leggiamo il documento per te.</div>")
-                lg_back=gr.Button("← Cambia scelta",size="sm")
+                lg_back=gr.Button("Cambia scelta",size="sm")
                 lg_name=gr.Textbox(label="Nome progetto — opzionale, lo ricaviamo dal file se lo lasci vuoto")
                 lg_pdf=gr.File(label="Il tuo manuale (PDF, Word .docx/.doc o InDesign .idml)",type='filepath',file_types=['.pdf','.docx','.doc','.idml'])
+                # UX Phase 0 (P0-2): without translation languages the project
+                # could not produce translation packages until the user found
+                # where to add them. Optional; also editable in Settings.
+                lg_targets=LOC.add(gr.Dropdown(choices=pv.language_choices(),value=[],multiselect=True,allow_custom_value=True,
+                                               filterable=True,label=t("ux.guided.targets.label"),info=t("ux.guided.targets.info")),
+                                   label="ux.guided.targets.label",info="ux.guided.targets.info",choices=pv.language_choices)
                 lg_submit=gr.Button("Importa e crea progetto",variant="primary")
                 lg_lang_prompt=gr.Markdown(visible=False)
                 lg_lang_pick=gr.Radio(_GUIDED_LANG_CHOICES,label="Lingua del documento",visible=False)
                 lg_lang_confirm=gr.Button("Conferma e importa",variant="primary",visible=False)
-                lg_review=gr.Button("Rivedi il contenuto importato",variant="primary",visible=False)
             # RC2: il form di creazione e immediatamente sotto il comando che lo apre.
             # In RC1 il pannello era dopo le Quick Actions: il click funzionava, ma su una
             # finestra desktop standard il form appariva fuori viewport e sembrava non reagire.
             with gr.Column(visible=False,elem_id="new-project-panel",elem_classes=["ms-create-project-panel"]) as new_project_panel:
                 gr.HTML("<div class='ms-section-title'>Nuovo progetto</div><div class='ms-section-sub'>Crea un nuovo workspace senza lasciare la Home.</div>")
-                np_back=gr.Button("← Cambia scelta",size="sm")
+                np_back=gr.Button("Cambia scelta",size="sm")
                 p_name=gr.Textbox(label="Nome progetto")
                 with gr.Row(): p_client=gr.Textbox(label="Cliente / Business unit"); p_product=gr.Textbox(label="Prodotto / macchina")
                 with gr.Row(): p_code=gr.Textbox(label="Codice manuale"); p_rev=gr.Textbox(label="Revisione")
@@ -5716,16 +6450,19 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 p_msg=gr.Markdown()
             project_card=LOC.add(gr.HTML(_project_card(INITIAL_PROJECT)),
                                  value=lambda: _project_card(_load_active_project()))
+            # Checkpoint 3: every quick action works on the open project, so
+            # without one they are not offered (shell_ui toggles both).
             quick_head=LOC.html(lambda: f"<div class='ms-quick-head'><div class='ms-section-title'>{t('home.quick.title')}</div>"
-                                        f"<div class='ms-section-sub'>{t('home.quick.subtitle')}</div></div>")
-            with gr.Row(elem_classes=["ms-quick-grid"]):
+                                        f"<div class='ms-section-sub'>{t('home.quick.subtitle')}</div></div>",
+                                visible=bool(INITIAL_PROJECT))
+            with gr.Row(elem_classes=["ms-quick-grid"],visible=bool(INITIAL_PROJECT)) as quick_grid:
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    LOC.html(lambda: f"<div class='ms-quick-icon'>↺</div>"
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>{theme.icon_svg('changes')}</div>"
                                      f"<div class='ms-quick-title'>{t('home.card.revision.title')}</div>"
                                      f"<div class='ms-quick-desc'>{t('home.card.revision.desc')}</div>")
                     home_revision=LOC.add(gr.Button(t("home.cta.revision"),elem_classes=["ms-card-cta"]), value="home.cta.revision")
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    LOC.html(lambda: f"<div class='ms-quick-icon'>文</div>"
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>{theme.icon_svg('translation')}</div>"
                                      f"<div class='ms-quick-title'>{t('home.card.translation.title')}</div>"
                                      f"<div class='ms-quick-desc'>{t('home.card.translation.desc')}</div>")
                     home_translation=LOC.add(gr.Button(t("home.cta.translation"),elem_classes=["ms-card-cta"]), value="home.cta.translation")
@@ -5733,18 +6470,22 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 # workspace itself -- only the sidebar. A user who did not
                 # already know the area existed had no reason to open it.
                 with gr.Column(elem_classes=["ms-quick-card"]):
-                    LOC.html(lambda: f"<div class='ms-quick-icon'>☑</div>"
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>{theme.icon_svg('compliance')}</div>"
                                      f"<div class='ms-quick-title'>{t('home.card.conformity.title')}</div>"
                                      f"<div class='ms-quick-desc'>{t('home.card.conformity.desc')}</div>")
                     home_compliance=LOC.add(gr.Button(t("home.cta.conformity"),elem_classes=["ms-card-cta"]), value="home.cta.conformity")
                 with gr.Column(elem_classes=["ms-quick-card","brand"]):
-                    LOC.html(lambda: f"<div class='ms-quick-icon'>✓</div>"
+                    LOC.html(lambda: f"<div class='ms-quick-icon'>{theme.icon_svg('publishing')}</div>"
                                      f"<div class='ms-quick-title'>{t('home.card.release.title')}</div>"
                                      f"<div class='ms-quick-desc'>{t('home.card.release.desc')}</div>")
                     home_release=LOC.add(gr.Button(t("home.cta.release"),elem_classes=["ms-card-cta"]), value="home.cta.release")
             home_new_project.click(lambda:(gr.update(visible=True),""),None,[new_project_panel,p_msg],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             p_cancel.click(lambda:(gr.update(visible=False),""),None,[new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
-            p_create.click(create_project_ui,[p_name,p_client,p_product,p_code,p_rev,p_source,p_targets,p_owner],[project_state,project_card,sidebar_context,p_msg,new_project_panel],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            # Checkpoint 3: same callback, now also reporting on Home (the form
+            # hides on success) and followed by the project-change routine
+            # wired at the bottom, once every section exists.
+            _create_evt=p_create.click(create_project_view_ui,[p_name,p_client,p_product,p_code,p_rev,p_source,p_targets,p_owner,ws_lang],[project_state,project_card,sidebar_context,p_msg,new_project_panel,home_notice],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
+            home_import_manual.click(lambda:(gr.update(visible=True),gr.update(visible=False),gr.update(visible=False),gr.update(visible=False)),None,[legacy_onboarding_panel,onboarding_choice_panel,new_project_panel,legacy_multi_panel],scroll_to_output=True,show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             # Milestone 3A: guided onboarding wiring (additive; components defined above).
             choice_empty.click(lambda:(gr.update(visible=False),gr.update(visible=True),""),None,[onboarding_choice_panel,new_project_panel,p_msg],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
             choice_legacy.click(lambda:(gr.update(visible=False),gr.update(visible=True)),None,[onboarding_choice_panel,legacy_onboarding_panel],show_progress="hidden",trigger_mode="once",concurrency_limit=1)
@@ -5776,6 +6517,11 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         with gr.Tab(t("nav.revision"),id="revision") as tab_revision:
             LOC.add(tab_revision, label="nav.revision")
             head_revision=LOC.html(lambda: _page_head_html("kicker.workflow", "page.revision.title", "page.revision.subtitle"))
+            # Checkpoint 4: the two pages of this section, side by side. The current
+            # one is shown, not clickable; the other one is one click away.
+            with gr.Row(elem_classes=["ms-subnav"]):
+                subnav_rev_to_impact=LOC.button(lambda: t("nav.impact.sub"),variant="secondary",size="sm")
+                subnav_rev_here=LOC.button(lambda: t("nav.revision"),variant="secondary",size="sm",interactive=False,elem_classes=["is-current"])
             with gr.Row(): a_old=gr.File(label="Vecchio originale PDF",type='filepath'); a_tr=gr.File(label="Vecchia traduzione PDF",type='filepath'); a_new=gr.File(label="Nuovo originale PDF",type='filepath')
             a_full=gr.File(label="Nuovo manuale completo — opzionale",type='filepath'); a_btn=gr.Button("Analizza revisione",variant='primary'); a_summary=gr.HTML(); a_queue=gr.Dataframe(interactive=False,wrap=True,max_height=600)
             with gr.Row(): a_report=gr.File(label="Rapporto"); a_queue_file=gr.File(label="Coda di lavoro")
@@ -6086,7 +6832,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         st_update_everywhere_btn = gr.Button("Aggiorna ovunque", visible=False)
                         st_fork_local_btn = gr.Button("Crea una copia locale", visible=False)
                     st_restore_draft_btn = gr.Button("Ripristina bozza", visible=False)
-                    st_discard_draft_btn = gr.Button("Scarta bozza", visible=False)
+                    st_discard_draft_btn = gr.Button("Scarta bozza", visible=False, elem_classes=["ms-danger"])
                     with gr.Row():
                         # 4E.1 stabilization (item G): renamed from the bare
                         # "Salva" -- once the Varianti panel's OWN "Salva
@@ -6105,12 +6851,12 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                         # click handling gathers inputs for studio_save_ui.
                         st_save_btn = gr.Button("Salva contenuto", variant="primary", visible=False, interactive=False,
                                                 elem_id="ms-save-btn")
-                        st_discard_edits_btn = gr.Button("Scarta modifiche", visible=False, interactive=False)
+                        st_discard_edits_btn = gr.Button("Scarta modifiche", visible=False, interactive=False, elem_classes=["ms-danger"])
                     st_save_msg = gr.Markdown()
                     with gr.Row():
-                        st_move_up_btn = gr.Button("↑ Sposta su", visible=False, interactive=False)
-                        st_move_down_btn = gr.Button("↓ Sposta giù", visible=False, interactive=False)
-                        st_archive_btn = gr.Button("Archivia", visible=False, interactive=False)
+                        st_move_up_btn = gr.Button("Sposta su", visible=False, interactive=False)
+                        st_move_down_btn = gr.Button("Sposta giù", visible=False, interactive=False)
+                        st_archive_btn = gr.Button("Archivia", visible=False, interactive=False, elem_classes=["ms-danger"])
                         st_restore_btn = gr.Button("Ripristina", visible=False, interactive=False)
                     st_submit_review_btn = gr.Button("Invia in revisione", visible=False, interactive=False)
                     st_review_msg = gr.Markdown()
@@ -6697,6 +7443,11 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             LOC.add(tab_impact, label="nav.impact")
             head_impact = LOC.html(lambda: _page_head_html(
                 "kicker.workflow", "page.impact.title", "page.impact.subtitle"))
+            # Checkpoint 4: the two pages of this section, side by side. The current
+            # one is shown, not clickable; the other one is one click away.
+            with gr.Row(elem_classes=["ms-subnav"]):
+                subnav_impact_here=LOC.button(lambda: t("nav.impact.sub"),variant="secondary",size="sm",interactive=False,elem_classes=["is-current"])
+                subnav_impact_to_rev=LOC.button(lambda: t("nav.revision"),variant="secondary",size="sm")
             with gr.Row():
                 icp_object = LOC.add(
                     gr.Dropdown(choices=[], value=None, label=t("impactcenter.picker.label"),
@@ -7037,10 +7788,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         with gr.Tab(t("nav.translation"),id="translations") as tab_translations:
             LOC.add(tab_translations, label="nav.translation")
             head_translation=LOC.html(lambda: _page_head_html("kicker.workflow", "page.translation.title", "page.translation.subtitle"))
+            # Checkpoint 4: the two pages of this section, side by side. The current
+            # one is shown, not clickable; the other one is one click away.
+            with gr.Row(elem_classes=["ms-subnav"]):
+                subnav_tr_here=LOC.button(lambda: t("nav.translation.sub"),variant="secondary",size="sm",interactive=False,elem_classes=["is-current"])
+                subnav_tr_to_jobs=LOC.button(lambda: t("nav.jobs"),variant="secondary",size="sm")
             LOC.add(gr.HTML(_translation_stepper_html()), value=_translation_stepper_html)
             gr.HTML("<div class='ms-panel'><div class='ms-section-title'>Pacchetti lingua</div><div class='ms-section-sub'>Riuso TM, ripetizioni esatte e codici non traducibili restano fuori dal workfile; solo il lavoro linguistico reale entra nell’XLIFF controllato.</div></div>")
             with gr.Row(): t_kind=gr.Dropdown(['publication','topic','block','table','figure','component'],value='publication',label='Tipo'); t_id=gr.Textbox(label='Object ID'); t_tms=gr.File(label='TM SQLite esterna — opzionale',type='filepath',file_count='multiple')
-            t_btn=gr.Button('Genera pacchetti lingua',variant='primary'); t_msg=gr.Markdown(); t_table=gr.Dataframe(interactive=False,wrap=True,visible=False)
+            t_btn=gr.Button('Genera pacchetti lingua',variant='primary')
+            # UX Phase 0 (P0-1): the result is a notice; when content blocks the
+            # packages, the user can pick it and open it in the editor, and
+            # when languages are missing, go straight to where they are added.
+            t_msg=gr.HTML()
+            with gr.Row():
+                t_pick=LOC.add(gr.Dropdown(choices=[], value=None, label=t("ux.pkg.pick"), visible=False, scale=3),
+                               label="ux.pkg.pick")
+                t_open=LOC.button(lambda: t("ux.pkg.open"), variant="secondary", visible=False, scale=1)
+            t_add_langs=LOC.button(lambda: t("ux.pkg.add_langs"), variant="secondary", visible=False)
+            t_table=gr.Dataframe(interactive=False,wrap=True,visible=False)
 
             # ========================================
             # UX Gate 2B.2 -- Affidabilita traduzioni, on the Traduzioni tab.
@@ -7074,11 +7840,17 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             t_id.change(translation_panel_ui, [project_state, t_kind, t_id, ws_lang],
                         [tr_panel, tr_note, tr_impact])
             with gr.Row(): t_master=gr.File(label='Master package'); t_files=gr.Files(label='Pacchetti lingua')
-            t_btn.click(work_package_ui,[project_state,t_id,t_kind,t_tms],[t_msg,t_table,t_master,t_files])
+            t_btn.click(_localized(work_package_view_ui),[ws_lang,project_state,t_id,t_kind,t_tms,cp_pub],
+                        [t_msg,t_table,t_master,t_files,t_pick,t_open,t_add_langs])
 
         with gr.Tab(t("nav.jobs"),id="jobs") as tab_jobs:
             LOC.add(tab_jobs, label="nav.jobs")
             head_jobs=LOC.html(lambda: _page_head_html("kicker.workflow", "page.jobs.title", "page.jobs.subtitle"))
+            # Checkpoint 4: the two pages of this section, side by side. The current
+            # one is shown, not clickable; the other one is one click away.
+            with gr.Row(elem_classes=["ms-subnav"]):
+                subnav_jobs_to_tr=LOC.button(lambda: t("nav.translation.sub"),variant="secondary",size="sm")
+                subnav_jobs_here=LOC.button(lambda: t("nav.jobs"),variant="secondary",size="sm",interactive=False,elem_classes=["is-current"])
             with gr.Accordion("Fornitori",open=False):
                 with gr.Row(): w_vid=gr.Textbox(label='Vendor ID'); w_name=gr.Textbox(label='Fornitore'); w_email=gr.Textbox(label='Email'); w_vsave=gr.Button('Salva fornitore')
                 w_vendors=gr.Dataframe(interactive=False,visible=False); w_vsave.click(vendor_ui,[project_state,w_vid,w_name,w_email],[w_vendors])
@@ -7089,7 +7861,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             with gr.Row(): w_job=gr.Textbox(label='Job ID'); w_action=gr.Dropdown(['Segna inviato','Segna in traduzione','Ricevi XLIFF + controllo qualità (QA)','Riesegui controllo qualità (QA)','Approva traduzione','Annulla'],label='Azione')
             with gr.Row(): w_return=gr.File(label='XLIFF restituito',type='filepath',file_types=['.xlf','.xliff']); w_term=gr.File(label='Terminologia approvata — opzionale',type='filepath',file_types=['.csv','.tbx','.xml']); w_strict=gr.Checkbox(label='Terminologia strict')
             with gr.Row(): w_reviewer=gr.Textbox(label='Revisore umano'); w_human=gr.Checkbox(label='Confermo approvazione umana'); w_apply=gr.Button('Esegui azione',variant='primary')
-            w_action_msg=gr.Markdown(); w_qa=gr.Dataframe(interactive=False,max_height=450,visible=False); w_approval=gr.File(label='Approval audit'); w_tm=gr.File(label='Confirmed TM'); w_apply.click(job_action_ui,[project_state,w_job,w_action,w_return,w_term,w_strict,w_reviewer,w_human],[w_action_msg,w_jobs,w_events,w_qa,w_approval,w_tm])
+            # UX Phase 0 (P0-4): the outcome of an action is a notice that says
+            # what happened, why and what to do next; "Annulla" asks first and
+            # the answer acts on the job the question named; the quality-check
+            # table the user reads is in plain words, while the engine's raw
+            # audit is kept, one click away, under technical details.
+            w_action_msg=gr.HTML()
+            with gr.Row():
+                w_cancel_yes=LOC.button(lambda: t("ux.job.cancel.yes"), variant="stop", visible=False)
+                w_cancel_no=LOC.button(lambda: t("ux.job.cancel.no"), variant="secondary", visible=False)
+            w_cancel_target=gr.State("")
+            w_qa=gr.Dataframe(interactive=False,max_height=450,visible=False,wrap=True)
+            with gr.Accordion(t("ux.job.qa_details"),open=False) as w_qa_acc:
+                LOC.add(w_qa_acc, label="ux.job.qa_details")
+                w_qa_raw=gr.Dataframe(interactive=False,max_height=450,wrap=True)
+            w_approval=gr.File(label='Approval audit'); w_tm=gr.File(label='Confirmed TM')
+            _JOB_ACTION_OUT=[w_action_msg,w_jobs,w_events,w_qa,w_qa_raw,w_approval,w_tm,w_cancel_yes,w_cancel_no,w_cancel_target]
+            w_apply.click(_localized(job_action_view_ui),[ws_lang,project_state,w_job,w_action,w_return,w_term,w_strict,w_reviewer,w_human],_JOB_ACTION_OUT)
+            w_cancel_yes.click(_localized(job_cancel_confirmed_ui),[ws_lang,project_state,w_cancel_target,w_return,w_term,w_strict,w_reviewer,w_human],_JOB_ACTION_OUT)
+            w_cancel_no.click(job_cancel_back_ui,None,[w_action_msg,w_cancel_yes,w_cancel_no,w_cancel_target])
 
         with gr.Tab(t("nav.release"),id="release") as tab_release:
             LOC.add(tab_release, label="nav.release")
@@ -7134,6 +7924,22 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                 pv_show_excluded = LOC.add(gr.Checkbox(label=t("release.preview.show_excluded"),
                                                        value=False, scale=1),
                                            label="release.preview.show_excluded")
+            # UX Phase 0 (P0-3): no profile yet -> say so and offer to
+            # create one here. Every control toggles its OWN visibility
+            # (nested visibility inside a group is unreliable in Gradio).
+            pv_prof_msg = gr.HTML()
+            pv_prof_new_btn = LOC.button(lambda: t("ux.prof.create"), variant="primary", visible=False)
+            pv_prof_name = LOC.add(gr.Textbox(value=t("ux.prof.name.default"), label=t("ux.prof.name.label"),
+                                              visible=False), label="ux.prof.name.label")
+            with gr.Row():
+                pv_prof_dims = [gr.Dropdown(choices=[], value=None, label="", visible=False, min_width=180)
+                                for _ in range(_PROFILE_DIM_SLOTS)]
+            with gr.Row():
+                pv_prof_save = LOC.button(lambda: t("ux.prof.save"), variant="primary", visible=False)
+                pv_prof_cancel = LOC.button(lambda: t("ux.prof.cancel"), variant="secondary", visible=False)
+            pv_prof_dim_ids = gr.State([])
+            _PROFILE_OUT = [pv_prof_msg, pv_prof_new_btn, pv_prof_name, *pv_prof_dims,
+                            pv_prof_save, pv_prof_cancel, pv_prof_dim_ids]
             pv_output = LOC.add(gr.HTML(f"<div class='ms-pp-note-line'>{t('release.preview.empty')}</div>"),
                                 value=lambda: f"<div class='ms-pp-note-line'>{t('release.preview.empty')}</div>")
             LOC.add(gr.HTML(f"<div class='ms-section-sub' style='margin-top:14px'>{t('release.export.sub')}</div>"),
@@ -7190,13 +7996,54 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                                     [pv_export_status])
             pv_export_html_btn.click(studio_export_html_ui, [project_state, c_pub, pv_profile],
                                      [pv_export_status])
+            # UX Phase 0 (P0-3): the profile notice follows the project and
+            # the tab; creating a profile happens only on "Crea e usa", and
+            # the new profile is selected and previewed straight away.
+            tab_release.select(_localized(release_profile_notice_ui), [ws_lang, project_state], _PROFILE_OUT)
+            pv_prof_new_btn.click(_localized(release_profile_open_ui), [ws_lang, project_state], _PROFILE_OUT)
+            pv_prof_cancel.click(_localized(release_profile_notice_ui), [ws_lang, project_state], _PROFILE_OUT)
+            pv_prof_save.click(_localized(release_profile_create_ui),
+                               [ws_lang, project_state, pv_prof_name, actor_state, pv_prof_dim_ids, *pv_prof_dims],
+                               [*_PROFILE_OUT, pv_profile, profile_state],
+                               trigger_mode="once", concurrency_limit=1).then(
+                studio_preview_refresh_ui, [project_state, c_pub, pv_profile, pv_show_excluded], [pv_output])
+            for _export_btn in (pv_export_pdf_btn, pv_export_html_btn):
+                _export_btn.click(_localized(release_export_profile_check_ui), [ws_lang, project_state, pv_profile, pv_prof_dim_ids],
+                                  _PROFILE_OUT)
 
         with gr.Tab(t("nav.settings"),id="settings") as tab_settings:
             LOC.add(tab_settings, label="nav.settings")
             head_settings=LOC.html(lambda: _page_head_html("kicker.system", "page.settings.title", "page.settings.subtitle"))
+            # UX Phase 0 (P0-2 / 8b): the project's details and its
+            # translation languages -- the place the translation packages
+            # send the user to when a project has none.
+            with gr.Column(elem_id="settings-project-card",elem_classes=["ms-settings-card"]):
+                LOC.html(lambda: f"<div class='ms-section-title'>{html.escape(t('ux.proj.title'))}</div>"
+                                 f"<div class='ms-section-sub'>{html.escape(t('ux.proj.subtitle'))}</div>")
+                sp_facts=gr.HTML(pv.project_facts_html(None))
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1):
+                        sp_add=LOC.add(gr.Dropdown(choices=[],value=[],multiselect=True,allow_custom_value=True,filterable=True,
+                                                   label=t("ux.proj.add.label"),info=t("ux.proj.add.info"),visible=False),
+                                       label="ux.proj.add.label",info="ux.proj.add.info")
+                        sp_add_btn=LOC.button(lambda: t("ux.proj.add.button"),variant="primary",visible=False)
+                    with gr.Column(scale=1):
+                        sp_remove=LOC.add(gr.Dropdown(choices=[],value=None,label=t("ux.proj.remove.label"),visible=False),
+                                          label="ux.proj.remove.label")
+                        sp_remove_btn=LOC.button(lambda: t("ux.proj.remove.button"),variant="secondary",visible=False)
+                sp_msg=gr.HTML()
+                with gr.Row():
+                    sp_remove_yes=LOC.button(lambda: t("ux.proj.remove.yes"),variant="stop",visible=False)
+                    sp_remove_no=LOC.button(lambda: t("ux.proj.remove.no"),variant="secondary",visible=False)
+                sp_pending=gr.State("")
+            _SETTINGS_PROJECT_OUT=[sp_facts,sp_add,sp_add_btn,sp_remove,sp_remove_btn,sp_msg,sp_remove_yes,sp_remove_no,sp_pending]
+            sp_add_btn.click(_localized(settings_add_languages_ui),[ws_lang,project_state,sp_add],_SETTINGS_PROJECT_OUT)
+            sp_remove_btn.click(_localized(settings_remove_language_ui),[ws_lang,project_state,sp_remove],_SETTINGS_PROJECT_OUT)
+            sp_remove_yes.click(_localized(settings_remove_confirmed_ui),[ws_lang,project_state,sp_pending],_SETTINGS_PROJECT_OUT)
+            sp_remove_no.click(_localized(settings_remove_back_ui),[ws_lang,project_state],_SETTINGS_PROJECT_OUT)
             with gr.Row():
                 with gr.Column(elem_classes=["ms-settings-card"]):
-                    gr.HTML("<div class='ms-section-title'>Backup e ripristino</div><div class='ms-section-sub'>Esporta il progetto attivo o riapri un archivio ManualSync verificato.</div>")
+                    gr.HTML("<div class='ms-section-title'>Backup e ripristino<div class='ms-section-sub'>Esporta il progetto attivo o riapri un archivio ERYLOS verificato.</div>")
                     p_archive=gr.File(label="Archivio progetto .zip",type="filepath",file_types=['.zip'])
                     with gr.Row():
                         p_restore=gr.Button("Riapri archivio")
@@ -7204,7 +8051,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     p_export_file=gr.File(label="Backup")
                     p_settings_msg=gr.Markdown()
                 with gr.Column(elem_classes=["ms-settings-card"]):
-                    gr.HTML(f"<div class='ms-section-title'>Informazioni prodotto</div><div class='ms-section-sub'>Il nome è ancora provvisorio durante il rebrand.</div><div style='font-size:12px;color:#475467;line-height:1.7'><b>{BRAND_NAME}</b><br>{BRAND_TAGLINE}<br><span style='color:#98a2b3'>Build: {PRODUCT_BUILD}</span><br><span style='color:#98a2b3'>Core baseline: R18</span></div>")
+                    # Checkpoint 4: the product's own identity, final (no "provisional
+                    # name" note any more); the build is a technical value -> mono.
+                    LOC.html(lambda: f"<div class='ms-section-title'>{t('settings.product.title')}</div>"
+                                     f"<div class='ms-product-info'><div class='ms-product-name'>{theme.symbol_svg(20)}<b>{BRAND_NAME}</b></div>"
+                                     f"<div class='ms-muted'>{BRAND_TAGLINE}</div>"
+                                     f"<div class='ms-product-build'>{t('settings.product.build')}: <span class='ms-code'>{html.escape(str(PRODUCT_BUILD))}</span>"
+                                     f" · Core baseline <span class='ms-code'>R18</span></div></div>")
                     p_refresh=gr.Button("Aggiorna dashboard")
                     p_health=gr.Button("Verifica integrità locale")
                     p_health_msg=gr.Markdown()
@@ -7212,7 +8065,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                     p_support=gr.Button("Esporta diagnostica assistenza")
                     p_support_file=gr.File(label="Pacchetto diagnostico")
                     p_support_msg=gr.Markdown()
-            p_restore.click(restore_project_ui,[p_archive],[project_state,project_card,sidebar_context,p_settings_msg])
+            _restore_evt=p_restore.click(restore_project_view_ui,[p_archive,ws_lang],[project_state,project_card,sidebar_context,p_settings_msg,home_notice])
             p_export.click(export_project_ui,[project_state],[p_export_file])
             p_refresh.click(refresh_ui,[project_state],[project_card])
             p_health.click(diagnostics_ui,[project_state],[p_health_msg,p_health_table])
@@ -7227,7 +8080,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             # asking for a name a second time in this tab.
             gr.HTML("<div class='ms-section-title'>Varianti — dimensioni, valori e profili</div>"
                     "<div class='ms-section-sub'>Dimensioni e valori (es. Mercato = EU/US) usati per condizionare "
-                    "topic e blocchi nell'editor «Redazione & contenuti»; i profili combinano un valore per "
+                    "topic e blocchi nell'editor «Contenuti»; i profili combinano un valore per "
                     "dimensione per valutare o pubblicare una variante specifica.</div>")
             with gr.Row():
                 with gr.Column(elem_classes=["ms-settings-card"]):
@@ -7305,14 +8158,25 @@ with gr.Blocks(title=BRAND_NAME) as demo:
             v_prof_activate_btn.click(lambda pd_, pid, ac: settings_variant_set_profile_active_ui(pd_, pid, True, ac),
                                       [project_state, v_prof_target_id, actor_state], [v_prof_table, v_prof_msg])
 
-    _NAV_IDS=['home','revision','authoring','compliance','translations','jobs','release','settings']
-    _NAV_BUTTONS=[nav_home,nav_revision,nav_authoring,nav_compliance,nav_translation,nav_jobs,nav_release,nav_settings]
+    # Checkpoint 3: 'impact' was missing, so on Analisi impatto no sidebar
+    # entry was highlighted and the user lost where they were.
+    # Checkpoint 4: one sidebar entry per SECTION. A page that belongs to a
+    # two-page section (revision -> "Versioni e impatto", jobs ->
+    # "Traduzioni") lights up its section's entry.
+    _NAV_IDS=['home','authoring','impact','translations','compliance','release','settings']
+    _NAV_BUTTONS=[nav_home,nav_authoring,nav_impact,nav_translation,nav_compliance,nav_release,nav_settings]
+    _NAV_SECTION_OF={'revision':'impact','jobs':'translations'}
     def _navigate(tab_id: str):
-        updates=[gr.update(variant='primary' if item==tab_id else 'secondary') for item in _NAV_IDS]
+        section=_NAV_SECTION_OF.get(tab_id, tab_id)
+        updates=[gr.update(variant='primary' if item==section else 'secondary') for item in _NAV_IDS]
         return (gr.Tabs(selected=tab_id), *updates)
     _nav_outputs=[workspace_tabs,*_NAV_BUTTONS]
     nav_home.click(lambda:_navigate('home'),None,_nav_outputs)
-    nav_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
+    # The two-page sections: sub-navigation, with the same refresh the
+    # sidebar entry of each page does on arrival.
+    subnav_impact_to_rev.click(lambda:_navigate('revision'),None,_nav_outputs)
+    subnav_rev_to_impact.click(lambda:_navigate('impact'),None,_nav_outputs).then(
+        impact_center_choices_ui,[project_state,ws_lang],[icp_object])
     # 4F.1 export-UX fix (real defect, found by the browser gate): the
     # sidebar switches tabs PROGRAMMATICALLY via gr.Tabs(selected=...),
     # which does NOT fire authoring_tab.select() -- and the tab strip
@@ -7332,21 +8196,41 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     nav_impact.click(lambda:_navigate('impact'),None,_nav_outputs).then(
         impact_center_choices_ui,[project_state,ws_lang],[icp_object])
     nav_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
-    nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
-    nav_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
+    # Checkpoint 3: arriving on Traduzioni re-reads the reliability panel for
+    # what the page points at, so it never shows another project's state.
+    nav_translation.click(lambda:_navigate('translations'),None,_nav_outputs).then(
+        translation_panel_ui,[project_state,t_kind,t_id,ws_lang],[tr_panel,tr_note,tr_impact])
+    subnav_tr_to_jobs.click(lambda:_navigate('jobs'),None,_nav_outputs)
+    subnav_jobs_to_tr.click(lambda:_navigate('translations'),None,_nav_outputs).then(
+        translation_panel_ui,[project_state,t_kind,t_id,ws_lang],[tr_panel,tr_note,tr_impact])
     nav_release.click(lambda:_navigate('release'),None,_nav_outputs).then(
-        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state])
-    nav_settings.click(lambda:_navigate('settings'),None,_nav_outputs)
+        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state]).then(
+        _localized(release_profile_notice_ui),[ws_lang,project_state],_PROFILE_OUT)
+    # Settings › Progetto is re-read on arrival: the sidebar switches tabs
+    # programmatically, which fires no .select (see the 4F.1 note above).
+    nav_settings.click(lambda:_navigate('settings'),None,_nav_outputs).then(
+        _localized(settings_project_ui),[ws_lang,project_state],_SETTINGS_PROJECT_OUT)
+    # UX Phase 0 (P0-1): from a refused translation package straight to the
+    # fix -- the settings where languages are added, or the blocking content
+    # opened in the editor through the same chain the editor's own search uses.
+    t_add_langs.click(lambda:_navigate('settings'),None,_nav_outputs).then(
+        _localized(settings_project_ui),[ws_lang,project_state],_SETTINGS_PROJECT_OUT)
+    t_open.click(lambda:_navigate('authoring'),None,_nav_outputs).then(
+        studio_preview_profile_choices_ui,[project_state,profile_state],[st_variant_eval_profile,profile_state]).then(
+        studio_search_open_ui,[project_state,c_pub,t_pick,st_show_archived],ST_OUT_FULL).then(
+        *_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS)
     home_revision.click(lambda:_navigate('revision'),None,_nav_outputs)
-    home_translation.click(lambda:_navigate('translations'),None,_nav_outputs)
+    home_translation.click(lambda:_navigate('translations'),None,_nav_outputs).then(
+        translation_panel_ui,[project_state,t_kind,t_id,ws_lang],[tr_panel,tr_note,tr_impact])
     home_release.click(lambda:_navigate('release'),None,_nav_outputs).then(
-        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state])
+        studio_preview_profile_choices_ui,[project_state,profile_state],[pv_profile,profile_state]).then(
+        _localized(release_profile_notice_ui),[ws_lang,project_state],_PROFILE_OUT)
     home_compliance.click(lambda:_navigate('compliance'),None,_nav_outputs)
     # Milestone 3A: "Rivedi il contenuto importato" opens the Contenuti tab, whose
     # DEFAULT view (c_simple_table) is now the friendly standard view — the
     # technical dataframes live only inside the collapsed "modalità avanzata"
     # accordion, so they're never the primary call-to-action.
-    lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel]).then(
+    lg_review.click(lambda:(*_navigate('authoring'),gr.update(visible=False),gr.update(visible=False)),None,[*_nav_outputs,legacy_onboarding_panel,lg_review]).then(
         studio_preview_profile_choices_ui,[project_state,profile_state],
         [st_variant_eval_profile,profile_state])
     # Keeps the standard review table in sync with the SAME topics/blocks data
@@ -7365,8 +8249,86 @@ with gr.Blocks(title=BRAND_NAME) as demo:
                      onboarding_choice_panel,legacy_onboarding_panel,lg_review,
                      lg_lang_prompt,lg_lang_pick,lg_lang_confirm,
                      c_topics,c_blocks,c_pdf,c_lang,c_pub,c_title]
-    lg_submit.click(guided_new_project_from_pdf_ui,[lg_name,lg_pdf],_guided_outputs,scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
-    lg_lang_confirm.click(guided_confirm_language_ui,[lg_name,lg_pdf,lg_lang_pick],_guided_outputs,scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
+    # Checkpoint 3: the same guided import, plus the Home notice that
+    # confirms it (project, content, languages) where the user can see it.
+    _import_evt=lg_submit.click(guided_import_view_ui,[lg_name,lg_pdf,lg_targets,ws_lang],[*_guided_outputs,home_notice],scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
+    _confirm_evt=lg_lang_confirm.click(guided_confirm_view_ui,[lg_name,lg_pdf,lg_lang_pick,lg_targets,ws_lang],[*_guided_outputs,home_notice],scroll_to_output=True,trigger_mode="once",concurrency_limit=1)
+
+    # ================================================================
+    # Checkpoint 3 -- one manual in context. The header chooses it; Contenuti
+    # (and the preview/export that read the same field) and the release
+    # readiness check follow. Their own fields stay editable in their
+    # advanced areas and report back to the header when the user leaves
+    # them, so the three can no longer silently disagree.
+    # ================================================================
+    cp_pub.change(lambda v:(v,v),[cp_pub],[c_pub,r_pub],show_progress="hidden")
+    c_pub.blur(lambda v:v,[c_pub],[cp_pub],show_progress="hidden")
+    r_pub.blur(lambda v:v,[r_pub],[cp_pub],show_progress="hidden")
+
+    # ================================================================
+    # Checkpoint 3 -- every on-screen RESULT that belongs to one project.
+    # project_scope_ui puts them back to a fresh page's state when the
+    # project changes. What the change routine RELOADS instead is not
+    # listed: Contenuti's editor, Lavorazioni's tables, Impostazioni,
+    # Rilascio's profile area, Analisi impatto's picker, Conformita, and
+    # the Home, which shell_ui redraws. regressione_navigation_cp3 derives
+    # every project-data output from the wiring and fails if one is
+    # neither here nor reloaded. Resetting c_blocks also re-runs its own
+    # .change listeners, which rebuild the review table and the IDML
+    # items-to-check for the new project.
+    # ================================================================
+    for _result in (a_summary, a_queue, a_report, a_queue_file, rv_queue, rv_msg,
+                    st_search_msg, st_search_picker, st_search_open_btn,
+                    g_ingest_msg, g_chunks, g_msg, g_draft, g_evidence, g_claims, g_pid, g_queue_msg,
+                    c_msg, c_simple_msg, c_topics, c_blocks, c_approve_msg, c_approved, st_variant_save_msg,
+                    cp_pack_status, cp_pack_update_preview, cp_pack_update_status,
+                    icp_changes, icp_attention, icp_ready, icp_advanced,
+                    t_id, t_msg, t_pick, t_open, t_add_langs, t_table, t_master, t_files, tr_note, tr_impact,
+                    w_msg, w_job, w_action_msg, w_cancel_yes, w_cancel_no, w_cancel_target, w_qa, w_qa_raw,
+                    w_approval, w_tm,
+                    r_summary, r_matrix, r_blockers, r_json, r_release, r_msg, r_zip, r_artifacts,
+                    pv_export_status,
+                    p_export_file, p_health_msg, p_health_table, p_support_file, p_support_msg,
+                    v_dim_msg, v_val_msg, v_prof_msg):
+        _scoped(_result)
+    # Initial content that is itself catalogue text: rebuilt in the
+    # session's language rather than restored in the build language.
+    _scoped(tr_panel, lambda: tv.panel_html(None))
+    _scoped(icp_header, lambda: icv.header_html(None))
+    _scoped(pv_output, lambda: f"<div class='ms-pp-note-line'>{t('release.preview.empty')}</div>")
+    _SCOPED_OUT = [c for c, _reset in PROJECT_SCOPED]
+    _SHELL_OUT = [ws_project, cp_pub, c_pub, sidebar_context, project_card, onboarding_choice_panel,
+                  quick_head, quick_grid]
+
+    _CHANGE_OUT = [*_SHELL_OUT, shown_project, *_SCOPED_OUT, w_jobs, w_vendors, w_events, pv_profile,
+                   profile_state, *_PROFILE_OUT, *_SETTINGS_PROJECT_OUT, v_dim_table, v_val_table, v_prof_table,
+                   icp_object]
+
+    def _after_project_change(event):
+        """The one routine that follows every project change: everything
+        visible in a single step (project_changed_ui), then Contenuti's
+        editor and Conformità reloaded side by side -- never ahead of it."""
+        visible = event.then(project_changed_ui, [project_state, cp_pub, shown_project, profile_state, ws_lang],
+                             _CHANGE_OUT, show_progress="hidden")
+        (visible.then(studio_reload_ui, [project_state, c_pub, st_show_archived], ST_OUT_FULL)
+                .then(*_VARIANT_THEN_ARGS).then(*_IMPACT_THEN_ARGS).then(*_TRANSLATION_THEN_ARGS))
+        (visible.then(compliance_pack_choices_ui, None, [cp_pack_picker])
+                .then(compliance_load_ui, [project_state, cp_pub, ws_lang], [cp_scope, *cp_out_full])
+                .then(compliance_coverage_ui, [project_state, cp_scope, ws_lang], [cp_coverage, cp_gaps])
+                .then(compliance_pack_state_ui, [project_state, ws_lang],
+                      [cp_pack_state, cp_pack_update_row, cp_pack_provenance])
+                .then(compliance_list_ui, [project_state, cp_scope, cp_search, cp_filter, ws_lang], cp_table))
+        return visible
+
+    # The project selector: .select is the USER's choice only -- shell_ui
+    # setting the value after a create/import/restore must not re-open it.
+    _open_evt = ws_project.select(open_project_ui, [ws_project, project_state, ws_lang], [project_state, home_notice],
+                                  trigger_mode="once", concurrency_limit=1)
+    for _project_evt in (_open_evt, _create_evt, _restore_evt, _import_evt, _confirm_evt):
+        _after_project_change(_project_evt)
+
+    # Decisions 8c/8d: language and operator remembered in the browser only.
+    gr.HTML("", js_on_load=_SHELL_PERSIST_JS, elem_id="ms-shell-persist", container=False)
 
     # Static labels first, then a re-render of the Conformità workspace.
     # The second step is not optional: the working list, the status bar and
@@ -7384,7 +8346,7 @@ with gr.Blocks(title=BRAND_NAME) as demo:
     # session that set it, so each request renders in its own language and
     # no shared variable decides it for everybody.
     ws_lang.change(switch_language_ui, ws_lang, LOC.components(),
-                   trigger_mode="once", concurrency_limit=1).then(
+                   trigger_mode="once", concurrency_limit=1, show_progress="hidden").then(
         compliance_switch_scope_ui, [project_state, cp_scope, ws_lang], cp_out_full).then(
         compliance_pack_state_ui, [project_state, ws_lang],
         [cp_pack_state, cp_pack_update_row, cp_pack_provenance]).then(
@@ -7407,7 +8369,13 @@ with gr.Blocks(title=BRAND_NAME) as demo:
         # it IS the translation step. Deep analysis is not re-run: the
         # checkbox carries the user's choice.
         impact_center_ui, [project_state, icp_object, icp_deep, ws_lang],
-        [icp_header, icp_changes, icp_attention, icp_ready, icp_advanced])
+        [icp_header, icp_changes, icp_attention, icp_ready, icp_advanced]).then(
+        # Checkpoint 3: the shell and the UX Phase 0 areas are callback
+        # output too -- re-rendered for THIS session's project and language.
+        shell_ui, [project_state, cp_pub, ws_lang], _SHELL_OUT, show_progress="hidden").then(
+        _localized(settings_project_ui), [ws_lang, project_state], _SETTINGS_PROJECT_OUT).then(
+        _localized(release_profile_notice_ui), [ws_lang, project_state], _PROFILE_OUT).then(
+        translation_panel_ui, [project_state, t_kind, t_id, ws_lang], [tr_panel, tr_note, tr_impact])
 
 if __name__=='__main__':
     # MS_APP_PORT / MS_NO_BROWSER: launch overrides for automated

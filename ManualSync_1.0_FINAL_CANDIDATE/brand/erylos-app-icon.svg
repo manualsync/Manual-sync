@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="ERYLOS">
+  <!-- Standalone app / window / favicon tile: the dark symbol on a graphite
+       tile, so it reads on any browser tab or taskbar colour. -->
+  <rect width="32" height="32" rx="7" fill="#15161C"/>
+  <g transform="translate(3.2 3.2) scale(0.8)" stroke-linejoin="round" stroke-width="1">
+    <polygon points="6,6 24,6 22,10.5 4,10.5" fill="#F2F2F5" stroke="#F2F2F5"/>
+    <polygon points="10,14 28,14 26,18.5 8,18.5" fill="#9B7CFF" stroke="#9B7CFF"/>
+    <polygon points="6,22 24,22 22,26.5 4,26.5" fill="#F2F2F5" stroke="#F2F2F5"/>
+  </g>
+</svg>

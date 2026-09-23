@@ -39,11 +39,14 @@ import impact_center as ic
 import impact_intelligence as ii
 import translation_intelligence as ti
 import translation_view as tv
+import ux_components as ux
 
+# Checkpoint 4: the shared SVG status marks instead of emoji; the status
+# word always follows them.
 _STATUS_ICON = {
-    ti.STATUS_FRESH: "✅",
-    ti.STATUS_STALE: "⚠️",
-    ti.STATUS_MISSING: "❌",
+    ti.STATUS_FRESH: ux.icon(ux.SUCCESS),
+    ti.STATUS_STALE: ux.icon(ux.WARNING),
+    ti.STATUS_MISSING: ux.icon(ux.ERROR),
 }
 
 

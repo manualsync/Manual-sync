@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="ERYLOS">
+  <!-- ERYLOS "Strati", one colour: takes the colour of the surrounding text
+       (currentColor), for print, embossing, single-ink and icon use. -->
+  <g fill="currentColor" stroke="currentColor" stroke-linejoin="round" stroke-width="0.8">
+    <polygon points="6,6 24,6 22,10.5 4,10.5"/>
+    <polygon points="10,14 28,14 26,18.5 8,18.5"/>
+    <polygon points="6,22 24,22 22,26.5 4,26.5"/>
+  </g>
+</svg>

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 146 32" width="146" height="32" role="img" aria-label="ERYLOS">
+  <!-- Horizontal lock-up for light grounds: symbol, 10 units of space, wordmark. -->
+  <g stroke-linejoin="round" stroke-width="0.8">
+    <polygon points="6,6 24,6 22,10.5 4,10.5" fill="#15161C" stroke="#15161C"/>
+    <polygon points="10,14 28,14 26,18.5 8,18.5" fill="#7C5CFF" stroke="#7C5CFF"/>
+    <polygon points="6,22 24,22 22,26.5 4,26.5" fill="#15161C" stroke="#15161C"/>
+  </g>
+  <text x="40" y="22.5" fill="#15161C" font-family="'Plus Jakarta Sans','Segoe UI',system-ui,sans-serif"
+        font-size="20" font-weight="600" letter-spacing="2.4">ERYLOS</text>
+</svg>

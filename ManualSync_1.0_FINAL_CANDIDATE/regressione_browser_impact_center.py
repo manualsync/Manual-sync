@@ -248,7 +248,9 @@ def open_impact_tab(b: Browser):
     and clicking it exercises the nav_impact -> workspace_tabs chain that
     the Impact Center actually ships with.
     """
-    click_visible_text(b, "Analisi impatto")
+    # Checkpoint 4: the sidebar entry is the "Versioni e impatto" section,
+    # which opens on this page.
+    click_visible_text(b, "Versioni e impatto")
     b.wait_for("!!document.querySelector('#ms-ic-object')", timeout=40,
                label="impact tab rendered")
     wait_idle(b)
@@ -336,7 +338,7 @@ def run_scenarios(b: Browser, url: str, project: Path, facts: dict):
 
     # --- 1. the screen is reachable and the picker is populated --------
     open_impact_tab(b)
-    check("the Analisi impatto tab opens and renders its picker",
+    check("the Versioni e impatto section opens on Impact and renders its picker",
           bool(b.js("!!document.querySelector('#ms-ic-object')")))
 
     open_picker(b)

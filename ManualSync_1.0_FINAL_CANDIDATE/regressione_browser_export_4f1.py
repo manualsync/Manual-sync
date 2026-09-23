@@ -199,8 +199,9 @@ def _run(target):
         # not to the per-object writing loop. The profile picker moved with
         # them and is now labelled "Profilo di variante" (it used to be a
         # bare "Profilo", one of two identically-labelled controls).
-        check("e2e_nav (setup): the Rilascio tab can be opened from the sidebar",
-              _click_by_text(br, "button", "Rilascio", contains=True), None)
+        # Checkpoint 4: the section is called "Pubblicazione" now.
+        check("e2e_nav (setup): the Pubblicazione section can be opened from the sidebar",
+              _click_by_text(br, "button", "Pubblicazione", contains=True), None)
         br.wait_for("!!document.querySelector('input[aria-label=\"Profilo di variante\"]')",
                     timeout=45, label="Rilascio loaded")
         time.sleep(3)

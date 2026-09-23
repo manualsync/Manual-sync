@@ -1239,11 +1239,13 @@ _urepo3.close()
 # and the stored vocabulary stay the single source of truth.
 # ====================================================================
 
-check("pol1: the Compliance page asks for a 'Pubblicazione' and a 'Perimetro normativo', not a "
+# Checkpoint 4: the publication picker is named "Manuale" everywhere (the
+# header's word), because "Pubblicazione" is now the name of a section.
+check("pol1: the Compliance page asks for a 'Manuale' and a 'Perimetro normativo', not a "
       "'Publication ID' and a 'Scope compliance'",
       'label="context.publication"' in _SRC
       and 'label="conformity.scope.label"' in _SRC
-      and i18n.translate("context.publication", "it") == "Pubblicazione"
+      and i18n.translate("context.publication", "it") == "Manuale"
       and i18n.translate("conformity.scope.label", "it") == "Perimetro normativo"
       and "Publication ID" not in i18n.translate("context.publication", "en"), None)
 _scope_opts = cv.scope_options(svc, "PUB-MAIN")
