@@ -362,7 +362,7 @@ else {
 }
 """
 
-CSS = theme.FONT_IMPORT + """
+CSS = theme.FONT_FACES + """
 :root {
   --ui-bg:#F7F8FA; --ui-surface:#ffffff; --ui-surface-2:#FBFBFC;
   --ui-ink:#111318; --ui-muted:#6B7185; --ui-line:#E4E6EC;

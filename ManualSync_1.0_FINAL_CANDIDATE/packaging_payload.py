@@ -49,10 +49,13 @@ ENTRY_POINTS = ("manualsync_desktop", "app", "commercial_acceptance")
 
 # Data the running product reads. Directories are copied whole.
 #   locales/       i18n catalogues -- see the module docstring above
+#   fonts/         the interface fonts (and their OFL licences), embedded in
+#                  the stylesheet at startup: the product must look the same
+#                  offline and must not call a font server at every start
 #   manualsync.png window/tray icon, asserted by packaged_resource_check()
 #   VERSION.txt    shown in Impostazioni and read by the installer
 #   *_esempio.*    sample terminology/QA/vendor files the UI offers to load
-RUNTIME_DATA_DIRS = ("locales",)
+RUNTIME_DATA_DIRS = ("locales", "fonts")
 RUNTIME_DATA_FILES = (
     "manualsync.png",
     "VERSION.txt",

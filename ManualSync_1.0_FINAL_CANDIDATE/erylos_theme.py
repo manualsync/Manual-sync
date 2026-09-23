@@ -2,7 +2,7 @@
 stylesheet layer applied on top of the application's own CSS.
 
 Presentation only. Nothing here reads or writes project data. app.py builds
-its CSS as FONT_IMPORT + its own rules + FOUNDATION_CSS, and both launch
+its CSS as FONT_FACES + its own rules + FOUNDATION_CSS, and both launch
 paths (app.py and the desktop launcher) pass that same CSS, so the two can
 never look different.
 
@@ -14,6 +14,7 @@ graphite, near-black text and secondary greys.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 # ---------------------------------------------------------------- tokens
 # Every pair a person has to read is listed in CONTRAST_REQUIREMENTS below
@@ -160,10 +161,39 @@ NAV_ICONS = {
 
 # ---------------------------------------------------------------- typography
 # Plus Jakarta Sans for everything people read; JetBrains Mono only for
-# identifiers, codes and technical values. Loaded from Google Fonts with a
-# system fallback -- offline, the interface falls back to Segoe UI.
-FONT_IMPORT = ("@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500"
-               "&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap');\n")
+# identifiers, codes and technical values.
+#
+# The font files ship WITH the product, in fonts/, and are embedded in the
+# stylesheet as data URIs. ERYLOS is installed software: it must look the
+# same on a machine with no internet, and it must not tell a third party
+# that a customer has opened it -- which a request to Google's font servers
+# would do at every start. The families are the ones the Checkpoint 4 design
+# was verified with (Plus Jakarta Sans 2.071, JetBrains Mono 2.305, both
+# SIL Open Font License 1.1; see fonts/OFL-*.txt).
+#
+# A font file that is missing is skipped rather than raising: the interface
+# then falls back to the system stack below and still works. That must never
+# happen silently in a release, so regressione_font_locali.py fails when any
+# of the five is absent, and packaging_payload.py carries fonts/ into the
+# customer package.
+FONTS_DIR = Path(__file__).resolve().parent / "fonts"
+FONT_FILES = (
+    ("Plus Jakarta Sans", 400, "PlusJakartaSans-Regular.woff2"),
+    ("Plus Jakarta Sans", 500, "PlusJakartaSans-Medium.woff2"),
+    ("Plus Jakarta Sans", 600, "PlusJakartaSans-SemiBold.woff2"),
+    ("JetBrains Mono", 400, "JetBrainsMono-Regular.woff2"),
+    ("JetBrains Mono", 500, "JetBrainsMono-Medium.woff2"),
+)
+MISSING_FONT_FILES = [n for _, _, n in FONT_FILES if not (FONTS_DIR / n).is_file()]
+
+
+def _font_face(family: str, weight: int, filename: str) -> str:
+    data = base64.b64encode((FONTS_DIR / filename).read_bytes()).decode("ascii")
+    return (f"@font-face{{font-family:'{family}';font-style:normal;font-weight:{weight};"
+            f"font-display:swap;src:url(data:font/woff2;base64,{data}) format('woff2')}}\n")
+
+
+FONT_FACES = "".join(_font_face(f, w, n) for f, w, n in FONT_FILES if n not in MISSING_FONT_FILES)
 FONT_SANS = "'Plus Jakarta Sans','Segoe UI',system-ui,-apple-system,sans-serif"
 FONT_MONO = "'JetBrains Mono',Consolas,'Cascadia Mono',ui-monospace,monospace"
 TYPE_SCALE = {  # name: (size px, line height px, weight)

@@ -200,7 +200,7 @@ def _load_payload_mutant(old: str, new: str):
 
 def test_mutation_payload_resolver_has_teeth():
     """Break packaging_payload three ways; each break must be caught."""
-    m1 = _load_payload_mutant('RUNTIME_DATA_DIRS = ("locales",)', "RUNTIME_DATA_DIRS = ()")
+    m1 = _load_payload_mutant('RUNTIME_DATA_DIRS = ("locales", "fonts")', "RUNTIME_DATA_DIRS = ()")
     check("[mutant] dropping locales from the payload is DETECTED",
           bool(locale_problems(set(m1.payload_entries()))), "")
 

@@ -101,7 +101,7 @@ if ($rc -ne 0) {
 }
 Get-Content -LiteralPath (Join-Path $LogDir 'dati_reali_prima.out.txt') | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
 
-$BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py')
+$BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py','regressione_browser_fonts.py')
 $Suites = @(Get-ChildItem -LiteralPath $Root -File -Filter 'regressione_*.py' | Sort-Object Name)
 if (-not $IncludeBrowser) { $Suites = @($Suites | Where-Object { $BrowserSuites -notcontains $_.Name }) }
 if ($Filter -ne '') { $Suites = @($Suites | Where-Object { $_.Name -like "*$Filter*" }) }

@@ -128,7 +128,7 @@ Step 'Regressione completa - ogni suite del repository'
 # allowlist del payload -- un elenco che invecchia in silenzio -- con la
 # stessa correzione: derivarlo. Le suite browser restano escluse perche
 # pilotano Chrome e un server applicativo propri, non il pacchetto.
-$BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py')
+$BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py','regressione_browser_fonts.py')
 $Suites = @(Get-ChildItem -LiteralPath $Root -File -Filter 'regressione_*.py' | Sort-Object Name | Where-Object { $BrowserSuites -notcontains $_.Name })
 if ($Suites.Count -lt 40) { throw "Elenco suite sospetto: solo $($Suites.Count) trovate." }
 Write-Host "Suite di regressione da eseguire: $($Suites.Count)" -ForegroundColor Green

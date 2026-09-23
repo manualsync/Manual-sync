@@ -142,9 +142,12 @@ try:
           "gradient(" not in CSS and not loose and not info_rules, (loose, info_rules[:2]))
 
     # ============================================================ F: typography
-    check("F1: Plus Jakarta Sans for the interface, JetBrains Mono for codes -- loaded first, with a system fallback",
-          CSS.startswith("@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono")
-          and "Plus+Jakarta+Sans:wght@400;500;600" in CSS
+    # 23/09/2026: the same two families, now loaded from the files the product
+    # ships (fonts/) instead of Google. regressione_font_locali.py owns that
+    # rule; here it stays a typography check.
+    check("F1: Plus Jakarta Sans for the interface, JetBrains Mono for codes -- declared first, from the",
+          CSS.startswith("@font-face{font-family:'Plus Jakarta Sans'")
+          and CSS.count("@font-face{font-family:") == 5 and "googleapis" not in CSS
           and f"--font:{theme.FONT_SANS}!important" in CSS and f"--font-mono:{theme.FONT_MONO}!important" in CSS
           and "'Segoe UI'" in theme.FONT_SANS, CSS[:160])
     sizes = [float(x) for x in re.findall(r"font-size:(\d+(?:\.\d+)?)px", CSS)]

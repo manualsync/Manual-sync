@@ -361,7 +361,7 @@ def test_exit_releases_everything():
 def test_packaging_mutation_helper_leaves_no_directory():
     import regressione_commercial_build as rcb
     before = {p.name for p in PRIVATE.iterdir() if p.name.startswith("ms_pp_mutant_")}
-    rcb._load_payload_mutant('RUNTIME_DATA_DIRS = ("locales",)', "RUNTIME_DATA_DIRS = ()")
+    rcb._load_payload_mutant('RUNTIME_DATA_DIRS = ("locales", "fonts")', "RUNTIME_DATA_DIRS = ()")
     after = {p.name for p in PRIVATE.iterdir() if p.name.startswith("ms_pp_mutant_")}
     check("loading a packaging mutant leaves no ms_pp_mutant_ directory", after == before,
           sorted(after - before))
