@@ -24,6 +24,7 @@ wrote nothing: exporting is a READ.
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_export_4f1.py
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import sys

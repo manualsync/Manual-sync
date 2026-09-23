@@ -87,6 +87,32 @@ if ($LASTEXITCODE -ne 0) { throw 'Aggiornamento pip fallito.' }
 & $Pip install -r (Join-Path $Root 'requirements.desktop.lock.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Installazione dipendenze build fallita.' }
 
+Step 'Protezione dati reali - ogni test della build gira in una home temporanea'
+# 22/09/2026: regressione, self-test, smoke e acceptance della build giravano
+# con la home REALE dell'utente e scrivevano (log, puntatore, file WAL dei
+# database) in ManualSyncData. Da qui in avanti USERPROFILE/HOME puntano a una
+# home temporanea della build; l'impronta dei dati reali presa ora viene
+# ricontrollata prima di dichiarare PASS: qualunque modifica fa fallire la build.
+$ProtectedDataHome = $env:ERYLOS_PROTECTED_DATA_HOME
+if (-not $ProtectedDataHome) { $ProtectedDataHome = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'ManualSyncData' }
+$env:ERYLOS_PROTECTED_DATA_HOME = $ProtectedDataHome
+$BuildTestHome = Join-Path ([IO.Path]::GetTempPath()) ('erylos_build_test_home_' + (Get-Date -Format 'yyyyMMdd_HHmmss'))
+New-Item -ItemType Directory -Path $BuildTestHome -Force | Out-Null
+# Uno scheletro di profilo Windows, non una cartella vuota: alcuni programmi
+# avviati dai test non partono con USERPROFILE vuoto (misurato con Chrome).
+foreach ($sub in @('AppData\Local\Temp','AppData\Roaming','Desktop','Documents','Downloads')) {
+  New-Item -ItemType Directory -Path (Join-Path $BuildTestHome $sub) -Force | Out-Null
+}
+$RealDataBefore = Join-Path $BuildTestHome 'dati_reali_prima.json'
+$RealDataReport = Join-Path $BuildTestHome 'dati_reali_report.txt'
+& $BuildPython (Join-Path $Root 'real_data_guard.py') --snapshot $RealDataBefore --root $ProtectedDataHome
+if ($LASTEXITCODE -ne 0) { throw 'Impronta dei dati reali non registrata: nessun test eseguito.' }
+$env:USERPROFILE = $BuildTestHome
+$env:HOME = $BuildTestHome
+$env:HOMEDRIVE = Split-Path -Qualifier $BuildTestHome
+$env:HOMEPATH = $BuildTestHome.Substring($env:HOMEDRIVE.Length)
+Write-Host "Home dei test della build: $BuildTestHome" -ForegroundColor Green
+
 Step 'Guardia ambiente - prima di qualunque test'
 # Prima veniva eseguita DOPO ventidue suite: un ambiente sbagliato si
 # scopriva dopo venti minuti, e i risultati intermedi erano gia privi di
@@ -210,7 +236,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Smoke test del runtime portabile con python.ex
 $RuntimePythonw = Join-Path $Runtime 'pythonw.exe'
 $PythonwSmoke = Start-Process -FilePath $RuntimePythonw -ArgumentList @((Join-Path $App 'manualsync_desktop.py'),'--headless-smoke') -PassThru -Wait
 if ($PythonwSmoke.ExitCode -ne 0) {
-  $ErrLog = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'ManualSyncData\Logs\ManualSync_Packaged_Smoke_Error.log'
+  $ErrLog = Join-Path $env:USERPROFILE 'ManualSyncData\Logs\ManualSync_Packaged_Smoke_Error.log'
   throw "Smoke test REALE con pythonw.exe fallito (exit $($PythonwSmoke.ExitCode)). Log: $ErrLog"
 }
 Write-Host 'pythonw.exe startup smoke PASS' -ForegroundColor Green
@@ -355,6 +381,10 @@ New-Item -ItemType Directory -Path $ReportsDir -Force | Out-Null
 Get-ChildItem -LiteralPath $Root -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'RISULTATO_*' -or $_.Name -like 'RUNTIME_SELF_TEST_FINAL.*' } | ForEach-Object { Move-Item -LiteralPath $_.FullName -Destination $ReportsDir -Force }
 Get-ChildItem -LiteralPath $Root -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like 'regressione_*_out' } | ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue }
 
+Step 'Verifica che nessun test abbia toccato i dati reali'
+& $BuildPython (Join-Path $Root 'real_data_guard.py') --verify $RealDataBefore --root $ProtectedDataHome --report $RealDataReport
+if ($LASTEXITCODE -ne 0) { throw "I test della build hanno modificato i dati reali in ${ProtectedDataHome}: build NON valida. Report: $RealDataReport" }
+
 $InstallerHash = (Get-FileHash -LiteralPath $InstallerZip -Algorithm SHA256).Hash.ToLowerInvariant()
 $HashFile = Join-Path $ReleaseDir $SetupHashName
 ("{0}  {1}" -f $InstallerHash, (Split-Path -Leaf $InstallerZip)) | Set-Content -LiteralPath $HashFile -Encoding ASCII
@@ -369,6 +399,10 @@ Write-Host 'ManualSync 1.0 FINAL CANDIDATE: exact-ZIP acceptance, installer hash
 catch {
   $Message = $_.Exception.Message
   Write-Host "`nBUILD FALLITA: $Message" -ForegroundColor Red
+  # Anche una build fallita dice se i suoi test hanno toccato i dati reali.
+  if ((Get-Variable -Name RealDataBefore -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $RealDataBefore)) {
+    & $BuildPython (Join-Path $Root 'real_data_guard.py') --verify $RealDataBefore --root $ProtectedDataHome --report $RealDataReport
+  }
   Remove-Item -Recurse -Force (Join-Path $Root 'setup_zip_probe') -ErrorAction SilentlyContinue
   # A failed build never leaves customer release artifacts behind.
   Remove-Item -Recurse -Force (Join-Path $Root 'release') -ErrorAction SilentlyContinue

@@ -1,3 +1,4 @@
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 from pathlib import Path
 import json
 import shutil

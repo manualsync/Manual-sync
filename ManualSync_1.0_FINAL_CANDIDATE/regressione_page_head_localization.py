@@ -12,6 +12,7 @@ These tests fail against the pre-fix source and pass after it.
 Scope is deliberately narrow: this file proves the page head resolves,
 not that the rest of the UI is localized.
 """
+import test_isolation as _isolation  # noqa: E402,F401 -- aliased: this suite collects every global named test_* as a test. FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 import ast
 import inspect
 import re

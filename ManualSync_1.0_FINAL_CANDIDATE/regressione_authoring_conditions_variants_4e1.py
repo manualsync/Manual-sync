@@ -24,6 +24,7 @@ Backend/integration only -- no browser (RAM-constrained iteration; see the
 4E.1 report for the explicit browser-automation exclusion this session).
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import sys
@@ -625,8 +626,12 @@ check("proj5 (item 48): when a project genuinely has no PUB-MAIN publication, th
 # items 49-52: the REAL '4E1 Manual Acceptance' fixture, freshly re-
 # verified after the in-place publication_id correction, resolves
 # deterministically through the real app.py opening path.
-FIXTURE_DIR = Path.home() / "ManualSyncData" / "Projects" / "4E1_Manual_Acceptance"
-if FIXTURE_DIR.exists():
+# Test isolation (22/09/2026): the real project is never opened in place --
+# opening it created WAL files in the user's ManualSyncData. The checks run on
+# a byte copy in the temporary test home; absent on another machine -> None,
+# and the block is skipped exactly as before.
+FIXTURE_DIR = test_isolation.copy_real_project("4E1_Manual_Acceptance")
+if FIXTURE_DIR is not None:
     repo_fx = IndustrialRepository(FIXTURE_DIR / "ManualSync_CCMS.sqlite")
     pub_fx = repo_fx.conn.execute("SELECT title FROM publications WHERE publication_id='PUB-MAIN'").fetchone()
     check("fix1 (item 49): the real 4E1 fixture's publication now resolves under PUB-MAIN with the exact "

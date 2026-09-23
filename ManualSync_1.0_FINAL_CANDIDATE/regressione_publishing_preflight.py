@@ -25,6 +25,7 @@ Pure server-side: builds real artifacts on disk and inspects them. No
 browser, no server, no Gradio event loop.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import sys

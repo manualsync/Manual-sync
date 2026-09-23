@@ -7,6 +7,7 @@ converter. This suite does NOT replace the mandatory manual acceptance test
 with a real industrial .doc file via a real LibreOffice conversion.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import os

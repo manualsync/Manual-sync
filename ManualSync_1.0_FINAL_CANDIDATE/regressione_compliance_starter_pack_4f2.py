@@ -11,6 +11,7 @@ decision, and evidence coverage are three different things, and nothing
 here may ever collapse them into an automatic conformity verdict.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import re

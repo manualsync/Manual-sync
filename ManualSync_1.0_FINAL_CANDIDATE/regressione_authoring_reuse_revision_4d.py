@@ -21,6 +21,7 @@ acceptance cycles run for this milestone). Fixtures are entirely
 synthetic, including a tiny generated PNG for every figure test.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import sys

@@ -30,6 +30,7 @@ Prerequisites (deliberately NOT automated -- one server, one browser):
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_save_4e3.py
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import base64
 import json
@@ -202,6 +203,11 @@ class Browser:
             except Exception:
                 time.sleep(0.3)
         else:
+            # Never leave a headless Chrome behind: an orphan holds the port and
+            # keeps this process tree alive, so the sweep runner (which waits for
+            # the whole tree) would hang instead of reporting a FAIL.
+            subprocess.run(["taskkill", "/PID", str(self.proc.pid), "/T", "/F"], capture_output=True)
+            shutil.rmtree(self.profile, ignore_errors=True)
             raise RuntimeError("Chrome DevTools endpoint never came up")
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=5) as r:
             page = [t for t in json.load(r) if t.get("type") == "page"][0]

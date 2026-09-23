@@ -29,6 +29,7 @@ under test creates and never touches the user's real %TEMP%.
 Mutation controls show the measurements can fail.
 """
 from __future__ import annotations
+import test_isolation as _isolation  # noqa: E402,F401 -- aliased: this suite collects every global named test_* as a test. FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import importlib.util
 import json

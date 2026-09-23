@@ -19,6 +19,7 @@ comparison is inverted in a copy of the module and the suite must fail.
 A test that cannot fail is decoration.
 """
 from __future__ import annotations
+import test_isolation as _isolation  # noqa: E402,F401 -- aliased: this suite collects every global named test_* as a test. FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import sys
 import tempfile

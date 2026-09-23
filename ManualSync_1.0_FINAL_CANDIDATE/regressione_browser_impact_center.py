@@ -32,6 +32,7 @@ Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_impact_center.py
         MS_KEEP_FIXTURE=1 keeps the project for manual inspection.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import re
 import sys

@@ -7,6 +7,7 @@ confirmation + idempotent atomic persistence, lineage snapshot, mandatory
 scenarios A-H, and the app.py-level project-manifest stamping hook.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import shutil

@@ -20,6 +20,7 @@ UI resolves them, and nothing between the two parses text.
 Pure server-side: no browser, no Gradio event loop.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import ast
 import json

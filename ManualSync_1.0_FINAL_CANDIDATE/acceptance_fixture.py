@@ -32,6 +32,15 @@ What this module guarantees
 Set ``MS_KEEP_FIXTURE=1`` to keep the project for diagnosis; the path is
 printed either way. Keeping it is rarely needed -- the fixture is
 reproducible by re-running, which is the point of building it here.
+
+Test isolation (22/09/2026)
+---------------------------
+Until then the ZZ_ project was built in the user's REAL ManualSyncData and
+the real active-project pointer was switched to it and back. This module
+now refuses to run outside ``test_isolation``: the ZZ_ project, the pointer
+and the app server started by ``app_server`` all live in the temporary
+test home. That home starts empty, so there may be no pointer to restore;
+the pointer is then simply removed again at the end.
 """
 from __future__ import annotations
 
@@ -42,23 +51,31 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
-import acceptance_guard as ag
-import authoring_view as av
-import canonical_demo
+import real_data_guard
+
+# Before acceptance_guard resolves its paths: a gate may only ever build,
+# repoint and delete projects inside the temporary test home.
+real_data_guard.require_isolated("acceptance_fixture")
+
+import acceptance_guard as ag  # noqa: E402
+import authoring_view as av  # noqa: E402
+import canonical_demo  # noqa: E402
 
 
 class FixtureError(RuntimeError):
     """Raised when a disposable fixture cannot be built or activated."""
 
 
-def _pointer_raw() -> str:
-    """The active-project pointer file's current bytes, verbatim.
+def _pointer_raw() -> str | None:
+    """The active-project pointer file's current text, verbatim -- or None.
 
     Stored and restored as raw text rather than re-serialised: whatever
-    else the app keeps in that file belongs to the app, not to us.
+    else the app keeps in that file belongs to the app, not to us. In the
+    (empty) test home there is usually no pointer yet: None, restored by
+    removing the pointer again.
     """
     if not ag.ACTIVE_PROJECT_FILE.exists():
-        raise FixtureError(f"No active-project pointer at {ag.ACTIVE_PROJECT_FILE}")
+        return None
     return ag.ACTIVE_PROJECT_FILE.read_text(encoding="utf-8")
 
 
@@ -153,9 +170,14 @@ def disposable_project(suffix: str, *, seed: Callable[[Path], dict] | None = Non
         # nothing, which is a worse failure than leaving a stale fixture.
         restored = False
         try:
-            ag.ACTIVE_PROJECT_FILE.write_text(previous, encoding="utf-8")
-            restored = True
-            print(f"active project restored: {ag.active_project_dir().name}")
+            if previous is None:
+                ag.ACTIVE_PROJECT_FILE.unlink(missing_ok=True)
+                restored = True
+                print("active project pointer removed (the test home had none)")
+            else:
+                ag.ACTIVE_PROJECT_FILE.write_text(previous, encoding="utf-8")
+                restored = True
+                print(f"active project restored: {ag.active_project_dir().name}")
         except Exception as exc:  # pragma: no cover - reported, never swallowed
             print(f"WARNING: could not restore the active-project pointer: {exc}")
         if restored and not os.environ.get("MS_KEEP_FIXTURE"):
@@ -220,11 +242,15 @@ def app_server(project_dir: Path, *, timeout: float = 90.0):
     port = free_port()
     env = dict(os.environ, MS_APP_PORT=str(port), MS_NO_BROWSER="1",
                PYTHONIOENCODING="utf-8")
-    log = Path(__file__).with_name(f".acceptance_server_{port}.log")
+    # In the test home, not next to the sources: the old location left an empty
+    # .acceptance_server_<port>.log in the repository after every run, because
+    # the handle below was never closed and Windows refused the unlink.
+    log = Path(os.environ.get(real_data_guard.ENV_TEST_HOME) or Path.home()) / f".acceptance_server_{port}.log"
+    log_handle = log.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         [sys.executable, str(Path(__file__).with_name("app.py"))],
         cwd=str(Path(__file__).resolve().parent), env=env,
-        stdout=log.open("w", encoding="utf-8"), stderr=subprocess.STDOUT)
+        stdout=log_handle, stderr=subprocess.STDOUT)
     url = f"http://127.0.0.1:{port}/"
     try:
         deadline = time.time() + timeout
@@ -250,6 +276,7 @@ def app_server(project_dir: Path, *, timeout: float = 90.0):
         except Exception:
             proc.kill()
         try:
+            log_handle.close()
             log.unlink(missing_ok=True)
         except Exception:
             pass

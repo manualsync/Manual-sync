@@ -76,6 +76,31 @@ if ($rc -ne 0) {
 }
 Get-Content -LiteralPath $GuardOut | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
 
+# Dati reali protetti (22/09/2026)
+# --------------------------------
+# Una sweep aveva toccato la cartella dati REALE dell'utente (progetti ZZ_
+# creati e cancellati, puntatore al progetto attivo riscritto, database reali
+# aperti). Ogni suite ora si isola da sola (test_isolation.py), ma il runner
+# non si fida: registra l'impronta di ManualSyncData PRIMA e la ricontrolla
+# DOPO. Un file creato, cancellato o modificato -- o una cartella in cui sono
+# stati creati e cancellati file, anche solo temporanei -- rende la sweep
+# FALLITA, con l'elenco esatto. Tenere ERYLOS chiuso sui dati reali durante
+# la sweep: il suo stesso lavoro verrebbe (correttamente) segnalato.
+$ProtectedDataHome = $env:ERYLOS_PROTECTED_DATA_HOME
+if (-not $ProtectedDataHome) { $ProtectedDataHome = Join-Path ([Environment]::GetFolderPath('UserProfile')) 'ManualSyncData' }
+$env:ERYLOS_PROTECTED_DATA_HOME = $ProtectedDataHome
+$RealBefore = Join-Path $RunDir 'dati_reali_prima.json'
+$RealReport = Join-Path $RunDir 'dati_reali_report.txt'
+$RealGuard = Join-Path $Root 'real_data_guard.py'
+Write-Host '==> Impronta dei dati reali (protetti, sola lettura)' -ForegroundColor Cyan
+$rc = Invoke-PythonLogged $Python @($RealGuard, '--snapshot', $RealBefore, '--root', $ProtectedDataHome) $Root (Join-Path $LogDir 'dati_reali_prima.out.txt') (Join-Path $LogDir 'dati_reali_prima.err.txt')
+if ($rc -ne 0) {
+  Show-Tail (Join-Path $LogDir 'dati_reali_prima.err.txt') 12
+  Write-Host 'Impronta dei dati reali non registrata: nessuna suite eseguita.' -ForegroundColor Red
+  exit 2
+}
+Get-Content -LiteralPath (Join-Path $LogDir 'dati_reali_prima.out.txt') | ForEach-Object { Write-Host "  $_" -ForegroundColor Green }
+
 $BrowserSuites = @('regressione_browser_save_4e3.py','regressione_browser_export_4f1.py','regressione_browser_impact_center.py')
 $Suites = @(Get-ChildItem -LiteralPath $Root -File -Filter 'regressione_*.py' | Sort-Object Name)
 if (-not $IncludeBrowser) { $Suites = @($Suites | Where-Object { $BrowserSuites -notcontains $_.Name }) }
@@ -112,6 +137,16 @@ foreach ($suite in $Suites) {
 $env:TEMP = $SavedTemp
 $env:TMP = $SavedTmp
 $Elapsed = [math]::Round(((Get-Date) - $Started).TotalSeconds, 1)
+
+Write-Host ''
+Write-Host '==> Controllo dei dati reali dopo la sweep' -ForegroundColor Cyan
+$RealOut = Join-Path $LogDir 'dati_reali_dopo.out.txt'
+$rc = Invoke-PythonLogged $Python @($RealGuard, '--verify', $RealBefore, '--root', $ProtectedDataHome, '--report', $RealReport) $Root $RealOut (Join-Path $LogDir 'dati_reali_dopo.err.txt')
+$RealDataChanged = ($rc -ne 0)
+$RealColor = 'Green'
+if ($RealDataChanged) { $RealColor = 'Red' }
+if (Test-Path -LiteralPath $RealOut) { Get-Content -LiteralPath $RealOut | ForEach-Object { Write-Host "  $_" -ForegroundColor $RealColor } }
+if ($RealDataChanged -and -not (Test-Path -LiteralPath $RealReport)) { Show-Tail (Join-Path $LogDir 'dati_reali_dopo.err.txt') 12 }
 $Leftovers = @(Get-ChildItem -LiteralPath $RunTemp -Force -ErrorAction SilentlyContinue)
 if ($Leftovers.Count -gt 0) {
   $Prefixes = $Leftovers | Group-Object { ($_.Name -replace '[A-Za-z0-9]{6,}$', '').TrimEnd('_', '-') } |
@@ -119,8 +154,15 @@ if ($Leftovers.Count -gt 0) {
   Write-Host "Temporanei lasciati dalle suite (contenuti nella cartella di esecuzione): $($Leftovers.Count) - $($Prefixes -join ', ')" -ForegroundColor DarkYellow
 }
 Write-Host ''
+if ($RealDataChanged) {
+  Write-Host "SWEEP FALLITA: I DATI REALI SONO STATI MODIFICATI ($ProtectedDataHome)" -ForegroundColor Red
+  Write-Host "Suite fallite: $($Failed.Count)/$($Suites.Count). Report dati reali: $RealReport" -ForegroundColor Red
+  $Failed | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+  Write-Host "Log e temporanei conservati per la diagnosi: $RunDir" -ForegroundColor DarkGray
+  exit 1
+}
 if ($Failed.Count -eq 0) {
-  Write-Host "SWEEP VERDE: $($Suites.Count)/$($Suites.Count) in ${Elapsed}s" -ForegroundColor Green
+  Write-Host "SWEEP VERDE: $($Suites.Count)/$($Suites.Count) in ${Elapsed}s -- dati reali invariati" -ForegroundColor Green
   Remove-Item -LiteralPath $RunDir -Recurse -Force -ErrorAction SilentlyContinue
   if (Test-Path -LiteralPath $RunDir) { Write-Host "Attenzione: cartella di esecuzione non rimossa: $RunDir" -ForegroundColor Yellow }
   exit 0

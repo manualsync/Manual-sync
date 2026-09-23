@@ -18,6 +18,7 @@ The release verdict is mutation-tested, because "Pronto al rilascio: SI"
 is the single most consequential sentence the product prints.
 """
 from __future__ import annotations
+import test_isolation as _isolation  # noqa: E402,F401 -- aliased: this suite collects every global named test_* as a test. FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import re
 import sys

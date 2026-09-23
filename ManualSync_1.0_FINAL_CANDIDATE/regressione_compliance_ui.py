@@ -24,6 +24,7 @@ Fixtures are entirely synthetic/generic regulatory placeholders (SYNTH-*):
 this suite does not encode or assert any real legal text or requirement.
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import sys
 import tempfile

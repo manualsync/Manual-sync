@@ -25,6 +25,7 @@ allowlist is itself the regression.
 Run it on the project environment. It will tell you if you have not.
 """
 from __future__ import annotations
+import test_isolation as _isolation  # noqa: E402,F401 -- aliased: this suite collects every global named test_* as a test. FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import ast
 import json

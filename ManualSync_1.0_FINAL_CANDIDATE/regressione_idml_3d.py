@@ -11,6 +11,7 @@ revision_of from a mere hash difference, content-hash used for dedup only —
 never as cross-revision identity).
 """
 from __future__ import annotations
+import test_isolation  # noqa: E402,F401 -- FIRST import: temporary home + real-data guard, never the user's ManualSyncData (test_isolation.py)
 
 import json
 import stat
