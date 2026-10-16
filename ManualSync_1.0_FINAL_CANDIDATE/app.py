@@ -11,8 +11,21 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-import gradio as gr
-import pandas as pd
+# ERYLOS ships no telemetry (CP2.2-D, D2/D6). Gradio's usage analytics and
+# its version check default to ON and contacted api.gradio.app and
+# huggingface.co from every test and every `python app.py` (CP2.4). Off here,
+# explicitly, for every way this module runs -- desktop, dev, tests, build --
+# and gr.Blocks(analytics_enabled=False) below does not depend on it at all.
+os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
+
+import gradio as gr  # noqa: E402
+import pandas as pd  # noqa: E402
+
+import offline_frontend  # noqa: E402
+
+# The page Gradio serves, minus its CDN script and preconnect hints: the
+# desktop must not reach the internet just because the interface opened.
+offline_frontend.install()
 
 from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
 from authoring_ccms import import_pdf_as_topics, import_docx_as_topics, import_idml_as_topics
@@ -6222,7 +6235,7 @@ def switch_language_ui(code):
         return LOC.updates()
 
 
-with gr.Blocks(title=BRAND_NAME) as demo:
+with gr.Blocks(title=BRAND_NAME, analytics_enabled=False) as demo:
     project_state=gr.State(INITIAL_PROJECT)
     # ================================================================
     # UX Gate 2A — single sources of truth for the two coordinates that

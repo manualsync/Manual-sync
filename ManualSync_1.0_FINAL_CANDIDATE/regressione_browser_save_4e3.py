@@ -25,7 +25,8 @@ Prerequisites (deliberately NOT automated -- one server, one browser):
     This harness edits content. acceptance_guard refuses to let it run
     against the canonical demo or any other real project, and reports the
     overlay delta it wrote. Build a clone with canonical_demo.py.
-  * Chrome installed at the standard Windows location
+  * Chrome installed (found by chrome_locator.py: ERYLOS_CHROME, the
+    standard install locations, or the App Paths registration)
 
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_save_4e3.py
 """
@@ -51,9 +52,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from acceptance_guard import overlay_snapshot, report_delta
 import acceptance_fixture as fx  # noqa: E402
 import authoring_view as av  # noqa: E402
+import chrome_locator  # noqa: E402
 
 APP_URL = "http://127.0.0.1:7860/"
-CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+# Chrome is located when a Browser starts (chrome_locator.find_chrome), not
+# here: a fixed path made all four browser gates fail on a machine where
+# Chrome lives in Program Files (x86), and resolving it lazily keeps merely
+# importing this module (other gates do, for Browser) free of that lookup.
 # Resolved at RUN time by the acceptance guard -- see main(). It used to
 # be hardcoded to 4E3_Rich_Text_Manual_Acceptance, and that is precisely how
 # a reference demo acquired an extra decision nobody asked for: a harness
@@ -187,9 +192,14 @@ class _WS:
 class Browser:
     def __init__(self, port=9222):
         self.port = port
+        self.chrome = chrome_locator.find_chrome()   # clear error, never a bare FileNotFoundError
+        # Every DevTools event received while waiting for a reply, in order
+        # (e.g. Network.requestWillBeSent once Network.enable is on). They
+        # used to be discarded; the offline gate needs them.
+        self.events = []
         self.profile = tempfile.mkdtemp(prefix="ms_e2e_profile_")
         self.proc = subprocess.Popen(
-            [CHROME, "--headless=new", f"--remote-debugging-port={port}",
+            [str(self.chrome), "--headless=new", f"--remote-debugging-port={port}",
              f"--user-data-dir={self.profile}", "--no-first-run", "--no-default-browser-check",
              "--disable-extensions", "--disable-background-networking", "--disable-sync",
              "--disable-gpu", "--window-size=1400,1200", "about:blank"],
@@ -225,6 +235,8 @@ class Browser:
                 if "error" in msg:
                     raise RuntimeError(f"{method} failed: {msg['error']}")
                 return msg.get("result", {})
+            if "method" in msg:
+                self.events.append(msg)
         raise TimeoutError(method)
 
     def js(self, expression):
@@ -561,10 +573,23 @@ def _run(overlay_before):
         # reopen and confirm it still renders as formatting, not markup
         open_block(br, PLAIN_BLK)
         open_block(br, RICH_BLK)
+        # CP2.5-A.1: wait for the REOPENED paragraph itself. open_block() only
+        # waits for #ms-rich-editable-inner to exist, and that element survives
+        # the switch -- so after its fixed 1.5 s the check could still read the
+        # previous block's content (one intermittent FAIL in CP2.5-A, "None").
+        # Waiting on the expected state is deterministic and still strict: a
+        # product that lost the bold, or shows '**', fails when the wait expires.
+        reopened_rich = """(() => {
+            const r = document.querySelector('#ms-rich-editable-inner');
+            return !!r && Array.from(r.querySelectorAll('b, strong')).some(e => e.textContent.includes('scollegare'))
+                   && !r.innerText.includes('**');
+        })()"""
+        try:
+            d6 = br.wait_for(reopened_rich, timeout=30, label="reopened rich paragraph rendered")
+        except TimeoutError:
+            d6 = False
         check("e2eD6: reopening the rich paragraph still shows bold visually, with no '**' visible",
-              br.js("""(() => Array.from(document.querySelectorAll('#ms-rich-editable-inner b, #ms-rich-editable-inner strong'))
-                       .some(e => e.textContent.includes('scollegare')))()""")
-              and "**" not in (br.js("(document.querySelector('#ms-rich-editable-inner')||{}).innerText") or ""), None)
+              d6, br.js("(document.querySelector('#ms-rich-editable-inner')||{}).innerText"))
 
         # reopening the PLAIN paragraph still shows the saved edit
         open_block(br, PLAIN_BLK)

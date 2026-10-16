@@ -52,9 +52,34 @@ function Show-Tail([string]$Path, [int]$Lines = 6) {
   }
 }
 
+# CP2.5-A: un gate di ManualSync.exe che fallisce deve dire PERCHE'. In CP2.4
+# il messaggio era solo "exit -1": il launcher perdeva lo stato reale del figlio
+# Python (vedi manualsync_launcher.exit_status) e nessun log lo riportava.
+# Qui lo stato e' mostrato anche in esadecimale, con il significato degli
+# NTSTATUS di Windows piu' comuni e la coda del log desktop della home di test.
+# Il gate non cambia: qualunque codice diverso da 0 resta un FAIL, senza retry.
+function Format-ExeFailure([string]$What, [int]$Code) {
+  $hex = '0x{0:X8}' -f $Code
+  $known = @{
+    '0xC000013A' = 'STATUS_CONTROL_C_EXIT: processo terminato da un evento console (finestra chiusa, Ctrl+C, disconnessione)'
+    '0xC0000005' = 'STATUS_ACCESS_VIOLATION: crash nel codice nativo'
+    '0xC0000142' = 'STATUS_DLL_INIT_FAILED: avvio del processo fallito'
+    '0xC0000017' = 'STATUS_NO_MEMORY: memoria esaurita'
+    '0xC00000FD' = 'STATUS_STACK_OVERFLOW'
+    '0xC0000409' = 'STATUS_STACK_BUFFER_OVERRUN / fail-fast'
+    '0xFFFFFFFF' = '-1: stato non propagato dal launcher o errore del bootloader PyInstaller'
+  }
+  $meaning = if ($known.ContainsKey($hex)) { $known[$hex] } else { 'codice restituito dall''applicazione' }
+  $log = Join-Path $env:USERPROFILE 'ManualSyncData\Logs\ManualSync_Desktop.log'
+  $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 6) -join ' | ' } else { 'log desktop assente' }
+  return "$What fallito (exit $Code = $hex, $meaning). Ultime righe del log desktop: $tail"
+}
+
 Step 'Verifica Python 3.12 x64'
-$PyInfo = & py -3.12 -c "import sys,struct; assert sys.version_info[:2]==(3,12); assert struct.calcsize('P')*8==64; print(sys.executable); print(sys.base_prefix)"
-if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 x64 non disponibile.' }
+# CP2.5-A.1: la patch e' bloccata. Il runtime cliente E' questa installazione
+# Python (copiata sotto), e i lock con hash sono risolti per CPython 3.12.10.
+$PyInfo = & py -3.12 -c "import sys,struct; assert sys.version_info[:2]==(3,12); assert sys.version_info[:3]==(3,12,10); assert struct.calcsize('P')*8==64; print(sys.executable); print(sys.base_prefix)"
+if ($LASTEXITCODE -ne 0) { throw 'Python 3.12.10 x64 non disponibile (versione esatta richiesta dai lock).' }
 $PyLines = @($PyInfo)
 $SystemPython = $PyLines[0].Trim()
 $BasePython = $PyLines[1].Trim()
@@ -63,9 +88,16 @@ Write-Host "Runtime base: $BasePython" -ForegroundColor Green
 
 $Venv = Join-Path $Root '.buildvenv'
 $BuildPython = Join-Path $Venv 'Scripts\python.exe'
+# Un ambiente di build e' riutilizzabile solo se e' stato installato da QUESTI
+# lock con hash: pip non ricontrolla gli hash di pacchetti gia' installati, quindi
+# un venv nato da altri lock (o senza hash) verrebbe accettato in silenzio.
+$BuildLocks = @('requirements.bootstrap.hashes.txt', 'requirements.build.hashes.txt') | ForEach-Object { Join-Path $Root $_ }
+$BuildLockId = (($BuildLocks | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash }) -join '-')
+$BuildLockMarker = Join-Path $Venv 'ERYLOS_BUILD_LOCK.txt'
 if (Test-Path $BuildPython) {
-  & $BuildPython -c "import sys,struct; assert sys.version_info[:2]==(3,12); assert struct.calcsize('P')*8==64"
-  if ($LASTEXITCODE -ne 0) {
+  & $BuildPython -c "import sys,struct; assert sys.version_info[:2]==(3,12); assert sys.version_info[:3]==(3,12,10); assert struct.calcsize('P')*8==64"
+  $LockMatches = (Test-Path -LiteralPath $BuildLockMarker) -and ((Get-Content -LiteralPath $BuildLockMarker -Raw).Trim() -eq $BuildLockId)
+  if ($LASTEXITCODE -ne 0 -or -not $LockMatches) {
     Step 'Rimuove ambiente di build non conforme'
     Remove-Item -Recurse -Force $Venv
   }
@@ -82,10 +114,16 @@ $Pip = Join-Path $Venv 'Scripts\pip.exe'
 $PyInstaller = Join-Path $Venv 'Scripts\pyinstaller.exe'
 
 Step 'Installa dipendenze di build'
-& $BuildPython -m pip install --upgrade pip
-if ($LASTEXITCODE -ne 0) { throw 'Aggiornamento pip fallito.' }
-& $Pip install -r (Join-Path $Root 'requirements.desktop.lock.txt')
+# CP2.5-A.1: niente piu' "pip install --upgrade pip" (l'ultima versione del
+# giorno) ne' dipendenze indirette risolte al momento. pip e setuptools, poi
+# l'intero ambiente di build, da lock con hash: --require-hashes --no-deps.
+# --no-build-isolation: proxy_tools esiste solo come sorgente e si costruisce
+# con il setuptools bloccato qui, non con uno scaricato al volo.
+& $BuildPython -m pip install --disable-pip-version-check --require-hashes --no-deps -r (Join-Path $Root 'requirements.bootstrap.hashes.txt')
+if ($LASTEXITCODE -ne 0) { throw 'Installazione bloccata di pip e setuptools fallita.' }
+& $BuildPython -m pip install --disable-pip-version-check --require-hashes --no-deps --no-build-isolation -r (Join-Path $Root 'requirements.build.hashes.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Installazione dipendenze build fallita.' }
+Set-Content -LiteralPath $BuildLockMarker -Value $BuildLockId -Encoding ASCII
 
 Step 'Protezione dati reali - ogni test della build gira in una home temporanea'
 # 22/09/2026: regressione, self-test, smoke e acceptance della build giravano
@@ -179,8 +217,25 @@ Remove-Item -Recurse -Force $RuntimeSite -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Path $RuntimeSite -Force | Out-Null
 
 Step 'Installa dipendenze runtime bloccate nella distribuzione'
-& $BuildPython -m pip install --no-compile --upgrade --target $RuntimeSite -r (Join-Path $Root 'requirements.runtime.lock.txt')
+& $BuildPython -m pip install --disable-pip-version-check --no-compile --target $RuntimeSite --require-hashes --no-deps --no-build-isolation -r (Join-Path $Root 'requirements.runtime.hashes.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Installazione dipendenze nel runtime portabile fallita.' }
+
+Step 'Riduce il runtime a cio che il prodotto usa'
+# CP2.5-A.1. Rimossi SOLO elementi dimostrati inutili in CP2.5-A (resource
+# check, smoke e commercial acceptance PASS sul runtime ridotto):
+#  * site-packages\bin: 18 entry point CLI (gradio.exe, hf.exe, uvicorn.exe, ...)
+#    che nessun modulo invoca; puntano al python del .buildvenv di QUESTA
+#    macchina, quindi dal cliente non funzionano e ne rivelano il percorso;
+#  * Scripts: pip*.exe della copia di Python, senza pip nel runtime;
+#  * Doc (manuale CHM, ~56 MB) e Lib\test (test suite di CPython, ~31 MB).
+# Avviene PRIMA di ogni smoke test: il runtime validato e' quello spedito.
+$RuntimePrune = @((Join-Path $RuntimeSite 'bin'), (Join-Path $Runtime 'Scripts'), (Join-Path $Runtime 'Doc'), (Join-Path $Runtime 'Lib\test'))
+foreach ($p in $RuntimePrune) {
+  if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Recurse -Force }
+  if (Test-Path -LiteralPath $p) { throw "Riduzione del runtime fallita: $p ancora presente." }
+}
+$StrayExe = @(Get-ChildItem -LiteralPath $RuntimeSite -Recurse -Filter '*.exe' -File | Where-Object { $_.Directory.Name -eq 'bin' })
+if ($StrayExe.Count -gt 0) { throw "Entry point CLI ancora presenti nel runtime: $($StrayExe.FullName -join ', ')" }
 
 Step 'Copia applicazione ManualSync - payload derivato dagli import'
 # La allowlist scritta a mano che stava qui elencava 24 file mentre il
@@ -259,11 +314,11 @@ Copy-Item -LiteralPath (Join-Path $Root 'manualsync.ico') -Destination (Join-Pat
 Step 'Smoke test tramite il vero ManualSync.exe'
 $FinalExe = Join-Path $Dist 'ManualSync.exe'
 $ResProc = Start-Process -FilePath $FinalExe -ArgumentList '--resource-check' -PassThru -Wait
-if ($ResProc.ExitCode -ne 0) { throw "Resource check tramite ManualSync.exe fallito (exit $($ResProc.ExitCode))." }
+if ($ResProc.ExitCode -ne 0) { throw (Format-ExeFailure 'Resource check tramite ManualSync.exe' $ResProc.ExitCode) }
 $SmokeProc = Start-Process -FilePath $FinalExe -ArgumentList '--headless-smoke' -PassThru -Wait
-if ($SmokeProc.ExitCode -ne 0) { throw "Smoke test tramite ManualSync.exe fallito (exit $($SmokeProc.ExitCode))." }
+if ($SmokeProc.ExitCode -ne 0) { throw (Format-ExeFailure 'Smoke test tramite ManualSync.exe' $SmokeProc.ExitCode) }
 $AcceptanceProc = Start-Process -FilePath $FinalExe -ArgumentList '--acceptance-smoke' -PassThru -Wait
-if ($AcceptanceProc.ExitCode -ne 0) { throw "Commercial acceptance tramite ManualSync.exe fallita (exit $($AcceptanceProc.ExitCode))." }
+if ($AcceptanceProc.ExitCode -ne 0) { throw (Format-ExeFailure 'Commercial acceptance tramite ManualSync.exe' $AcceptanceProc.ExitCode) }
 
 Step 'Ripulisce solo cache applicative, senza toccare il runtime Python'
 # INCIDENTE RC2.2: il resource check del dist passava, poi la pulizia ricorsiva
@@ -278,11 +333,11 @@ if (Test-Path $DistApp) {
 
 Step 'Rivalida il dist esatto dopo la pulizia applicativa'
 $ResAfterCleanup = Start-Process -FilePath $FinalExe -ArgumentList '--resource-check' -PassThru -Wait
-if ($ResAfterCleanup.ExitCode -ne 0) { throw "Resource check post-cleanup fallito (exit $($ResAfterCleanup.ExitCode))." }
+if ($ResAfterCleanup.ExitCode -ne 0) { throw (Format-ExeFailure 'Resource check post-cleanup' $ResAfterCleanup.ExitCode) }
 $SmokeAfterCleanup = Start-Process -FilePath $FinalExe -ArgumentList '--headless-smoke' -PassThru -Wait
-if ($SmokeAfterCleanup.ExitCode -ne 0) { throw "Smoke test post-cleanup fallito (exit $($SmokeAfterCleanup.ExitCode))." }
+if ($SmokeAfterCleanup.ExitCode -ne 0) { throw (Format-ExeFailure 'Smoke test post-cleanup' $SmokeAfterCleanup.ExitCode) }
 $AcceptanceAfterCleanup = Start-Process -FilePath $FinalExe -ArgumentList '--acceptance-smoke' -PassThru -Wait
-if ($AcceptanceAfterCleanup.ExitCode -ne 0) { throw "Commercial acceptance post-cleanup fallita (exit $($AcceptanceAfterCleanup.ExitCode))." }
+if ($AcceptanceAfterCleanup.ExitCode -ne 0) { throw (Format-ExeFailure 'Commercial acceptance post-cleanup' $AcceptanceAfterCleanup.ExitCode) }
 
 Step 'Crea pacchetto portable solo dopo tutti i test'
 $ReleaseDir = Join-Path $Root 'release'

@@ -996,7 +996,7 @@ def concordance_ui(query, project_dir, source_lang, target_lang):
     return concordance_search(tm_path, query, (source_lang or "en-US").strip(), (target_lang or "it-IT").strip())
 
 
-with gr.Blocks(title="ManualSync v0.25") as demo:
+with gr.Blocks(title="ManualSync v0.25", analytics_enabled=False) as demo:  # no telemetry (CP2.5-A)
     gr.Markdown(
         f"""
         # ManualSync v0.25 — Unified Technical Documentation Platform

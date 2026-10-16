@@ -13,7 +13,11 @@ font from a fallback that looks similar in a screenshot:
   * a heading measures exactly as Plus Jakarta Sans and NOT as Segoe UI --
     the fallback the interface used until today when offline;
   * a technical value measures as JetBrains Mono and not as Consolas;
-  * nothing was requested from a font server, and the page raised no error.
+  * nothing was requested from a font server, and the page raised no error;
+  * (CP2.5-A) the page requested NOTHING outside the app at all. Every request
+    the page made is read from the DevTools Network domain of the page
+    itself, so Chrome's own background traffic -- which is not ERYLOS -- is
+    not counted; a deliberate external probe proves the check can fail.
 
 Usage:  ..\\.venv\\Scripts\\python.exe regressione_browser_fonts.py
 """
@@ -36,6 +40,26 @@ from acceptance_guard import overlay_snapshot, report_delta  # noqa: E402
 from regressione_browser_save_4e3 import Browser  # noqa: E402
 
 FONT_SERVERS = ["*fonts.googleapis.com*", "*fonts.gstatic.com*"]
+PROBE_HOST = "erylos-offline-gate.invalid"     # reserved TLD: blocked here, never resolvable anyway
+
+
+def page_requests(events) -> list[str]:
+    """Every URL the page itself asked for (DevTools Network domain of the page target)."""
+    return [e["params"]["request"]["url"] for e in events
+            if e.get("method") == "Network.requestWillBeSent" and e.get("params", {}).get("request")]
+
+
+def external(urls) -> list[str]:
+    """The ones that left the app: anything but loopback, data:, blob: and about:."""
+    from urllib.parse import urlsplit
+    out = []
+    for u in urls:
+        parts = urlsplit(u)
+        if parts.scheme in ("data", "blob", "about"):
+            continue
+        if (parts.hostname or "") not in ("127.0.0.1", "localhost", "::1"):
+            out.append(u)
+    return out
 SHOT = BASE / "RISULTATO_FONT_LOCALI_UI"
 _results: list[tuple[str, bool, str]] = []
 
@@ -114,7 +138,7 @@ def main() -> int:
             try:
                 b.call("Network.enable")
                 b.call("Network.setCacheDisabled", {"cacheDisabled": True})
-                b.call("Network.setBlockedURLs", {"urls": FONT_SERVERS})
+                b.call("Network.setBlockedURLs", {"urls": FONT_SERVERS + [f"*{PROBE_HOST}*"]})
                 b.call("Page.addScriptToEvaluateOnNewDocument", {"source":
                        "window.__erylosErrors=[];addEventListener('error',e=>window.__erylosErrors."
                        "push(String(e.message||e.type)));"})
@@ -132,6 +156,14 @@ def main() -> int:
                 m = b.js(MEASURE)
                 (SHOT / "senza_internet.png").write_bytes(
                     base64.b64decode(b.call("Page.captureScreenshot", {"format": "png"}, timeout=90)["data"]))
+                # Everything the page asked for while opening and being used.
+                # Taken BEFORE the probe below, which is the only request
+                # allowed to leave -- and only to prove this list can catch one.
+                requested = page_requests(b.events)
+                b.js(f"fetch('https://{PROBE_HOST}/probe').catch(() => 0); true")
+                time.sleep(1.5)
+                b.js("1")                          # drain the events the probe produced
+                probe_seen = [u for u in external(page_requests(b.events)) if PROBE_HOST in u]
             finally:
                 b.close()
         delta = report_delta(overlay_before, overlay_snapshot(project))
@@ -157,6 +189,12 @@ def main() -> int:
           ce and ce["larghezza"] == ce["conJetBrains"] and ce["larghezza"] != ce["conConsolas"], ce)
     check("nessuna richiesta a un server di font", not m["fontServerRequests"], m["fontServerRequests"])
     check("nessun errore nella pagina", not m["pageErrors"], m["pageErrors"])
+    check("la pagina ha fatto richieste, e il gate le ha viste (non una lista vuota per difetto)",
+          len(requested) > 5, len(requested))
+    check("NESSUNA richiesta della pagina verso un host esterno (CDN, font, telemetria): solo l'app locale",
+          not external(requested), external(requested))
+    check("(mutant) una richiesta esterna deliberata viene vista dal gate -- il controllo sopra puo' fallire",
+          bool(probe_seen), probe_seen)
 
     passed = sum(1 for _, ok, _ in _results if ok)
     total = len(_results)

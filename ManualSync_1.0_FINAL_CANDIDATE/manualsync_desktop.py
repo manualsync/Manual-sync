@@ -93,7 +93,9 @@ def prepare_runtime() -> None:
     temp_dir = data_home() / "Temp" / "Gradio"
     temp_dir.mkdir(parents=True, exist_ok=True)
     os.environ["GRADIO_TEMP_DIR"] = str(temp_dir)
-    os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+    # Assigned, not setdefault: a GRADIO_ANALYTICS_ENABLED=True already in the
+    # customer's environment must not switch Gradio's telemetry back on.
+    os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     log(
         f"Runtime prepared frozen={bool(getattr(sys, 'frozen', False))} "
         f"cwd={run_dir} meipass={getattr(sys, '_MEIPASS', '')} gradio_temp={temp_dir}"

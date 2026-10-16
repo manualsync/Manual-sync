@@ -47,7 +47,9 @@ BUILD_FINAL_CANDIDATE_LOG.txt
 # --- ERYLOS test / verification outputs written into the source folder ---
 # regressione_*.py suites, the environment_guard.py self-test and
 # VERIFICA_CICLO_INSTALLAZIONE.ps1 write their reports next to the sources.
-RISULTATO_*.json
+# Every result the suites write: .json, .txt and folders such as
+# regressione_browser_fonts.py's RISULTATO_FONT_LOCALI_UI/ screenshot.
+RISULTATO_*
 RUNTIME_SELF_TEST_FINAL.json
 RUNTIME_SELF_TEST_FINAL.txt
 regressione_*_out/

@@ -1,0 +1,86 @@
+# Build environment (.buildvenv): every package, direct and indirect
+#
+# GENERATED -- do not edit by hand. CP2.5-A.1 (16/10/2026).
+# Every version is the one ALREADY installed and verified in the CP2.5-A build
+# (BUILD_STATUS PASS, 65/65 suites, install cycle 40/40); nothing was upgraded
+# to create this file. Each --hash is the sha256 the package index publishes
+# for the exact file pip resolved for that version on CPython 3.12.10 win_amd64
+# (pip install --dry-run --ignore-installed --no-deps --report), not computed
+# here. BUILD_WINDOWS.ps1 installs it with --require-hashes --no-deps: any
+# other file, version or missing pin stops the build.
+#
+# proxy_tools 0.1.0 exists only as a source archive; it is built with
+# --no-build-isolation against the setuptools pinned in
+# requirements.bootstrap.hashes.txt, so no unpinned build tool is fetched.
+#
+# Regenerate only deliberately, from a verified environment, with the same
+# command. Direct dependencies stay declared in requirements.desktop.lock.txt.
+
+aiofiles==24.1.0 --hash=sha256:b4ec55f4195e3eb5d7abd1bf7e061763e864dd4954231fb8539a0ef8bb8260e5  # aiofiles-24.1.0-py3-none-any.whl
+altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597  # altgraph-0.17.5-py2.py3-none-any.whl
+annotated-doc==0.0.5 --hash=sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101  # annotated_doc-0.0.5-py3-none-any.whl
+annotated-types==0.8.0 --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0  # annotated_types-0.8.0-py3-none-any.whl
+anyio==4.15.1 --hash=sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101  # anyio-4.15.1-py3-none-any.whl
+bottle==0.13.4 --hash=sha256:045684fbd2764eac9cdeb824861d1551d113e8b683d8d26e296898d3dd99a12e  # bottle-0.13.4-py2.py3-none-any.whl
+brotli==1.2.0 --hash=sha256:b35c13ce241abdd44cb8ca70683f20c0c079728a36a996297adb5334adfc1c44  # brotli-1.2.0-cp312-cp312-win_amd64.whl
+certifi==2026.7.22 --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775  # certifi-2026.7.22-py3-none-any.whl
+cffi==2.1.1 --hash=sha256:f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a  # cffi-2.1.1-cp312-cp312-win_amd64.whl
+click==8.5.0 --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360  # click-8.5.0-py3-none-any.whl
+clr_loader==0.3.1 --hash=sha256:cbad189de20d202a7d621956b0fc38049e13c9bf7ca2923441eff725cd121aa1  # clr_loader-0.3.1-py3-none-any.whl
+colorama==0.4.6 --hash=sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6  # colorama-0.4.6-py2.py3-none-any.whl
+fastapi==0.143.0 --hash=sha256:3e9395fd35276425b61b516a31fdd7c77fe2af83e41b4da22e30696fb1304c5d  # fastapi-0.143.0-py3-none-any.whl
+ffmpy==1.0.0 --hash=sha256:5640e5f0fd03fb6236d0e119b16ccf6522db1c826fdf35dcb87087b60fd7504f  # ffmpy-1.0.0-py3-none-any.whl
+filelock==4.1.1 --hash=sha256:3f4a557945a7b0f95efeb1f432267affe5d45ac8ddde2aed1b97ebb62382c089  # filelock-4.1.1-py3-none-any.whl
+fsspec==2026.9.0 --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f  # fsspec-2026.9.0-py3-none-any.whl
+gradio==6.5.1 --hash=sha256:5d49ff9691413ca5411189a694de5cbf1b171e2d49bf9f113952ae8a93c7088d  # gradio-6.5.1-py3-none-any.whl
+gradio_client==2.0.3 --hash=sha256:bcc88da74e3a387bcd41535578abbafe2091bcf4715c9542111804741b9e50b0  # gradio_client-2.0.3-py3-none-any.whl
+groovy==0.1.2 --hash=sha256:7f7975bab18c729a257a8b1ae9dcd70b7cafb1720481beae47719af57c35fa64  # groovy-0.1.2-py3-none-any.whl
+h11==0.16.0 --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86  # h11-0.16.0-py3-none-any.whl
+hf-xet==1.7.0 --hash=sha256:2b7bb5727889b0f2436dbaaad8fc4c3e66b8240d992716989e0c086b4278b1bc  # hf_xet-1.7.0-cp38-abi3-win_amd64.whl
+httpcore==1.0.9 --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55  # httpcore-1.0.9-py3-none-any.whl
+httpx==0.28.1 --hash=sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad  # httpx-0.28.1-py3-none-any.whl
+huggingface_hub==1.33.0 --hash=sha256:04e434b06e100eddbce9a6e817d72693a7884b10a79bd67ab48080d5c07eb899  # huggingface_hub-1.33.0-py3-none-any.whl
+idna==3.20 --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c  # idna-3.20-py3-none-any.whl
+Jinja2==3.1.6 --hash=sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67  # jinja2-3.1.6-py3-none-any.whl
+lxml==6.1.3 --hash=sha256:3e9a00d1c2c30936f7add097c41afc5da6556c580909104aafd382cac92a855c  # lxml-6.1.3-cp312-cp312-win_amd64.whl
+markdown-it-py==4.2.0 --hash=sha256:9f7ebbcd14fe59494226453aed97c1070d83f8d24b6fc3a3bcf9a38092641c4a  # markdown_it_py-4.2.0-py3-none-any.whl
+MarkupSafe==3.0.4 --hash=sha256:11935df9bf455ed0c04eb87bcd720f02b1fe5e02128a9430f23aed6f93336fc7  # markupsafe-3.0.4-cp312-cp312-win_amd64.whl
+mdurl==0.1.2 --hash=sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8  # mdurl-0.1.2-py3-none-any.whl
+numpy==2.3.5 --hash=sha256:86945f2ee6d10cdfd67bcb4069c1662dd711f7e2a4343db5cecec06b87cf31aa  # numpy-2.3.5-cp312-cp312-win_amd64.whl
+opentelemetry-api==1.45.1 --hash=sha256:b31553efa588ae44bc306f863c785c5333a9ecc091248c6ee68b4b6c87fdedfb  # opentelemetry_api-1.45.1-py3-none-any.whl
+orjson==3.13.0 --hash=sha256:b571236d8393edcd3236e07423f762bfcf571f852aad667a3bce9e7b755e0790  # orjson-3.13.0-cp312-cp312-win_amd64.whl
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c  # packaging-26.3-py3-none-any.whl
+pandas==2.2.3 --hash=sha256:59ef3764d0fe818125a5097d2ae867ca3fa64df032331b7e0917cf5d7bf66b13  # pandas-2.2.3-cp312-cp312-win_amd64.whl
+pefile==2024.8.26 --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f  # pefile-2024.8.26-py3-none-any.whl
+pillow==12.3.0 --hash=sha256:a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09  # pillow-12.3.0-cp312-cp312-win_amd64.whl
+proxy_tools==0.1.0 --hash=sha256:ccb3751f529c047e2d8a58440d86b205303cf0fe8146f784d1cbcd94f0a28010  # proxy_tools-0.1.0.tar.gz
+pycparser==3.11 --hash=sha256:51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80  # pycparser-3.11-py3-none-any.whl
+pydantic==2.14.1 --hash=sha256:9195d967ec791692a04438115466764fb8b9a27b31f14a760437694f40d6b454  # pydantic-2.14.1-py3-none-any.whl
+pydantic_core==2.50.1 --hash=sha256:132529c83901437ff642f585216831bf5fd7a91df66829907e155192ead62498  # pydantic_core-2.50.1-cp312-cp312-win_amd64.whl
+pydub==0.25.1 --hash=sha256:65617e33033874b59d87db603aa1ed450633288aefead953b30bded59cb599a6  # pydub-0.25.1-py2.py3-none-any.whl
+Pygments==2.21.0 --hash=sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9  # pygments-2.21.0-py3-none-any.whl
+pyinstaller==6.21.0 --hash=sha256:7fae06c494ce0ebfe6bd3055c0e409def884f63af2e3705d06bd431ad9237fc7  # pyinstaller-6.21.0-py3-none-win_amd64.whl
+pyinstaller-hooks-contrib==2026.8 --hash=sha256:6d21d65323ea4467753afc21f52d7d0e69416ae8101dd88269bf273ad48db084  # pyinstaller_hooks_contrib-2026.8-py3-none-any.whl
+PyMuPDF==1.26.7 --hash=sha256:425b1befe40d41b72eb0fe211711c7ae334db5eb60307e9dd09066ed060cceba  # pymupdf-1.26.7-cp310-abi3-win_amd64.whl
+python-dateutil==2.9.0.post0 --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427  # python_dateutil-2.9.0.post0-py2.py3-none-any.whl
+python-docx==1.2.0 --hash=sha256:3fd478f3250fbbbfd3b94fe1e985955737c145627498896a8a6bf81f4baf66c7  # python_docx-1.2.0-py3-none-any.whl
+python-multipart==0.0.32 --hash=sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23  # python_multipart-0.0.32-py3-none-any.whl
+pythonnet==3.2.1 --hash=sha256:dd5668b74b0c903d9a24e1ba86f728fc490f8e919d56b3c24bf06739b9ee2b7f  # pythonnet-3.2.1-cp311.cp312.cp313.cp314.cp315-none-any.whl
+pytz==2026.5 --hash=sha256:e658af3757f9e26a9d25dd2aff38335acd92bc9104f890a894b2c1ba28311b03  # pytz-2026.5-py2.py3-none-any.whl
+pywebview==6.2.1 --hash=sha256:9d07275f53894ab4d5e2e0e996227193e7187dec276d9b624dccbce029216b46  # pywebview-6.2.1-py3-none-any.whl
+pywin32-ctypes==0.2.3 --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8  # pywin32_ctypes-0.2.3-py3-none-any.whl
+PyYAML==6.0.3 --hash=sha256:5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b  # pyyaml-6.0.3-cp312-cp312-win_amd64.whl
+RapidFuzz==3.14.3 --hash=sha256:b5100fd6bcee4d27f28f4e0a1c6b5127bc8ba7c2a9959cad9eab0bf4a7ab3329  # rapidfuzz-3.14.3-cp312-cp312-win_amd64.whl
+rich==15.0.0 --hash=sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb  # rich-15.0.0-py3-none-any.whl
+safehttpx==0.1.7 --hash=sha256:c4f4a162db6993464d7ca3d7cc4af0ffc6515a606dfd220b9f82c6945d869cde  # safehttpx-0.1.7-py3-none-any.whl
+semantic-version==2.10.0 --hash=sha256:de78a3b8e0feda74cabc54aab2da702113e33ac9d9eb9d2389bcf1f58b7d9177  # semantic_version-2.10.0-py2.py3-none-any.whl
+shellingham==1.5.4 --hash=sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686  # shellingham-1.5.4-py2.py3-none-any.whl
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274  # six-1.17.0-py2.py3-none-any.whl
+starlette==0.52.1 --hash=sha256:0029d43eb3d273bc4f83a08720b4912ea4b071087a3b48db01b7c839f7954d74  # starlette-0.52.1-py3-none-any.whl
+tomlkit==0.13.3 --hash=sha256:c89c649d79ee40629a9fda55f8ace8c6a1b42deb912b2a8fd8d942ddadb606b0  # tomlkit-0.13.3-py3-none-any.whl
+tqdm==4.70.1 --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73  # tqdm-4.70.1-py3-none-any.whl
+typer==0.27.3 --hash=sha256:e50022f28b82a86313e54501317a1db64bf8f8d036ff8cfe5ca7e47675454aff  # typer-0.27.3-py3-none-any.whl
+typing-inspection==0.4.4 --hash=sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147  # typing_inspection-0.4.4-py3-none-any.whl
+typing_extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8  # typing_extensions-4.16.0-py3-none-any.whl
+tzdata==2026.5 --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac  # tzdata-2026.5-py2.py3-none-any.whl
+uvicorn==0.54.0 --hash=sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf  # uvicorn-0.54.0-py3-none-any.whl
