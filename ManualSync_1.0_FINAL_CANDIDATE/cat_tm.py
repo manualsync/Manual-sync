@@ -16,6 +16,7 @@ import pandas as pd
 from rapidfuzz.fuzz import ratio
 
 import pdf_backend
+from translation_alignment import map_translation_blocks
 from language_codes import canonical_lang
 
 CAT_BUILD = "0.14.1-cat-code-safety-20260818"
@@ -389,9 +390,6 @@ def build_tm_from_documents(tm: TranslationMemory, old_source_pdf: str | Path, o
                             source_lang: str, target_lang: str, old_pages: str = "", translation_pages: str = "",
                             min_alignment_confidence: float = 80.0, origin: str = "legacy documents",
                             tm_name: str = "Project Legacy", priority: int = 100, penalty: float = 0.0) -> pd.DataFrame:
-    # CP3.3: the block alignment is pure, but still lives in layout_engine; loaded here,
-    # on use, so that importing the TM does not load the PDF stack.
-    from layout_engine import map_translation_blocks
     reader = pdf_backend.default_reader()
     source_layout = reader.extract_layout(old_source_pdf, old_pages)
     target_layout = reader.extract_layout(old_translation_pdf, translation_pages)

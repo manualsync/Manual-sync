@@ -341,11 +341,10 @@ def trim_layout_from_anchor(layout: DocumentLayout, anchor: str = "") -> Documen
     return DocumentLayout(layout.page_count, layout.selected_pages, texts, tables, images)
 
 
-def _set_overlap(a: tuple[str, ...], b: tuple[str, ...]) -> float:
-    sa, sb = set(a), set(b)
-    if not sa and not sb:
-        return 1.0
-    return len(sa & sb) / max(1, len(sa | sb))
+# CP3.4: the structural translation-alignment helpers moved, verbatim, to translation_alignment
+# (pure: no PDF, no I/O). Imported here, at the first helper's original position, so that
+# every function of this module keeps resolving them exactly as before.
+from translation_alignment import _set_overlap, _section_groups, translation_pair_score, _monotonic_generic
 
 
 def text_pair_score(old: TextBlock, new: TextBlock, old_count: int, new_count: int) -> float:
@@ -481,58 +480,6 @@ def hierarchical_align_text(old: list[TextBlock], new: list[TextBlock]) -> tuple
     used_old = {oi for oi, _, _ in mapping.values()}
     deleted = sorted(set(range(len(old))) - used_old)
     return mapping, deleted
-
-
-def _section_groups(blocks: list[TextBlock]) -> dict[str, list[TextBlock]]:
-    groups: dict[str, list[TextBlock]] = {}; current = "__PRE__"
-    for block in blocks:
-        if block.section_ref:
-            current = block.section_ref
-        groups.setdefault(current, []).append(block)
-    return groups
-
-
-def translation_pair_score(source: TextBlock, target: TextBlock, source_count: int, target_count: int) -> float:
-    score = 0.0
-    if source.section_ref and target.section_ref:
-        score += 0.50 if source.section_ref == target.section_ref else -0.75
-    score += 0.16 if source.heading == target.heading else -0.14
-    score += 0.22 * _set_overlap(source.technical_values, target.technical_values)
-    score += 0.30 * _set_overlap(source.codes, target.codes)
-    progress = max(0.0, 1 - abs(source.index / max(1, source_count - 1) - target.index / max(1, target_count - 1)))
-    score += 0.22 * progress
-    ls, lt = max(1, len(source.normalized)), max(1, len(target.normalized))
-    score += 0.08 * min(ls, lt) / max(ls, lt)
-    return max(0.0, min(1.0, score))
-
-
-def _monotonic_generic(old: list, new: list, score_fn, minimum_score: float, gap_cost: float = 0.30) -> tuple[dict[int, tuple[int, float]], list[int]]:
-    m, n = len(old), len(new)
-    dp = [[0.0] * (n + 1) for _ in range(m + 1)]
-    choice = [[""] * (n + 1) for _ in range(m + 1)]
-    for i in range(1, m + 1): dp[i][0] = dp[i - 1][0] - gap_cost; choice[i][0] = "D"
-    for j in range(1, n + 1): dp[0][j] = dp[0][j - 1] - gap_cost; choice[0][j] = "I"
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            score = score_fn(old[i - 1], new[j - 1], m, n)
-            options = {
-                "M": dp[i - 1][j - 1] + (score if score >= minimum_score else -0.95),
-                "D": dp[i - 1][j] - gap_cost,
-                "I": dp[i][j - 1] - gap_cost,
-            }
-            best = max(("M", "D", "I"), key=lambda k: (options[k], {"M": 2, "D": 1, "I": 0}[k]))
-            dp[i][j] = options[best]; choice[i][j] = best
-    result: dict[int, tuple[int, float]] = {}; used_old: set[int] = set(); i, j = m, n
-    while i > 0 or j > 0:
-        c = choice[i][j]
-        if c == "M":
-            score = score_fn(old[i - 1], new[j - 1], m, n)
-            if score >= minimum_score:
-                result[j - 1] = (i - 1, score); used_old.add(i - 1)
-            i -= 1; j -= 1
-        elif c == "D": i -= 1
-        else: j -= 1
-    return result, sorted(set(range(m)) - used_old)
 
 
 def monotonic_align(old: list, new: list, score_fn, minimum_score: float, gap_cost: float = 0.30) -> tuple[dict[int, tuple[int, float]], list[int]]:
@@ -883,46 +830,10 @@ def save_analysis_outputs(text_df: pd.DataFrame, table_df: pd.DataFrame, image_d
 # ============================================================================
 ENGINE_BUILD = "0.6.0-decision-safety-20260805"
 
-LANGUAGE_STOPWORDS = {
-    "en": {"the", "and", "must", "may", "with", "for", "from", "mounting", "page", "control", "cabinet", "device", "converter", "inverter"},
-    "it": {"il", "la", "e", "deve", "può", "con", "per", "dalla", "montaggio", "pagina", "quadro", "dispositivo", "convertitore"},
-    "de": {"der", "die", "das", "und", "muss", "mit", "für", "seite", "gerät", "montage"},
-    "fr": {"le", "la", "les", "et", "doit", "avec", "pour", "page", "appareil", "montage"},
-    "es": {"el", "la", "los", "y", "debe", "con", "para", "página", "dispositivo", "montaje"},
-}
-
-
-def _filename_language(path: str | Path) -> tuple[str, float]:
-    name = Path(path).name.upper()
-    patterns = {
-        "en": ["_EN_", "_EN-", "_EN.", "EN-US", "EN_GB"],
-        "it": ["_IT_", "_IT-", "_IT.", "IT-IT"],
-        "de": ["_DE_", "_DE-", "_DE.", "DE-DE"],
-        "fr": ["_FR_", "_FR-", "_FR.", "FR-FR"],
-        "es": ["_ES_", "_ES-", "_ES.", "ES-ES"],
-    }
-    for lang, pats in patterns.items():
-        if any(p in name for p in pats):
-            return lang, 0.99
-    return "unknown", 0.0
-
-
-def _score_text_language(text: str) -> tuple[str, float]:
-    words = re.findall(r"[a-zà-ÿ]+", str(text or ""))
-    counts = {lang: sum(1 for w in words if w in stop) for lang, stop in LANGUAGE_STOPWORDS.items()}
-    ranked = sorted(counts.items(), key=lambda x: x[1], reverse=True)
-    text_lang, top = ranked[0] if ranked else ("unknown", 0)
-    second = ranked[1][1] if len(ranked) > 1 else 0
-    text_conf = 0.0 if top < 3 else min(0.97, 0.55 + (top - second) / max(10, top) * 0.42)
-    return text_lang, text_conf
-
-
-def _combine_language_signals(file_lang: str, file_conf: float, text_lang: str, text_conf: float) -> tuple[str, float, str]:
-    if file_lang != "unknown" and (text_lang == "unknown" or file_lang == text_lang):
-        return file_lang, max(file_conf, text_conf), "nome file + contenuto" if text_lang == file_lang else "nome file"
-    if text_lang != "unknown":
-        return text_lang, text_conf, "contenuto"
-    return file_lang, file_conf, "nome file" if file_lang != "unknown" else "non determinata"
+# CP3.4: the language evidence (file name, stop-words, how they combine) moved verbatim to
+# language_signals (pure: no PDF, no I/O); detect_document_language / detect_docx_language below
+# and idml_import use it from there.
+from language_signals import LANGUAGE_STOPWORDS, _filename_language, _score_text_language, _combine_language_signals
 
 
 def detect_document_language(path: str | Path, sample_pages: int = 3) -> tuple[str, float, str]:
@@ -1255,64 +1166,10 @@ def save_analysis_outputs(text_df: pd.DataFrame, table_df: pd.DataFrame, image_d
 ENGINE_BUILD = "0.7.0-review-cockpit-20260805"
 
 
-def map_translation_blocks(old_source: list[TextBlock], old_translation: list[TextBlock]) -> dict[int, tuple[str, float, int]]:
-    """Align source and legacy translation conservatively, then strengthen confidence
-    only when order, local position and adjacent pairs agree.
-
-    This is not a cross-lingual semantic guess. It is structural evidence based on
-    the bilingual document's section, order, codes, values and neighboring pairs.
-    """
-    if not old_source or not old_translation:
-        return {}
-    source_groups = _section_groups(old_source)
-    target_groups = _section_groups(old_translation)
-    result: dict[int, tuple[str, float, int]] = {}
-
-    for section, source_group in source_groups.items():
-        target_group = target_groups.get(section, [])
-        if not target_group:
-            continue
-        mapping, _ = _monotonic_generic(
-            source_group,
-            target_group,
-            translation_pair_score,
-            minimum_score=0.34,
-            gap_cost=0.28,
-        )
-        # mapping is target-local-index -> (source-local-index, raw score)
-        reverse = {source_i: (target_i, score) for target_i, (source_i, score) in mapping.items()}
-        ordered_sources = sorted(reverse)
-        for local_source_idx in ordered_sources:
-            local_target_idx, raw_score = reverse[local_source_idx]
-            source_block = source_group[local_source_idx]
-            target_block = target_group[local_target_idx]
-
-            source_progress = local_source_idx / max(1, len(source_group) - 1)
-            target_progress = local_target_idx / max(1, len(target_group) - 1)
-            position_support = max(0.0, 1.0 - abs(source_progress - target_progress))
-
-            neighbor_votes = []
-            prev_pair = reverse.get(local_source_idx - 1)
-            if prev_pair:
-                neighbor_votes.append(1.0 if prev_pair[0] == local_target_idx - 1 else 0.0)
-            next_pair = reverse.get(local_source_idx + 1)
-            if next_pair:
-                neighbor_votes.append(1.0 if next_pair[0] == local_target_idx + 1 else 0.0)
-            neighbor_support = sum(neighbor_votes) / len(neighbor_votes) if neighbor_votes else position_support
-
-            # Raw structural score remains dominant. Order consensus can raise a
-            # correct short heading above the reuse threshold, but cannot rescue a
-            # structurally implausible mapping by itself.
-            confidence = 100.0 * (
-                0.55 * raw_score
-                + 0.30 * position_support
-                + 0.15 * neighbor_support
-            )
-            if source_block.section_ref and target_block.section_ref and source_block.section_ref != target_block.section_ref:
-                confidence = min(confidence, 59.0)
-            confidence = min(100.0, round(confidence, 1))
-            result[source_block.index] = (target_block.text, confidence, target_block.index)
-    return result
+# CP3.4: the live map_translation_blocks (this, its last definition) moved verbatim to
+# translation_alignment; imported at this exact position so the earlier, shadowed
+# definition above is still replaced at the same point of the module.
+from translation_alignment import map_translation_blocks
 
 
 def _priority_for_decision(row: pd.Series) -> tuple[int, str]:

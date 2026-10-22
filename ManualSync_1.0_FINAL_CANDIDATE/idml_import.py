@@ -29,7 +29,7 @@ from typing import Any
 from uuid import uuid4
 from xml.etree import ElementTree as ET
 
-from layout_engine import _filename_language, _score_text_language, _combine_language_signals
+from language_signals import _filename_language, _score_text_language, _combine_language_signals
 
 IDML_IMPORT_BUILD = "0.29.0-idml-legacy-onboarding-20260827"
 

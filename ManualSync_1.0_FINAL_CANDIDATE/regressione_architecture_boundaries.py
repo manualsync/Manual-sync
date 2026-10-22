@@ -32,6 +32,11 @@ writer, which keeps its own boundary for a later checkpoint) and keeps the
 contract pure; the PDF baseline was tightened (no core candidate loads the PDF
 stack at import any more) and PDF3 proves the drop against the CP3.2 picture.
 
+CP3.4 moved two families of pure algorithms out of layout_engine into
+translation_alignment and language_signals: rule ALGO keeps them standard-library
+only -- no PyMuPDF, no layout_engine, no SQL, no UI or presenter, no app, no
+network -- with no import-time effect.
+
 Every rule is proven able to fail: section M copies the sources into a
 temporary folder, injects one violation per rule, runs the very same
 checks and expects them to fire. The real sources are hashed before and
@@ -74,7 +79,13 @@ CORE_CANDIDATES = frozenset({
     "grounded_authoring", "generative_orchestrator", "cat_tm",
     "project_layout",          # CP3.2
     "pdf_backend",             # CP3.3 (the reading contract)
+    "translation_alignment",   # CP3.4 (pure algorithms)
+    "language_signals",        # CP3.4 (pure algorithms)
 })
+
+# CP3.4: pure analysis algorithms taken out of layout_engine; standard library only.
+ALGORITHM_MODULES = frozenset({"translation_alignment", "language_signals"})
+ALGORITHM_ALLOWED_IMPORTS = {"__future__", "re", "pathlib"}
 
 # CP3.2: the single sanctioned owner of the on-disk layout (data home, Projects folder,
 # content-database names). Its path knowledge is the point; it must stay pure.
@@ -469,6 +480,19 @@ def evaluate(facts: dict, root: Path, baseline: dict) -> tuple[list[tuple[str, s
                 v.append(("PDFB", f"{m} imports {bad}"))
             if mods[m]["sql"] or mods[m]["effects"]:
                 v.append(("PDFB", f"{m} issues SQL or acts at import: {mods[m]['sql']} {mods[m]['effects']}"))
+    # ALGO -- the pure algorithm modules import nothing but the standard library they need (CP3.4)
+    for m in sorted(ALGORITHM_MODULES):
+        d = mods.get(m)
+        if d is None:
+            v.append(("ALGO", f"{m}.py is missing"))
+            continue
+        roots = {x.split(".")[0] for x in d["imports_all"]}
+        if roots - ALGORITHM_ALLOWED_IMPORTS:
+            v.append(("ALGO", f"{m} imports {sorted(roots - ALGORITHM_ALLOWED_IMPORTS)}"))
+        if d["local_all"]:
+            v.append(("ALGO", f"{m} depends on product modules {d['local_all']}"))
+        if d["sql"] or d["effects"] or d["win_attrs"]:
+            v.append(("ALGO", f"{m} issues SQL / acts at import / uses Windows APIs: {d['sql']} {d['effects']} {d['win_attrs']}"))
     con = mods.get(PDF_CONTRACT)
     if con is None:
         v.append(("PDFB", f"{PDF_CONTRACT}.py is missing"))
@@ -692,6 +716,15 @@ _readers = sorted(m for m, d in facts["modules"].items() if PDF_CONTRACT in d["l
 print(f"  PDF: modules reading PDFs through {PDF_CONTRACT}: {', '.join(_readers)}")
 check("PDF4: the PDF readers of the import, grounding, TM and legacy-family code go through pdf_backend",
       {"content_import", "grounded_authoring", "cat_tm", "legacy_family_inference"} <= set(_readers), _readers)
+check("ALGO: translation_alignment and language_signals import only re/pathlib -- no PyMuPDF, layout_engine, SQL, "
+      "UI, presenter, app or network -- and do nothing at import", not by_rule.get("ALGO"), by_rule.get("ALGO"))
+_algo_users = {m: sorted(x for x in d["local_all"] if x in ALGORITHM_MODULES)
+               for m, d in facts["modules"].items() if set(d["local_all"]) & ALGORITHM_MODULES}
+print(f"  ALGO: consumers of the pure algorithm modules: {_algo_users}")
+check("ALGO2: layout_engine, the translation memory and the IDML importer take the algorithms from the new modules",
+      {"layout_engine", "cat_tm", "idml_import"} <= set(_algo_users)
+      and "layout_engine" not in facts["modules"]["idml_import"]["local_all"]
+      and "layout_engine" not in facts["modules"]["cat_tm"]["local_all"], _algo_users)
 layout_users = sorted(m for m, d in facts["modules"].items() if LAYOUT_MODULE in d["local_all"])
 print(f"  LAYOUT: {len(layout_users)} modules resolve paths through project_layout: {', '.join(layout_users)}")
 check("LAYOUT2: ProjectLayout is the central point -- the shipped modules that resolve the content database use it",
@@ -735,6 +768,14 @@ MUTANTS = [
     ("PDF adapter reaches the network", "pdf_pymupdf", "\nimport requests\n", "PDFB"),
     ("core imports layout_engine at import", "cat_tm", "\nfrom layout_engine import map_translation_blocks\n", "PDF"),
     ("SQL in the PDF/DOCX reader", "content_import", "\ndef _q(c):\n    return c.execute('SELECT 1')\n", "SQL"),
+    ("algorithm imports PyMuPDF", "translation_alignment", "\nimport fitz\n", "ALGO"),
+    ("algorithm imports the PDF engine", "translation_alignment", "\nimport layout_engine\n", "ALGO"),
+    ("algorithm imports SQLite", "language_signals", "\nimport sqlite3\n", "ALGO"),
+    ("algorithm imports Gradio", "language_signals", "\nimport gradio\n", "ALGO"),
+    ("algorithm imports the app", "translation_alignment", "\ndef _m():\n    import app\n", "ALGO"),
+    ("algorithm imports a presenter", "language_signals", "\nimport authoring_view\n", "ALGO"),
+    ("algorithm reaches the network", "translation_alignment", "\nimport requests\n", "ALGO"),
+    ("algorithm imports FastAPI", "language_signals", "\nfrom fastapi import FastAPI\n", "ALGO"),
 ]
 mut_root = Path(tempfile.mkdtemp(prefix="erylos_cp31_mutants_"))
 try:
