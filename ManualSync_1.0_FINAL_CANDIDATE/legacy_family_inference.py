@@ -29,8 +29,9 @@ from uuid import uuid4
 from docx import Document as DocxDocument
 from rapidfuzz.fuzz import ratio
 
-from layout_engine import extract_layout, detect_document_language, detect_docx_language
-from authoring_ccms import _looks_like_legacy_docx_heading
+import pdf_backend
+from layout_engine import detect_document_language, detect_docx_language
+from content_import import _looks_like_legacy_docx_heading
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
 from idml_import import extract_idml_signals, detect_idml_language, IdmlImportError
 from project_lifecycle import _atomic_write_json
@@ -286,8 +287,8 @@ def _pdf_signals(path: Path) -> tuple[str, list[str], str, str]:
     """Returns (title_line, headings, metadata_title, content_hint_line)
     using only the already public/stable extract_layout() -- no new PDF
     parsing added here."""
-    import fitz
-    layout = extract_layout(path)
+    reader = pdf_backend.default_reader()
+    layout = reader.extract_layout(path)
     headings = [tb.text.strip() for tb in layout.text_blocks if tb.heading and tb.text.strip()]
     all_lines = [tb.text for tb in sorted(layout.text_blocks, key=lambda t: (t.page, t.index))]
     content_hint_line = _content_hint_line(all_lines, headings)
@@ -298,9 +299,7 @@ def _pdf_signals(path: Path) -> tuple[str, list[str], str, str]:
     title_line = content_hint_line or _first_meaningful_line(headings)
     metadata_title = ""
     try:
-        doc = fitz.open(str(path))
-        metadata_title = str((doc.metadata or {}).get("title") or "").strip()
-        doc.close()
+        metadata_title = reader.metadata_title(path)
     except Exception:
         pass
     return title_line, headings, metadata_title, content_hint_line

@@ -12,6 +12,7 @@ import pandas as pd
 
 from authoring_ccms import ContentRepository, COMPONENT_TOKEN_RE
 from language_codes import canonical_lang
+from project_layout import LEGACY_CCMS_DB_NAME
 
 INDUSTRIAL_BUILD = "0.18.0-ccms-industrial-blocks-workflow-profiles-20260810"
 
@@ -1098,7 +1099,7 @@ class IndustrialRepository(ContentRepository):
 def create_industrial_demo(out_dir: str | Path, *, figure_path: str | Path | None = None) -> dict[str, Any]:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    db = out_dir / "ManualSync_CCMS_v18.sqlite"
+    db = out_dir / LEGACY_CCMS_DB_NAME   # the industrial demo keeps the legacy file name
     db.unlink(missing_ok=True)
     repo = IndustrialRepository(db)
     try:

@@ -37,14 +37,15 @@ def run_acceptance(report_dir: str | Path | None = None) -> dict:
     try:
         import app
         from cat_tm import TranslationMemory
+        from project_layout import ProjectLayout, default_data_home, projects_dir
         from ccms_industrial import IndustrialRepository
         from release_manager import create_release_bundle
         from translation_roundtrip import XLIFF_NS
         from workflow_management import WorkflowManager
 
         # Isolate product-level storage after importing the packaged callback layer.
-        app.DATA_HOME = root / "ManualSyncData"
-        app.DATA_ROOT = app.DATA_HOME / "Projects"
+        app.DATA_HOME = default_data_home(root)
+        app.DATA_ROOT = projects_dir(app.DATA_HOME)
         app.ACTIVE_PROJECT_FILE = app.DATA_HOME / "active_project.json"
         app.APP_LOG = app.DATA_HOME / "MANUALSYNC_APP.log"
         app.DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -62,7 +63,7 @@ def run_acceptance(report_dir: str | Path | None = None) -> dict:
         )
         check("Project create idempotency", Path(duplicate[0]) == project, duplicate[3])
 
-        repo = IndustrialRepository(project / "ManualSync_CCMS.sqlite")
+        repo = IndustrialRepository(ProjectLayout(project).ccms_db)
         try:
             repo.create_topic("T1", "Installation", "acceptance", status="Approved", source_refs=["SPEC#1"])
             repo.create_publication("PUB-MAIN", "Machine Manual", ["T1"], source_lang="en-US")
@@ -173,7 +174,7 @@ def run_acceptance(report_dir: str | Path | None = None) -> dict:
             "it-IT", "en-US", "Acceptance",
         )
         unsafe = Path(unsafe_created[0])
-        repo = IndustrialRepository(unsafe / "ManualSync_CCMS.sqlite")
+        repo = IndustrialRepository(ProjectLayout(unsafe).ccms_db)
         try:
             repo.create_topic("T1", "Manuale macchina", "acceptance", status="Approved", source_refs=["SPEC#1"])
             repo.create_publication("PUB-MAIN", "Manuale macchina", ["T1"], source_lang="it-IT")

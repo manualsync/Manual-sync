@@ -26,6 +26,7 @@ import domain_errors as de
 from domain_errors import DomainFileMissingError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
+from project_layout import ProjectLayout
 import compliance_starter_packs as csp
 import i18n
 
@@ -123,12 +124,11 @@ def evidence_kind_labels(lang: str | None = None) -> dict[str, str]:
 
 
 def ccms_db_path(project_dir: str | Path) -> Path:
-    base = Path(project_dir)
-    for name in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        p = base / name
-        if p.exists():
-            return p
-    raise DomainFileMissingError(de.ERR_PROJECT_REPOSITORY_MISSING, project_dir=str(base))
+    layout = ProjectLayout(project_dir)
+    p = layout.find_ccms_db()
+    if p is None:
+        raise DomainFileMissingError(de.ERR_PROJECT_REPOSITORY_MISSING, project_dir=str(layout.root))
+    return p
 
 
 def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, ComplianceService]:

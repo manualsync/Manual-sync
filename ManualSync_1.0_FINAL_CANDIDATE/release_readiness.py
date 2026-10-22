@@ -10,6 +10,7 @@ from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
 from workflow_management import STATUS_LABELS, WorkflowManager
 from product_version import PRODUCT_BUILD
+from project_layout import ProjectLayout
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import collect_cross_language_issues, cross_language_issue
 
@@ -19,12 +20,10 @@ CLOSED_JOB_STATUS = {"APPROVED", "CANCELLED"}
 
 
 def _ccms_db(project_dir: str | Path) -> Path:
-    base = Path(project_dir)
-    for name in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        p = base / name
-        if p.exists():
-            return p
-    raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    p = ProjectLayout(project_dir).find_ccms_db()
+    if p is None:
+        raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    return p
 
 
 def _langs(values: Iterable[str] | str | None) -> list[str]:

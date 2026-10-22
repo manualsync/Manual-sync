@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-import fitz
 import pandas as pd
 from rapidfuzz.fuzz import ratio
 
 from cat_tm import split_sentences, technical_signature
 from ccms_industrial import IndustrialRepository
+import pdf_backend
 
 GROUNDING_BUILD = "0.31.0-grounded-authoring-multilingual-conflict-20260813"
 
@@ -229,11 +229,11 @@ class GroundingStore:
             (document_id, title, "pdf", str(pdf_path), sha, int(bool(approved)), now),
         )
         self.conn.execute("DELETE FROM source_chunks WHERE document_id=?", (document_id,))
-        doc = fitz.open(pdf_path)
+        pages = pdf_backend.default_reader().iter_page_texts(pdf_path)
         rows=[]; ordinal=0
         try:
-            for page_no, page in enumerate(doc, start=1):
-                page_text = re.sub(r"\s+", " ", page.get_text("text") or "").strip()
+            for page_no, raw_text in enumerate(pages, start=1):
+                page_text = re.sub(r"\s+", " ", raw_text or "").strip()
                 if not page_text:
                     continue
                 for sentence in split_sentences(page_text) or [page_text]:
@@ -249,7 +249,7 @@ class GroundingStore:
                     )
                     rows.append({"chunk_id":cid,"page":page_no,"text":sentence,"source_ref":ref,**tech})
         finally:
-            doc.close()
+            pages.close()
         self.conn.commit()
         return pd.DataFrame(rows)
 

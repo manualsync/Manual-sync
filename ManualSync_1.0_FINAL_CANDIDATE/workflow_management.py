@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from ccms_industrial import IndustrialRepository
+from project_layout import ProjectLayout
 from translation_roundtrip import inspect_translation_roundtrip, commit_translation_roundtrip
 
 WORKFLOW_BUILD = "0.25.0-workflow-job-management-20260811"
@@ -564,7 +565,7 @@ class WorkflowManager:
                 if _sha256(p) != str(meta.get("sha256", "")):
                     raise ValueError(f"Checksum archivio progetto non valido: {rel}")
 
-            ccms = next((stage / n for n in ["ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"] if (stage / n).exists()), None)
+            ccms = ProjectLayout(stage).find_ccms_db()
             if ccms is None:
                 raise ValueError("Archivio progetto senza repository CCMS.")
 

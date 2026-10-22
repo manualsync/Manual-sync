@@ -17,6 +17,7 @@ from publishing_bridges import export_publication_docx
 from idml_hardening import patch_idml_slots
 from release_readiness import assess_release_readiness, export_readiness_report
 from product_version import PRODUCT_BUILD
+from project_layout import ProjectLayout
 from language_codes import canonical_lang, canonical_langs
 from linguistic_safety import collect_cross_language_issues, cross_language_issue
 
@@ -101,12 +102,10 @@ def _validate_customer_docx(path: Path, *, release_mode: str = "production") -> 
 
 
 def _ccms_db(project_dir: str | Path) -> Path:
-    base = Path(project_dir)
-    for n in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        p = base / n
-        if p.exists():
-            return p
-    raise FileNotFoundError("Repository CCMS non trovato")
+    p = ProjectLayout(project_dir).find_ccms_db()
+    if p is None:
+        raise FileNotFoundError("Repository CCMS non trovato")
+    return p
 
 
 

@@ -12,6 +12,8 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from project_layout import default_data_home
+
 HOST = "127.0.0.1"
 APP_NAME = "ManualSync"
 MUTEX_NAME = r"Local\ManualSyncDesktopApp"
@@ -32,7 +34,7 @@ def runtime_dir() -> Path:
 
 
 def data_home() -> Path:
-    p = Path.home() / "ManualSyncData"
+    p = default_data_home()
     p.mkdir(parents=True, exist_ok=True)
     return p
 

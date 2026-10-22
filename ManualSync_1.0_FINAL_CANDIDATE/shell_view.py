@@ -23,9 +23,9 @@ import i18n
 import project_view as pv
 import ux_components as ux
 from language_codes import canonical_langs
+from project_layout import ProjectLayout
 
 PROJECT_FILE = "ManualSync_Project.json"
-CCMS_FILES = ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite")
 DEFAULT_PUBLICATION = "PUB-MAIN"   # what an import creates when nobody chose
 
 
@@ -55,7 +55,7 @@ def is_project_dir(path: Path) -> bool:
     """Same test the app applies before opening anything: a manifest and a
     content database."""
     return (path.is_dir() and (path / PROJECT_FILE).exists()
-            and any((path / n).exists() for n in CCMS_FILES))
+            and ProjectLayout(path).has_ccms_db())
 
 
 def _manifest(path: Path) -> dict:
@@ -119,17 +119,9 @@ def project_choices(data_root: str | Path, project_dir: str | Path | None) -> tu
 
 
 # ---------------------------------------------------------------- manuals
-def _ccms(project_dir: str | Path) -> Path | None:
-    for n in CCMS_FILES:
-        p = Path(project_dir) / n
-        if p.exists():
-            return p
-    return None
-
-
 def _read(project_dir: str | Path | None, table: str, sql: str) -> list[tuple]:
     """Rows of one SELECT, or [] when there is no project or no such table."""
-    db = _ccms(project_dir) if project_dir else None
+    db = ProjectLayout(project_dir).find_ccms_db() if project_dir else None
     if db is None:
         return []
     conn = sqlite3.connect(str(db), timeout=10)   # SELECTs only

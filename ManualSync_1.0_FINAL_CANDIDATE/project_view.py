@@ -24,6 +24,7 @@ from typing import Any, Iterable
 import i18n
 import ux_components as ux
 from ccms_industrial import IndustrialRepository
+from project_layout import ProjectLayout
 from language_codes import canonical_lang, canonical_langs
 
 # The engine's approval set (translation_impact.analyze_translation_impact):
@@ -50,11 +51,10 @@ class BlockingItem:
 
 
 def ccms_db(project_dir: str | Path) -> Path:
-    base = Path(project_dir)
-    for name in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        if (base / name).exists():
-            return base / name
-    raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    p = ProjectLayout(project_dir).find_ccms_db()
+    if p is None:
+        raise FileNotFoundError("Repository CCMS non trovato nel progetto")
+    return p
 
 
 def _preview(text: Any, limit: int = 70) -> str:

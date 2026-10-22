@@ -14,6 +14,7 @@ import domain_errors as de
 from domain_errors import DomainAlreadyExistsError, DomainValidationError
 from ccms_industrial import IndustrialRepository
 from workflow_management import WorkflowManager
+from project_layout import ProjectLayout
 
 PROJECT_BUILD = "0.28.0-project-lifecycle-commercial-hardening-20260819"
 PROJECT_FILE = "ManualSync_Project.json"
@@ -67,7 +68,7 @@ def create_project(
         raise DomainAlreadyExistsError(de.ERR_PROJECT_EXISTS, project_name=project_name)
     project_dir.mkdir(parents=True, exist_ok=True)
 
-    db = project_dir / "ManualSync_CCMS.sqlite"
+    db = ProjectLayout(project_dir).ccms_db
     repo = IndustrialRepository(db)
     repo.close()
     wf = WorkflowManager(project_dir)
@@ -123,11 +124,7 @@ def project_health(project_dir: str | Path) -> dict[str, Any]:
         dash = wf.dashboard()
     finally:
         wf.close()
-    db = None
-    for n in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        if (base / n).exists():
-            db = base / n
-            break
+    db = ProjectLayout(base).find_ccms_db()
     pubs = topics = blocks = 0
     if db:
         repo = IndustrialRepository(db)

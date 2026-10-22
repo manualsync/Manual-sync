@@ -47,6 +47,7 @@ import authoring_view as av
 import impact_intelligence as ii
 import translation_intelligence as ti
 from ccms_industrial import IndustrialRepository
+from project_layout import ProjectLayout
 
 SUPPORTED_KINDS = ii.SUPPORTED_KINDS
 
@@ -317,7 +318,7 @@ def assess_impact_center(project_dir: str | Path, object_id: str,
     translation = ti.assess_translation_intelligence(
         project_dir, object_id, object_type=kind, deep=include_translation_detail)
 
-    repo = IndustrialRepository(Path(project_dir) / "ManualSync_CCMS.sqlite")
+    repo = IndustrialRepository(ProjectLayout(project_dir).ccms_db)
     try:
         when, who = _last_modification(repo, object_id)
         previous = _previous_version(repo, kind, object_id, impact.object_version)
@@ -357,7 +358,7 @@ def changed_objects(project_dir: str | Path, limit: int = 40) -> list[tuple[str,
     finding the change they want to inspect -- not an alphabetical dump of
     every object in the manual.
     """
-    repo = IndustrialRepository(Path(str(project_dir)) / "ManualSync_CCMS.sqlite")
+    repo = IndustrialRepository(ProjectLayout(str(project_dir)).ccms_db)
     out: list[tuple[str, str]] = []
     try:
         seen: set[str] = set()

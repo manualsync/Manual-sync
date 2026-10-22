@@ -13,6 +13,7 @@ from typing import Any
 
 from product_version import PRODUCT_BUILD, PRODUCT_VERSION
 from project_lifecycle import read_project, project_health
+from project_layout import ProjectLayout
 
 SUPPORT_BUILD = "1.0-commercial-stabilization-support-20260819"
 
@@ -59,7 +60,8 @@ def system_health(data_home: str | Path, project_dir: str | Path | None = None) 
             add("Project manifest readable", True, project_meta.get("project_name", p.name))
         except Exception as exc:
             add("Project manifest readable", False, f"{type(exc).__name__}: {exc}")
-        ccms = next((p / n for n in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite") if (p / n).exists()), p / "ManualSync_CCMS.sqlite")
+        layout = ProjectLayout(p)
+        ccms = layout.find_ccms_db() or layout.ccms_db
         for label, db in (("CCMS SQLite integrity", ccms), ("Workflow SQLite integrity", p / "ManualSync_Workflow.sqlite")):
             res = _sqlite_integrity(db)
             add(label, res.get("status") in {"PASS", "NOT_PRESENT"}, res)

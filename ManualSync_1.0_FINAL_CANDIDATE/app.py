@@ -28,7 +28,8 @@ import offline_frontend  # noqa: E402
 offline_frontend.install()
 
 from layout_engine import ENGINE_BUILD, analyze_layouts, build_review_queue, save_analysis_outputs, detect_document_language, detect_docx_language
-from authoring_ccms import import_pdf_as_topics, import_docx_as_topics, import_idml_as_topics
+from content_import import import_pdf_as_topics, import_docx_as_topics
+from authoring_ccms import import_idml_as_topics
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
 from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
@@ -63,6 +64,8 @@ import compliance_view as cv
 import compliance_starter_packs as csp
 
 from product_version import PRODUCT_BUILD
+import project_layout
+from project_layout import ProjectLayout
 from language_codes import canonical_lang, canonical_langs
 import domain_errors as de
 import i18n
@@ -73,8 +76,8 @@ _LEGACY_IDML_FRIENDLY_ERROR = "Non siamo riusciti a leggere questo pacchetto InD
 
 BRAND_NAME = "ERYLOS"  # Checkpoint 4: the product name shown in the interface.
 BRAND_TAGLINE = "Technical Content Intelligence"
-DATA_HOME = Path.home() / "ManualSyncData"
-DATA_ROOT = DATA_HOME / "Projects"
+DATA_HOME = project_layout.default_data_home()
+DATA_ROOT = project_layout.projects_dir(DATA_HOME)
 ACTIVE_PROJECT_FILE = DATA_HOME / "active_project.json"
 APP_LOG = DATA_HOME / "MANUALSYNC_APP.log"
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -93,7 +96,7 @@ def _valid_project_dir(value: str | Path | None) -> Path | None:
     p=Path(value)
     if not (p.exists() and p.is_dir() and (p/"ManualSync_Project.json").exists()):
         return None
-    if not any((p/n).exists() for n in ("ManualSync_CCMS.sqlite","ManualSync_CCMS_v18.sqlite")):
+    if not ProjectLayout(p).has_ccms_db():
         return None
     return p.resolve()
 
@@ -878,11 +881,10 @@ ol.ms-ux-notice-list{list-style-type:decimal!important}
 """ + theme.FOUNDATION_CSS
 
 def _ccms_db(project_dir: str | Path) -> Path:
-    base=Path(project_dir)
-    for n in ("ManualSync_CCMS.sqlite","ManualSync_CCMS_v18.sqlite"):
-        p=base/n
-        if p.exists(): return p
-    raise FileNotFoundError("Repository CCMS non trovato")
+    p=ProjectLayout(project_dir).find_ccms_db()
+    if p is None:
+        raise FileNotFoundError("Repository CCMS non trovato")
+    return p
 
 def _unreviewed_topic_count(project_dir: str | Path) -> int:
     # Milestone 3A fix: the Recommended Next Action must reflect real project

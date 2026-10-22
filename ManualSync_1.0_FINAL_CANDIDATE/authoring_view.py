@@ -22,6 +22,7 @@ from typing import Any
 import domain_errors as de
 from domain_errors import DomainFileMissingError
 from ccms_industrial import IndustrialRepository
+from project_layout import ProjectLayout
 from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES, _SHARED_OBJECT_MESSAGE
 import rich_text as _rich_text
 
@@ -116,13 +117,12 @@ def block_type_label(block_type: str, *, editable: bool) -> str:
 
 
 def ccms_db_path(project_dir: str | Path) -> Path:
-    base = Path(project_dir)
-    for name in ("ManualSync_CCMS.sqlite", "ManualSync_CCMS_v18.sqlite"):
-        p = base / name
-        if p.exists():
-            return p
-    raise DomainFileMissingError(de.ERR_AUTHORING_REPOSITORY_MISSING,
-                                 project_dir=str(base))
+    layout = ProjectLayout(project_dir)
+    p = layout.find_ccms_db()
+    if p is None:
+        raise DomainFileMissingError(de.ERR_AUTHORING_REPOSITORY_MISSING,
+                                     project_dir=str(layout.root))
+    return p
 
 
 def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, AuthoringService]:
