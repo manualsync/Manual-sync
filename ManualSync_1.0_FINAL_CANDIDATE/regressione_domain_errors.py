@@ -325,7 +325,8 @@ check("cons4: every placeholder a message uses is actually emitted by its raise 
 _src_ci = (HERE / "compliance_intelligence.py").read_text(encoding="utf-8")
 _src_cv = (HERE / "compliance_view.py").read_text(encoding="utf-8")
 _src_pl = (HERE / "project_lifecycle.py").read_text(encoding="utf-8")
-_all_src = _src_ci + _src_cv + _src_pl
+_src_ps = (HERE / "project_services.py").read_text(encoding="utf-8")   # CP5: raises ERR_PROJECT_REPOSITORY_MISSING
+_all_src = _src_ci + _src_cv + _src_pl + _src_ps
 missing_sites = [c for c in de.MIGRATED_CODES if f"de.{c}" not in _all_src]
 check("cons5: every declared code is actually raised somewhere in the migrated services",
       not missing_sites, missing_sites)

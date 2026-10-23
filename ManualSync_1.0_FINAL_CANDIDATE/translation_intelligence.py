@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-import authoring_view as av
+import project_services as ps
 import domain_errors as de
 from ccms_industrial import IndustrialRepository
 from language_codes import canonical_lang, canonical_langs
@@ -576,7 +576,7 @@ def assess_translation_intelligence(project_dir: str | Path, object_id: str,
     else:
         kind = None
 
-    repo, _auth = av.open_service(str(project_dir))
+    repo, _auth = ps.open_authoring_service(str(project_dir))
     try:
         if kind is None:
             kind = detect_object_type(repo, object_id)

@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import authoring_view as av
+import project_services as ps
 import impact_intelligence as ii
 import translation_intelligence as ti
 from ccms_industrial import IndustrialRepository
@@ -303,7 +303,7 @@ def assess_impact_center(project_dir: str | Path, object_id: str,
 
     # Resolve the kind once, through the translation service's prober, so
     # both underlying calls agree on what they are looking at.
-    repo, _auth = av.open_service(str(project_dir))
+    repo, _auth = ps.open_authoring_service(str(project_dir))
     try:
         kind = (str(object_type).strip().lower() if object_type
                 else ti.detect_object_type(repo, object_id))

@@ -66,8 +66,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-import authoring_view as av
-import compliance_view as cv
+import project_services as ps
 import domain_errors as de
 from authoring_service import AuthoringService
 from ccms_industrial import IndustrialRepository
@@ -445,7 +444,7 @@ def _collect_compliance(project_dir: str, kind: str, object_id: str,
     (object -> evidence -> requirement) that no service exposes today.
     """
     out: list[ImpactRecord] = []
-    crepo, svc = cv.open_service(project_dir)
+    crepo, svc = ps.open_compliance_service(project_dir)
     try:
         # The requirement's human title comes along: Conformita labels
         # requirements by title + article reference, never by the internal
@@ -549,7 +548,7 @@ def assess_object_impact(project_dir: str | Path, object_type: str, object_id: s
     undetermined: set[str] = set()
     not_applicable: set[str] = set()
 
-    repo, auth = av.open_service(project_dir)
+    repo, auth = ps.open_authoring_service(project_dir)
     try:
         obj = _load_object(repo, kind, object_id)
         version = obj["version"]

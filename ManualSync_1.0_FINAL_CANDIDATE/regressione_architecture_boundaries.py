@@ -81,6 +81,7 @@ CORE_CANDIDATES = frozenset({
     "pdf_backend",             # CP3.3 (the reading contract)
     "translation_alignment",   # CP3.4 (pure algorithms)
     "language_signals",        # CP3.4 (pure algorithms)
+    "project_services",        # CP5 (composition root: opens repository + services)
 })
 
 # CP3.4: pure analysis algorithms taken out of layout_engine; standard library only.
@@ -516,15 +517,12 @@ def evaluate(facts: dict, root: Path, baseline: dict) -> tuple[list[tuple[str, s
 BASELINE = {
     # Rule A holds today; recorded for the report.
     "gradio_importers": ["app", "app_engineering", "manualsync_desktop", "offline_frontend"],
-    # Services/adapters that import a presenter. Removal belongs to CP3.2 (open_service
-    # composition root) -- tolerated here, never extended.
+    # Services/adapters that import a presenter. CP5 moved open_service / ccms_db_path to
+    # project_services and removed 5 of the 6 CP3.1 edges (see CP31_VIEW_IMPORT_EDGES).
+    # What is left uses presentation helpers (labels, summaries) and is a separate
+    # decision -- tolerated here, never extended.
     "view_import_edges": [
-        "impact_center->authoring_view",
-        "impact_intelligence->authoring_view",
-        "impact_intelligence->compliance_view",
-        "publishing_output->authoring_view",
         "publishing_preview->authoring_view",
-        "translation_intelligence->authoring_view",
     ],
     # SQL calls (execute/executemany/executescript/pandas read_sql*) OUTSIDE the
     # persistence modules of SQL_AUTHORIZED. Moving them is CP3.5 work.
@@ -556,8 +554,10 @@ BASELINE = {
     # CP3.2 tightened this (see CP31_PROJECT_PATHS below for the CP3.1 picture) and
     # added the legacy ManualSync_CCMS_v18.sqlite name to the census. What is left:
     #   * thin compatibility wrappers kept because callers and suites use them
-    #     (app._ccms_db, *_view.ccms_db_path, project_view.ccms_db, release_*._ccms_db)
-    #     -- they only choose the exception/message, the lookup is ProjectLayout's;
+    #     (app._ccms_db, project_view.ccms_db, release_*._ccms_db) -- they only choose
+    #     the exception/message, the lookup is ProjectLayout's; CP5 merged the two
+    #     *_view.ccms_db_path copies into project_services._ccms_db (2 -> 1), the
+    #     presenters keep the name as an alias;
     #   * app.DATA_HOME / commercial_acceptance: the public module global, now
     #     DEFINED by project_layout.default_data_home() but referenced by name;
     #   * test infrastructure guards (acceptance_guard, real_data_guard,
@@ -569,10 +569,9 @@ BASELINE = {
                              "DATA_HOME": 3},
         "app": {"DATA_HOME": 11, "def _ccms_db": 1},
         "app_engineering": {"'ManualSync_CCMS.sqlite'": 5, "'ManualSync_CCMS_v18.sqlite'": 1, "def _ccms_db": 1},
-        "authoring_view": {"def ccms_db_path": 1},
         "commercial_acceptance": {"DATA_HOME": 4},
-        "compliance_view": {"def ccms_db_path": 1},
         "environment_guard": {"'ManualSync_CCMS.sqlite'": 1},
+        "project_services": {"def _ccms_db": 1},
         "project_view": {"def ccms_db": 1},
         "real_data_guard": {"'ManualSyncData'": 2},
         "release_manager": {"def _ccms_db": 1},
@@ -598,6 +597,16 @@ BASELINE = {
         "verifica_webview2_offline": ["global_patch"],
     },
 }
+
+# The CP3.1 service -> presenter edges, kept to prove CP5 removed 5 of them -- never compared as a limit.
+CP31_VIEW_IMPORT_EDGES = [
+    "impact_center->authoring_view",
+    "impact_intelligence->authoring_view",
+    "impact_intelligence->compliance_view",
+    "publishing_output->authoring_view",
+    "publishing_preview->authoring_view",
+    "translation_intelligence->authoring_view",
+]
 
 # CP3.2's core_pdf_at_import, kept to prove CP3.3 emptied it -- never compared as a limit.
 CP32_CORE_PDF_AT_IMPORT = [
@@ -669,8 +678,11 @@ check("A2: the UI/Desktop set is exactly the CP3.0 one (all four still import gr
       cur["gradio_importers"] == BASELINE["gradio_importers"], cur["gradio_importers"])
 check("B: core candidates import no gradio / webview / FastAPI-family / Windows API / Stripe / AI SDK",
       not by_rule.get("B"), by_rule.get("B"))
-check("C: no service/adapter imports a *_view presenter beyond the 6 CP3.1 baseline edges",
+check("C: no service/adapter imports a *_view presenter beyond the CP5 baseline (publishing_preview only)",
       not by_rule.get("C"), by_rule.get("C"))
+check("C2: CP5 removed 5 of the 6 CP3.1 service -> presenter edges; only publishing_preview -> authoring_view is left",
+      len(CP31_VIEW_IMPORT_EDGES) == 6 and cur["view_import_edges"] == ["publishing_preview->authoring_view"]
+      and set(cur["view_import_edges"]) <= set(CP31_VIEW_IMPORT_EDGES), cur["view_import_edges"])
 check("D: no concrete AI SDK in the application code or in the requirement locks",
       not by_rule.get("D"), by_rule.get("D"))
 check("E: no hardcoded AI API key in the product folder", not by_rule.get("E"), by_rule.get("E"))
@@ -728,7 +740,7 @@ check("ALGO2: layout_engine, the translation memory and the IDML importer take t
 layout_users = sorted(m for m, d in facts["modules"].items() if LAYOUT_MODULE in d["local_all"])
 print(f"  LAYOUT: {len(layout_users)} modules resolve paths through project_layout: {', '.join(layout_users)}")
 check("LAYOUT2: ProjectLayout is the central point -- the shipped modules that resolve the content database use it",
-      {"app", "authoring_view", "compliance_view", "project_view", "shell_view", "release_manager", "release_readiness",
+      {"app", "project_services", "project_view", "shell_view", "release_manager", "release_readiness",
        "project_lifecycle", "impact_center", "support_diagnostics", "workflow_management", "authoring_ccms",
        "ccms_industrial", "commercial_acceptance", "manualsync_desktop"} <= set(layout_users), layout_users)
 for n in notes:
@@ -776,6 +788,10 @@ MUTANTS = [
     ("algorithm imports a presenter", "language_signals", "\nimport authoring_view\n", "ALGO"),
     ("algorithm reaches the network", "translation_alignment", "\nimport requests\n", "ALGO"),
     ("algorithm imports FastAPI", "language_signals", "\nfrom fastapi import FastAPI\n", "ALGO"),
+    ("composition root imports a presenter", "project_services", "\nimport authoring_view\n", "C"),
+    ("composition root issues SQL", "project_services", "\ndef _q(c):\n    return c.execute('SELECT 1')\n", "SQL"),
+    ("composition root imports Gradio", "project_services", "\nimport gradio\n", "B"),
+    ("service re-imports a presenter", "impact_center", "\nimport authoring_view\n", "C"),
 ]
 mut_root = Path(tempfile.mkdtemp(prefix="erylos_cp31_mutants_"))
 try:

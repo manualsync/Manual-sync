@@ -16,13 +16,9 @@ from __future__ import annotations
 
 import difflib
 import json
-from pathlib import Path
 from typing import Any
 
-import domain_errors as de
-from domain_errors import DomainFileMissingError
 from ccms_industrial import IndustrialRepository
-from project_layout import ProjectLayout
 from authoring_service import AuthoringService, EDITABLE_TEXT_BLOCK_TYPES, _SHARED_OBJECT_MESSAGE
 import rich_text as _rich_text
 
@@ -116,18 +112,10 @@ def block_type_label(block_type: str, *, editable: bool) -> str:
     return base if editable else base + _NOT_YET_EDITABLE_SUFFIX
 
 
-def ccms_db_path(project_dir: str | Path) -> Path:
-    layout = ProjectLayout(project_dir)
-    p = layout.find_ccms_db()
-    if p is None:
-        raise DomainFileMissingError(de.ERR_AUTHORING_REPOSITORY_MISSING,
-                                     project_dir=str(layout.root))
-    return p
-
-
-def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, AuthoringService]:
-    repo = IndustrialRepository(ccms_db_path(project_dir))
-    return repo, AuthoringService(repo)
+# CP5: opening the repository moved to project_services (the composition root, no
+# presentation in it). Imported here, at the position of the former definitions, as
+# aliases of the same objects: app and every existing caller keep using these names.
+from project_services import authoring_db_path as ccms_db_path, open_authoring_service as open_service  # noqa: E402
 
 
 def publication_options(repo: IndustrialRepository) -> list[tuple[str, str]]:

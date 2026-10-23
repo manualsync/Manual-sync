@@ -28,6 +28,16 @@ module and leave the presenter names as aliases. This suite pins, BEFORE the mov
 Golden digests were pinned after three identical runs; M1 proves they keep the
 authoring/compliance distinction. Nothing is written outside a temporary folder.
 
+CP5.1b moved the composition to project_services; the E digests above did not change.
+Section S pins the new structure:
+
+* S1     the presenter names are aliases of the SAME project_services objects;
+* S2/S3  the four services import no presenter, and importing them loads none (nor UI);
+* S4     project_services: repository, services, ProjectLayout, domain_errors -- no SQL,
+         no effect at import, exactly its five functions;
+* S5     the aliases sit at the position of the former definitions;
+* S6     S1 and S2 can fail (a swapped alias, a re-introduced presenter import).
+
 Re-pin only after a reviewed, intentional behaviour change:
     ..\\.venv\\Scripts\\python.exe regressione_service_composition.py --print-golden
 
@@ -316,9 +326,12 @@ def loaded_by(module: str) -> list[str]:
 po_loaded = loaded_by("publishing_output")
 check("E9: importing publishing_output loads authoring_view (through publishing_preview) and no UI",
       po_loaded == ["authoring_view"], po_loaded)
-# Pre-state, recorded for CP5.1b and not pinned: today the three services load the presenters.
-PRE_STATE = {m: loaded_by(m) for m in ("impact_center", "impact_intelligence", "translation_intelligence")}
-print(f"  INFO  presenters loaded at import today (CP5.1b removes them): {PRE_STATE}")
+# What CP5.1a observed at e29b255, before the move: the three services loaded the presenters.
+CP51A_PRESENTERS_AT_IMPORT = {"impact_center": ["authoring_view", "compliance_view"],
+                              "impact_intelligence": ["authoring_view", "compliance_view"],
+                              "translation_intelligence": ["authoring_view"]}
+NOW_AT_IMPORT = {m: loaded_by(m) for m in CP51A_PRESENTERS_AT_IMPORT}
+print(f"  INFO  presenters/UI loaded at import: CP5.1a {CP51A_PRESENTERS_AT_IMPORT} -> now {NOW_AT_IMPORT}")
 
 # ============================================================ E10: nobody replaces the openers at run time
 TARGETS = {"open_service", "ccms_db_path"}
@@ -335,6 +348,85 @@ for p in sorted(BASE.glob("*.py")):
                 and len(n.args) >= 2 and isinstance(n.args[1], ast.Constant) and n.args[1].value in TARGETS):
             replacements.append(f"{p.name}:{n.lineno}")
 check("E10: no product module or suite assigns or setattr()s open_service / ccms_db_path", not replacements, replacements)
+
+# ============================================================ S: the CP5.1b structure (composition in project_services)
+import project_services as ps  # noqa: E402
+
+
+def aliases_ok() -> bool:
+    return (av.open_service is ps.open_authoring_service and cv.open_service is ps.open_compliance_service
+            and av.ccms_db_path is ps.authoring_db_path and cv.ccms_db_path is ps.compliance_db_path)
+
+
+check("S1: the presenter names are aliases of the SAME project_services objects (authoring -> authoring, "
+      "compliance -> compliance)", aliases_ok(),
+      [getattr(f, "__qualname__", f) for f in (av.open_service, cv.open_service, av.ccms_db_path, cv.ccms_db_path)])
+
+
+def presenter_imports(src: str) -> list[str]:
+    """Every *_view module imported anywhere in the source (top level or inside functions)."""
+    found = []
+    for n in ast.walk(ast.parse(src)):
+        names = [a.name for a in n.names] if isinstance(n, ast.Import) else [n.module or ""] if isinstance(n, ast.ImportFrom) else []
+        found += [x for x in names if x.split(".")[0].endswith("_view")]
+    return sorted(found)
+
+
+SERVICES = ("impact_center", "impact_intelligence", "translation_intelligence", "publishing_output")
+SRC = {m: (BASE / f"{m}.py").read_text(encoding="utf-8") for m in SERVICES}
+static_edges = {m: presenter_imports(SRC[m]) for m in SERVICES}
+check("S2: impact_center, impact_intelligence, translation_intelligence and publishing_output import no presenter",
+      not any(static_edges.values()), static_edges)
+check("S3: importing impact_center, impact_intelligence or translation_intelligence loads no presenter and no UI",
+      all(v == [] for v in NOW_AT_IMPORT.values()), NOW_AT_IMPORT)
+
+PS_SRC = (BASE / "project_services.py").read_text(encoding="utf-8")
+PS_TREE = ast.parse(PS_SRC)
+ps_imports = sorted({a.name.split(".")[0] for n in ast.walk(PS_TREE) if isinstance(n, ast.Import) for a in n.names}
+                    | {(n.module or "").split(".")[0] for n in ast.walk(PS_TREE) if isinstance(n, ast.ImportFrom)})
+PS_ALLOWED = {"__future__", "pathlib", "domain_errors", "ccms_industrial", "project_layout", "authoring_service",
+              "compliance_intelligence"}
+ps_calls = sorted({n.func.attr for n in ast.walk(PS_TREE) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}
+                  & {"execute", "executemany", "executescript", "read_sql_query", "read_sql", "connect"})
+ps_top_ok = all(isinstance(st, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+                or (isinstance(st, ast.Expr) and isinstance(st.value, ast.Constant)) for st in PS_TREE.body)
+ps_defs = sorted(st.name for st in PS_TREE.body if isinstance(st, ast.FunctionDef))
+check("S4: project_services imports only the repository, the two services, ProjectLayout and domain_errors; "
+      "no SQL, no effect at import; exactly the four openers/paths plus _ccms_db",
+      set(ps_imports) <= PS_ALLOWED and not ps_calls and ps_top_ok
+      and ps_defs == ["_ccms_db", "authoring_db_path", "compliance_db_path", "open_authoring_service",
+                      "open_compliance_service"], [ps_imports, ps_calls, ps_top_ok, ps_defs])
+
+
+def alias_position(module: str, before: str, after: str) -> bool:
+    body = ast.parse((BASE / f"{module}.py").read_text(encoding="utf-8")).body
+    names = [("def", st.name) if isinstance(st, ast.FunctionDef) else
+             ("alias", st.module) if isinstance(st, ast.ImportFrom) and st.module == "project_services" else None
+             for st in body]
+    names = [x for x in names if x]
+    if ("alias", "project_services") not in names or ("def", before) not in names or ("def", after) not in names:
+        return False
+    i = names.index(("alias", "project_services"))
+    return (names[i - 1] == ("def", before) and names[i + 1] == ("def", after)
+            and ("def", "ccms_db_path") not in names and ("def", "open_service") not in names)
+
+
+check("S5: the aliases sit where the definitions were (authoring_view: after block_type_label; compliance_view: "
+      "after evidence_kind_labels) and no old definition is left",
+      alias_position("authoring_view", "block_type_label", "publication_options")
+      and alias_position("compliance_view", "evidence_kind_labels", "scope_options"), "")
+
+# S6: S1 and S2 can fail -- a swapped alias and a re-introduced presenter import are both caught.
+_saved = av.open_service
+av.open_service = ps.open_compliance_service
+try:
+    swapped_caught = not aliases_ok()
+finally:
+    av.open_service = _saved
+check("S6: a swapped alias (authoring name -> compliance opener) is caught by S1, then restored",
+      swapped_caught and aliases_ok(), "")
+check("S6b: an `import authoring_view` put back into impact_center is caught by S2",
+      presenter_imports(SRC["impact_center"] + "\nimport authoring_view as av\n") == ["authoring_view"], "")
 
 # ============================================================ M: the digests keep the authoring/compliance distinction
 swap = {de.ERR_AUTHORING_REPOSITORY_MISSING: de.ERR_PROJECT_REPOSITORY_MISSING,
@@ -372,8 +464,8 @@ check("T1: the temporary fixtures were removed", not TMP.exists(), TMP)
 passed = sum(1 for _, ok, _ in _results if ok)
 total = len(_results)
 (BASE / "RISULTATO_SERVICE_COMPOSITION.json").write_text(json.dumps({
-    "suite": "service composition (CP5.1a)", "tests": total, "pass": passed, "fail": total - passed,
-    "digests": _observed, "pre_state_presenters_at_import": PRE_STATE,
+    "suite": "service composition (CP5.1a + CP5.1b)", "tests": total, "pass": passed, "fail": total - passed,
+    "digests": _observed, "presenters_at_import": {"cp51a": CP51A_PRESENTERS_AT_IMPORT, "now": NOW_AT_IMPORT},
     "results": [{"test": n, "status": "PASS" if ok else "FAIL", "detail": d} for n, ok, d in _results],
 }, indent=2, ensure_ascii=False), encoding="utf-8")
 print(f"\n  {passed}/{total} passed")

@@ -78,9 +78,11 @@ check("mig3: ALL_CODES is exactly the union of the declared families",
                                  | set(de.IMPACT_CODES) | set(de.TRANSLATION_CODES))))
 
 SRC = {m: (HERE / m).read_text(encoding="utf-8") for m in MODULES}
+# CP5: ERR_AUTHORING_REPOSITORY_MISSING is raised by project_services (the composition root).
+_MIG4_SRC = list(SRC.values()) + [(HERE / "project_services.py").read_text(encoding="utf-8")]
 for code in de.AUTHORING_OBJECT_CODES:
-    check(f"mig4[{code}]: is raised in an Authoring module",
-          any(f"de.{code}" in s for s in SRC.values()), code)
+    check(f"mig4[{code}]: is raised in an Authoring module or the composition root",
+          any(f"de.{code}" in s for s in _MIG4_SRC), code)
 
 check("mig5: none of the migrated sentences is still raised as text",
       not any("Il titolo del topic è obbligatorio." in s

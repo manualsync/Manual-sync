@@ -19,14 +19,12 @@ display, not a new business rule.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import domain_errors as de
-from domain_errors import DomainFileMissingError, DomainValidationError
+from domain_errors import DomainValidationError
 from ccms_industrial import IndustrialRepository
 from compliance_intelligence import ComplianceService
-from project_layout import ProjectLayout
 import compliance_starter_packs as csp
 import i18n
 
@@ -123,17 +121,10 @@ def evidence_kind_labels(lang: str | None = None) -> dict[str, str]:
     return {k: i18n.translate(f"evidence.kind.{k}", lang) for k in _EVIDENCE_KINDS}
 
 
-def ccms_db_path(project_dir: str | Path) -> Path:
-    layout = ProjectLayout(project_dir)
-    p = layout.find_ccms_db()
-    if p is None:
-        raise DomainFileMissingError(de.ERR_PROJECT_REPOSITORY_MISSING, project_dir=str(layout.root))
-    return p
-
-
-def open_service(project_dir: str | Path) -> tuple[IndustrialRepository, ComplianceService]:
-    repo = IndustrialRepository(ccms_db_path(project_dir))
-    return repo, ComplianceService(repo)
+# CP5: opening the repository moved to project_services (the composition root, no
+# presentation in it). Imported here, at the position of the former definitions, as
+# aliases of the same objects: app and every existing caller keep using these names.
+from project_services import compliance_db_path as ccms_db_path, open_compliance_service as open_service  # noqa: E402
 
 
 def scope_options(svc: ComplianceService, publication_id: str) -> list[tuple[str, str]]:

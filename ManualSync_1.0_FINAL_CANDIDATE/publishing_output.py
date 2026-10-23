@@ -61,7 +61,6 @@ import fitz
 
 from ccms_industrial import IndustrialRepository
 from authoring_service import AuthoringService
-import authoring_view as av
 import publishing_preview as pp
 import publishing_preflight as pf
 import rich_text
