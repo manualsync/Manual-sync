@@ -1095,6 +1095,64 @@ class IndustrialRepository(ContentRepository):
                 })
         return pd.DataFrame(rows)
 
+    # CP5.2b: the persistence steps of the migration import, moved VERBATIM out of
+    # app.import_manual_ui -- same statements, parameters and commits. The caller keeps
+    # the ORDER: for PDF/DOCX/DOC the draft is retired (and committed) before the new
+    # file is parsed, for IDML only after it was fully imported. Pinned, behaviour
+    # included, by regressione_import_orchestration.
+    def migration_draft_objects(self, publication_id: str) -> tuple[list[str], list[str], list[str]]:
+        """(topic ids, table ids, figure ids) of the publication's migration draft -- empty
+        when the publication does not exist or links no topic. Re-import is allowed only
+        while the publication is still a migration draft: ValueError otherwise."""
+        pub = publication_id
+        tids_old=[]; table_ids_old=[]; figure_ids_old=[]
+        if self.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(pub,)).fetchone():
+            linked=list(self.conn.execute(
+                "SELECT t.topic_id,t.status FROM topics t JOIN publication_topics pt ON pt.topic_id=t.topic_id WHERE pt.publication_id=?",
+                (pub,)
+            ))
+            if linked and any(str(r["status"]).lower() != "migrated" for r in linked):
+                raise ValueError("La pubblicazione contiene contenuti già revisionati/approvati. Usa un nuovo Publication ID per una nuova migrazione.")
+            tids_old=[str(r["topic_id"]) for r in linked]
+            if tids_old:
+                marks=",".join("?" for _ in tids_old)
+                table_ids_old=[str(r[0]) for r in self.conn.execute(
+                    f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='table' AND object_ref_id<>''",
+                    tids_old
+                )]
+                figure_ids_old=[str(r[0]) for r in self.conn.execute(
+                    f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='figure' AND object_ref_id<>''",
+                    tids_old
+                )]
+        return tids_old, table_ids_old, figure_ids_old
+
+    def retire_migration_draft(self, publication_id: str, topic_ids: list[str], table_ids: list[str],
+                               figure_ids: list[str]) -> None:
+        """Delete the draft found by migration_draft_objects() and COMMIT (nothing when it
+        has no topic). Blocks, translations and versions go with it (ON DELETE CASCADE)."""
+        pub = publication_id
+        if topic_ids:
+            self.conn.execute("DELETE FROM publication_topics WHERE publication_id=?",(pub,))
+            self.conn.executemany("DELETE FROM topics WHERE topic_id=?",[(tid,) for tid in topic_ids])
+            if table_ids:
+                self.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids])
+            if figure_ids:
+                self.conn.executemany("DELETE FROM figures WHERE figure_id=?",[(fid,) for fid in figure_ids])
+            self.conn.commit()
+
+    def publication_exists(self, publication_id: str) -> bool:
+        return bool(self.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(publication_id,)).fetchone())
+
+    def update_publication_header(self, publication_id: str, title: str, source_lang: str) -> None:
+        """Title and language stored AS RECEIVED and committed -- unlike create_publication(),
+        which strips the title and canonicalizes the language (pinned asymmetry, S16)."""
+        self.conn.execute("UPDATE publications SET title=?,source_lang=? WHERE publication_id=?",
+                          (title,source_lang,publication_id))
+        self.conn.commit()
+
+    def structured_table_count(self) -> int:
+        return int(self.conn.execute("SELECT COUNT(*) FROM structured_tables").fetchone()[0])
+
 
 def create_industrial_demo(out_dir: str | Path, *, figure_path: str | Path | None = None) -> dict[str, Any]:
     out_dir = Path(out_dir)

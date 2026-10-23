@@ -525,9 +525,10 @@ BASELINE = {
         "publishing_preview->authoring_view",
     ],
     # SQL calls (execute/executemany/executescript/pandas read_sql*) OUTSIDE the
-    # persistence modules of SQL_AUTHORIZED. Moving them is CP3.5 work.
+    # persistence modules of SQL_AUTHORIZED. Moving them is CP3.5 work. CP5.2b moved the 11 of
+    # app.import_manual_ui into IndustrialRepository (app 18 -> 7, outside 117 -> 106).
     "sql_tolerated": {
-        "acceptance_fixture": 1, "acceptance_guard": 1, "app": 18, "asset_intelligence": 1,
+        "acceptance_fixture": 1, "acceptance_guard": 1, "app": 7, "asset_intelligence": 1,
         "authoring_view": 13, "canonical_demo": 1, "compliance_view": 5, "impact_center": 4,
         "impact_economics": 5, "impact_intelligence": 5, "project_lifecycle": 3, "project_view": 7,
         "publishing_bridges": 1, "publishing_preview": 7, "release_manager": 4, "release_readiness": 2,

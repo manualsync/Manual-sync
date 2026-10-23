@@ -1535,35 +1535,11 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
     try:
         # Re-import is allowed only while the publication is still a migration draft.
         # This prevents duplicate/orphaned topic trees during iterative migration tests.
-        tids_old=[]; table_ids_old=[]; figure_ids_old=[]
-        if repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(pub,)).fetchone():
-            linked=list(repo.conn.execute(
-                "SELECT t.topic_id,t.status FROM topics t JOIN publication_topics pt ON pt.topic_id=t.topic_id WHERE pt.publication_id=?",
-                (pub,)
-            ))
-            if linked and any(str(r["status"]).lower() != "migrated" for r in linked):
-                raise ValueError("La pubblicazione contiene contenuti già revisionati/approvati. Usa un nuovo Publication ID per una nuova migrazione.")
-            tids_old=[str(r["topic_id"]) for r in linked]
-            if tids_old:
-                marks=",".join("?" for _ in tids_old)
-                table_ids_old=[str(r[0]) for r in repo.conn.execute(
-                    f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='table' AND object_ref_id<>''",
-                    tids_old
-                )]
-                figure_ids_old=[str(r[0]) for r in repo.conn.execute(
-                    f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type='figure' AND object_ref_id<>''",
-                    tids_old
-                )]
+        # CP5.2b: the rule and its SQL live in IndustrialRepository (same statements, same ValueError).
+        tids_old, table_ids_old, figure_ids_old = repo.migration_draft_objects(pub)
 
         def _retire_old_draft():
-            if tids_old:
-                repo.conn.execute("DELETE FROM publication_topics WHERE publication_id=?",(pub,))
-                repo.conn.executemany("DELETE FROM topics WHERE topic_id=?",[(tid,) for tid in tids_old])
-                if table_ids_old:
-                    repo.conn.executemany("DELETE FROM structured_tables WHERE table_id=?",[(tid,) for tid in table_ids_old])
-                if figure_ids_old:
-                    repo.conn.executemany("DELETE FROM figures WHERE figure_id=?",[(fid,) for fid in figure_ids_old])
-                repo.conn.commit()
+            repo.retire_migration_draft(pub, tids_old, table_ids_old, figure_ids_old)
 
         if suffix!='.idml':
             # Unchanged pre-Milestone-3D behavior: the previous draft is
@@ -1632,17 +1608,15 @@ def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
             if imported.empty:
                 raise ValueError("Nessun topic ricostruito dal PDF.")
         tids=imported['topic_id'].astype(str).tolist()
-        if repo.conn.execute("SELECT 1 FROM publications WHERE publication_id=?",(pub,)).fetchone():
+        if repo.publication_exists(pub):
             repo.replace_publication_topics(pub,tids)
-            repo.conn.execute("UPDATE publications SET title=?,source_lang=? WHERE publication_id=?",
-                              (title or Path(pdf).stem,source,pub))
-            repo.conn.commit()
+            repo.update_publication_header(pub,title or Path(pdf).stem,source)
         else:
             repo.create_publication(pub,title or Path(pdf).stem,tids,source_lang=source)
         # Legacy converter is a no-op for topics already created with structured blocks.
         upgrade_legacy_topics_to_blocks(repo)
         topics=repo.topic_table(); blocks=repo.blocks_table()
-        table_count=int(repo.conn.execute("SELECT COUNT(*) FROM structured_tables").fetchone()[0])
+        table_count=repo.structured_table_count()
         dropped=int(imported.attrs.get("dropped_running_headers",0))
     finally:
         repo.close()

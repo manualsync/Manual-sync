@@ -1,13 +1,16 @@
 """CP5.2a regression: CHARACTERIZATION of the import orchestration in app.import_manual_ui.
 
-import_manual_ui (app.py) is a UI callback that also holds domain rules and issues
-destructive SQL directly: it refuses a re-import once the publication holds reviewed
-content, RETIRES the previous migration draft with DELETEs on publication_topics,
-topics, structured_tables and figures (content_blocks, translations and versions go
-with them through ON DELETE CASCADE), updates `publications`, copies the uploaded
-file into Sources/ and writes the IDML review state. This suite pins what it does
-TODAY (HEAD d4f7c45) -- quirks included -- so that moving it later (CP5.2b) has to
-leave every one of these observations identical:
+import_manual_ui (app.py) is a UI callback that orchestrates the migration import: it
+refuses a re-import once the publication holds reviewed content, RETIRES the previous
+migration draft with DELETEs on publication_topics, topics, structured_tables and
+figures (content_blocks, translations and versions go with them through ON DELETE
+CASCADE), updates `publications`, copies the uploaded file into Sources/ and writes the
+IDML review state. Until CP5.2b it issued that SQL itself; CP5.2b-1 moved the 11 SQL
+calls, verbatim, into IndustrialRepository (migration_draft_objects,
+retire_migration_draft, publication_exists, update_publication_header,
+structured_table_count) and left the orchestration -- order, the two commits, every
+exception -- where it was. This suite pinned the behaviour at HEAD d4f7c45, BEFORE
+the move, quirks included; every observation below stayed identical across it:
 
 * S01-S03   new import: PDF, DOCX, IDML (table, figure, orphan story -> review item);
 * S04       PDF re-import over an IDML draft that carries translations: what the
@@ -25,7 +28,11 @@ leave every one of these observations identical:
 * S16       (CP5.2b-0) the publication title/language asymmetry: the FIRST import goes through
             create_publication (title stripped, language canonicalized: "it-it" -> "it-IT"),
             a RE-import through the inline UPDATE (both stored as received) -- pinned so that
-            moving that UPDATE cannot "unify" the two paths silently.
+            moving that UPDATE cannot "unify" the two paths silently;
+* R1-R4     (CP5.2b-1) the structure after the move: import_manual_ui issues no SQL, calls the
+            five IndustrialRepository methods, the draft is still retired at the same two points,
+            and those methods hold exactly the 11 original statements, in order, with the two
+            commits (frozen copy below); a SQL call put back into import_manual_ui is caught.
 
 For each scenario the WHOLE content database (every table, every row, in rowid
 order), the project files (Sources/, review JSON, manifest) and the returned
@@ -627,6 +634,78 @@ m8 = copy.deepcopy(base16)
 m8["reimport"]["after"]["db"]["publications"][0].update(title="Titolo", source_lang="it-IT")
 check("M8: a re-import that stripped the title and canonicalized the language like the first import "
       "(the two paths 'unified') changes the S16 digest", digest(m8) != digest(base16), "")
+
+# ============================================================ R (CP5.2b-1): the SQL lives in IndustrialRepository
+import ast  # noqa: E402
+
+_SQL_CALLS = {"execute", "executemany", "executescript", "read_sql_query", "read_sql", "read_sql_table"}
+# The 11 statements of app.import_manual_ui at f5d9f48 (before the move), as source text, in order.
+ORIGINAL_SQL = [
+    ("execute", '"SELECT 1 FROM publications WHERE publication_id=?"'),
+    ("execute", '"SELECT t.topic_id,t.status FROM topics t JOIN publication_topics pt ON pt.topic_id=t.topic_id WHERE pt.publication_id=?"'),
+    ("execute", 'f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type=\'table\' AND object_ref_id<>\'\'"'),
+    ("execute", 'f"SELECT object_ref_id FROM content_blocks WHERE topic_id IN ({marks}) AND block_type=\'figure\' AND object_ref_id<>\'\'"'),
+    ("execute", '"DELETE FROM publication_topics WHERE publication_id=?"'),
+    ("executemany", '"DELETE FROM topics WHERE topic_id=?"'),
+    ("executemany", '"DELETE FROM structured_tables WHERE table_id=?"'),
+    ("executemany", '"DELETE FROM figures WHERE figure_id=?"'),
+    ("execute", '"SELECT 1 FROM publications WHERE publication_id=?"'),
+    ("execute", '"UPDATE publications SET title=?,source_lang=? WHERE publication_id=?"'),
+    ("execute", '"SELECT COUNT(*) FROM structured_tables"'),
+]
+REPO_METHODS = ["migration_draft_objects", "retire_migration_draft", "publication_exists",
+                "update_publication_header", "structured_table_count"]          # in the order of ORIGINAL_SQL
+APP_SRC = (BASE / "app.py").read_text(encoding="utf-8")
+CCMS_SRC = (BASE / "ccms_industrial.py").read_text(encoding="utf-8")
+
+
+def _function(src: str, name: str, cls: str | None = None) -> ast.FunctionDef:
+    body = ast.parse(src).body
+    if cls:
+        body = [n for n in body if isinstance(n, ast.ClassDef) and n.name == cls][0].body
+    return [n for n in body if isinstance(n, ast.FunctionDef) and n.name == name][0]
+
+
+def sql_calls(fn: ast.FunctionDef, src: str) -> list[tuple[str, str]]:
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr in _SQL_CALLS and n.args]
+    return [(n.func.attr, ast.get_source_segment(src, n.args[0])) for n in sorted(calls, key=lambda n: (n.lineno, n.col_offset))]
+
+
+def commits(fn: ast.FunctionDef) -> int:
+    return sum(1 for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "commit")
+
+
+IMU = _function(APP_SRC, "import_manual_ui")
+check("R1: import_manual_ui issues no SQL itself any more (no execute*/read_sql* call in its body)",
+      sql_calls(IMU, APP_SRC) == [] and commits(IMU) == 0, [sql_calls(IMU, APP_SRC), commits(IMU)])
+_repo_calls = {n.func.attr for n in ast.walk(IMU) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and isinstance(n.func.value, ast.Name) and n.func.value.id == "repo"}
+check("R2: the five IndustrialRepository methods exist and import_manual_ui calls each of them",
+      all(callable(getattr(IndustrialRepository, m, None)) for m in REPO_METHODS) and set(REPO_METHODS) <= _repo_calls,
+      sorted(_repo_calls))
+_imu_src = ast.get_source_segment(APP_SRC, IMU)
+_retire_calls = [m.start() for m in re.finditer(r"(?<!def )_retire_old_draft\(\)", _imu_src)]   # calls, not the def
+check("R2b: the draft is still retired at the same two points -- before the PDF/DOCX/DOC parse, after the IDML import",
+      len(_retire_calls) == 2
+      and _retire_calls[0] < _imu_src.index("if suffix in ('.docx','.doc'):") < _imu_src.index("imported=import_idml_as_topics(")
+      < _retire_calls[1] < _imu_src.index("shutil.copy2(pdf,copied)\n            # Always replace the review state"),
+      _retire_calls)
+_moved = [c for m in REPO_METHODS for c in sql_calls(_function(CCMS_SRC, m, "IndustrialRepository"), CCMS_SRC)]
+check("R3: the five methods hold exactly the 11 original statements, same text, same call kind, same order",
+      _moved == ORIGINAL_SQL, _moved)
+_commits = {m: commits(_function(CCMS_SRC, m, "IndustrialRepository")) for m in REPO_METHODS}
+check("R3b: the two commits are where they were -- one after the retirement, one after the publication UPDATE",
+      _commits == {"migration_draft_objects": 0, "retire_migration_draft": 1, "publication_exists": 0,
+                   "update_publication_header": 1, "structured_table_count": 0}, _commits)
+check("R3c: the refusal is still the same ValueError text",
+      "raise ValueError(\"La pubblicazione contiene contenuti già revisionati/approvati. Usa un nuovo Publication ID "
+      "per una nuova migrazione.\")" in ast.get_source_segment(CCMS_SRC, _function(CCMS_SRC, "migration_draft_objects",
+                                                                                  "IndustrialRepository")), "")
+_anchor = "    repo=IndustrialRepository(_ccms_db(project_dir))\n"
+_mut = _imu_src.replace(_anchor, _anchor + "    repo.conn.execute(\"DELETE FROM topics\")\n") if _imu_src.count(_anchor) == 1 else ""
+check("R4: a SQL call put back into import_manual_ui is caught by R1",
+      bool(_mut) and sql_calls(ast.parse(_mut).body[0], _mut) == [("execute", '"DELETE FROM topics"')], bool(_mut))
 
 check("N1: no network access attempted", not GUARD.snapshot(), GUARD.snapshot())
 
