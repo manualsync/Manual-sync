@@ -32,14 +32,26 @@ the move, quirks included; every observation below stayed identical across it:
 * R1-R4     (CP5.2b-1) the structure after the move: import_manual_ui issues no SQL, calls the
             five IndustrialRepository methods, the draft is still retired at the same two points,
             and those methods hold exactly the 11 original statements, in order, with the two
-            commits (frozen copy below); a SQL call put back into import_manual_ui is caught.
+            commits (frozen copy below); a SQL call put back into import_manual_ui is caught;
+* S04x      (HARDENING-02A) S04 without the translations: the retirement with no human work at all;
+* S17a-k    (HARDENING-02A, B5 characterization) one kind of human work on a migration draft, then a
+            re-import: a Studio block / title edit (PDF, DOCX), a block created in Studio, an open review
+            (PDF vs IDML), an archived topic, an autosave with nothing changed, IDML review decisions
+            (database + JSON, JSON only), the guided onboarding with the same / an empty name (DLS-02),
+            a same-name file refused after approval (DLS-03), an audit row older than the draft (as the
+            re-import leaves it, and seeded directly), an orphan autosave, compliance evidence. Pinned as
+            they behave TODAY, destructive included:
+            what is deleted, what survives, what comes back under the same id or under a new one.
 
 For each scenario the WHOLE content database (every table, every row, in rowid
 order), the project files (Sources/, review JSON, manifest) and the returned
-message/DataFrames are captured before and after. Only UTC timestamps and the
-temporary folder are normalized; ids, statuses, texts, relations and counts are
-not. Golden digests were pinned after three identical runs; section M proves they
-are sensitive. Nothing is written outside a temporary folder.
+message/DataFrames are captured before and after. Only UTC timestamps, the
+temporary folder and what is drawn from uuid4 (the IDML caption-candidate key, the
+TOPIC-/BLK-/TBL- ids of what a user creates in Studio -- each replaced consistently,
+so the links stay pinned) are normalized; the ids of imported content, statuses,
+texts, relations and counts are not. Golden digests were pinned after three
+identical runs; section M proves they are sensitive. Nothing is written outside a
+temporary folder.
 
 Re-pin only after a reviewed, intentional behaviour change:
     ..\\.venv\\Scripts\\python.exe regressione_import_orchestration.py --print-golden
@@ -98,6 +110,10 @@ _TS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)?")
 # It is written twice -- in the figure's source_refs and as the review item's item_key -- so it is
 # replaced CONSISTENTLY (same key -> same placeholder): the figure <-> review-item link stays pinned.
 _CAPTION_KEY = re.compile(r'(idml_caption_candidate_key=|\["item_key", ")([0-9a-f]{12})')   # plain(): dicts are [k, v] pairs
+# HARDENING-02A: what a user creates in Studio gets its id from uuid4 too (authoring_service.py: TOPIC-/BLK-/TBL- +
+# uuid4().hex[:10].upper()). Same consistent replacement, so an audit row that names a deleted block stays pinned to it.
+# The ids of imported content (DOC-0001-B001, IDML-0001-2-F002, ...) never match and are never normalized.
+_STUDIO_ID = re.compile(r"\b(TOPIC|BLK|TBL)-([0-9A-F]{10})\b")
 
 
 def plain(o):
@@ -121,6 +137,8 @@ def normalized(o) -> str:
             text = text.replace(json.dumps(form)[1:-1], "<TMP>").replace(form, "<TMP>")
     keys: dict[str, str] = {}
     text = _CAPTION_KEY.sub(lambda m: m.group(1) + keys.setdefault(m.group(2), f"<CKEY{len(keys) + 1}>"), text)
+    uids: dict[str, str] = {}
+    text = _STUDIO_ID.sub(lambda m: m.group(1) + "-" + uids.setdefault(m.group(2), f"<UID{len(uids) + 1}>"), text)
     return _TS.sub("<TS>", text)
 
 
@@ -580,6 +598,451 @@ check("S16c: the topics are canonicalized on both paths (only the publication ro
 snap("S16_publication_title_language_asymmetry",
      {"before": b16a, "first": {"outcome": r16a, "after": a16a}, "reimport": {"outcome": r16b, "after": a16b}})
 
+# ============================================================ S04x / S17 (HARDENING-02A): human work, then a re-import
+# B5 characterization: the behaviour TODAY, destructive included -- none of it is a desired behaviour. Each scenario
+# imports a migration draft, does ONE kind of human work on it through the real entry point (AuthoringService, the
+# review queue, the Studio autosave callback, the IDML review callback, ComplianceService, the guided onboarding) and
+# re-imports. The guard (migration_draft_objects) reads only the TOPIC status and a Studio save keeps 'Migrated' (only
+# Approved / In Review become Draft), so most of this work does not stop the re-import. Pinned: what the retirement
+# deletes, what survives it (audit_events, review_tasks, authoring_drafts, compliance_evidence have no foreign key to
+# the content), and what is re-created under the SAME id (PDF/DOCX: DOC-0001-B001 ...) or under a NEW one (IDML is
+# imported before the retirement: IDML-0001-2 ...).
+from authoring_service import AuthoringService  # noqa: E402
+from compliance_intelligence import ComplianceService  # noqa: E402
+
+ACTOR = "Redattore"
+SRC_B001 = "Il presente manuale descrive il sistema idraulico."     # DOC-0001-B001 as imported from PDF_A
+EDITED = "Testo corretto dal redattore."
+SAVED = "Bozza salvata in locale (nessuna nuova versione creata)."   # studio_save_draft_ui on success
+
+
+@contextlib.contextmanager
+def repository(project: Path):
+    repo = IndustrialRepository(project / "ManualSync_CCMS.sqlite")
+    try:
+        yield repo
+    finally:
+        repo.close()
+
+
+def draft_project(name: str, source: Path, title: str = "Bozza") -> tuple[Path, dict]:
+    """A new project holding one freshly imported migration draft, and its state."""
+    project = new_project(name)
+    outcome(app.import_manual_ui, str(project), str(source), "it-IT", "PUB-MAIN", title)
+    return project, state(project)
+
+
+def rerun(label: str, project: Path, draft: dict, action, *args, then=None):
+    """run(), pinning also the draft as imported, the human work done on it and (`then`) a reading taken afterwards."""
+    before = state(project)
+    res = outcome(app.import_manual_ui, str(project), *[str(a) if isinstance(a, Path) else a for a in args])
+    after = state(project)
+    later = then() if then else None
+    snap(label, {"draft": draft, "action": action, "before": before, "outcome": res, "after": after, "then": later})
+    return res, before, after, later
+
+
+def rows(st: dict, table: str, **match) -> list:
+    return [r for r in st["db"].get(table, []) if all(r.get(k) == v for k, v in match.items())]
+
+
+def versions(st: dict, table: str, col: str, object_id: str) -> list:
+    return [r["version"] for r in rows(st, table, **{col: object_id})]
+
+
+def actions(st: dict) -> list:
+    return [(r["object_type"], r["object_id"], r["action"]) for r in st["db"].get("audit_events", [])]
+
+
+def b001(st: dict) -> list:
+    return rows(st, "content_blocks", block_id="DOC-0001-B001")
+
+
+def review_items(st: dict) -> list:
+    return [f[1] for f in st["files"] if f[0] == "ManualSync_IDML_Review_PUB-MAIN.json"][0]
+
+
+def decisions(st: dict) -> list:
+    return [(it["reason"], it["decision"], it["decided_by"]) for it in review_items(st)]
+
+
+_LIVE = {"topic": ("topics", "topic_id"), "block": ("content_blocks", "block_id"),
+         "table": ("structured_tables", "table_id"), "figure": ("figures", "figure_id")}
+
+
+def dangling(st: dict) -> dict:
+    """Human-work rows whose topic/block/table/figure no longer exists (they have no foreign key to it)."""
+    live = {kind: set(ids(st, table, col)) for kind, (table, col) in _LIVE.items()}
+    return {table: [(r[kcol], r["object_id"]) for r in st["db"].get(table, [])
+                    if r[kcol] in live and r["object_id"] not in live[r[kcol]]]
+            for table, kcol in (("audit_events", "object_type"), ("review_tasks", "object_type"),
+                                ("authoring_drafts", "kind"), ("compliance_evidence", "evidence_kind"))}
+
+
+NO_DANGLING = {"audit_events": [], "review_tasks": [], "authoring_drafts": [], "compliance_evidence": []}
+
+# ------------------------------------------------------------ S04x: S04 without the translations (no human work)
+p04x, d04x = draft_project("S04x Reimport no translations", IDML_A, "Bozza IDML")
+r04x, b04x, a04x, _ = rerun("S04x_pdf_reimport_over_idml_draft_no_translations", p04x, d04x, None,
+                            PDF_B, "it-IT", "PUB-MAIN", "Revisione B")
+_TRANSLATIONS = ("topic_translations", "block_translations", "structured_table_translations", "figure_translations")
+check("S04x: an IDML draft with NO translation (no human work at all) is retired by a PDF re-import exactly as in S04 -- "
+      "topic, table, figure DELETEd, blocks and version history cascaded, no orphan row",
+      r04x[0] == "ok" and ids(b04x, "topics", "topic_id") == ["IDML-0001"]
+      and ids(a04x, "topics", "topic_id") == ["DOC-0001", "DOC-0002", "DOC-0003"]
+      and count(a04x, "structured_tables") == 0 and count(a04x, "figures") == 0 and count(b04x, "figure_versions") > 0
+      and not any(r["topic_id"] == "IDML-0001" for r in a04x["db"]["content_blocks"])
+      and all(not v for v in a04x["orphans"].values()), a04x["orphans"])
+check("S04x-b: no translation row before or after -- the case a B5 guard must keep accepting",
+      all(count(st, t) == 0 for st in (b04x, a04x) for t in _TRANSLATIONS), "")
+_MANIFEST = "ManualSync_Project.json"                                 # holds the project name, which differs
+check("S04x-c: after the re-import nothing tells S04 from S04x -- same database, orphans, files (bar the project "
+      "manifest) and result: S04's four translations leave no trace at all",
+      count(b04, "topic_translations") == 1 and normalized(a04x["db"]) == normalized(a04["db"])
+      and normalized(a04x["orphans"]) == normalized(a04["orphans"]) and normalized(r04x) == normalized(r04)
+      and normalized([f for f in a04x["files"] if f[0] != _MANIFEST]) == normalized([f for f in a04["files"] if f[0] != _MANIFEST]),
+      "")
+
+# ------------------------------------------------------------ S17a: a Studio block edit (PDF, DOCX)
+p17a, d17a = draft_project("S17a block edit", PDF_A)
+with repository(p17a) as repo:
+    act17a = outcome(AuthoringService(repo).save_block, "DOC-0001-B001", text=EDITED, expected_version=1, actor=ACTOR)
+r17a, b17a, a17a, _ = rerun("S17a_block_edit_then_pdf_reimport", p17a, d17a, act17a, PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17a: a Studio save is human work -- DOC-0001-B001 goes to v2 with the new text (block_versions [1, 2]) and an "
+      "AUTHORING_SAVE audit row, yet block and topics stay 'Migrated'",
+      act17a[0] == "ok" and [(r["version"], r["text_content"], r["status"]) for r in b001(b17a)] == [(2, EDITED, "Migrated")]
+      and versions(b17a, "block_versions", "block_id", "DOC-0001-B001") == [1, 2]
+      and actions(b17a) == [("block", "DOC-0001-B001", "AUTHORING_SAVE")]
+      and {r["status"] for r in b17a["db"]["topics"]} == {"Migrated"}, act17a)
+check("S17a-b: ... and the PDF re-import is ACCEPTED: the edited block is deleted and re-created under the SAME id, at "
+      "v1, with the source text; v2 and its version row are gone",
+      r17a[0] == "ok" and [(r["version"], r["text_content"]) for r in b001(a17a)] == [(1, SRC_B001)]
+      and versions(a17a, "block_versions", "block_id", "DOC-0001-B001") == [1]
+      and ids(a17a, "content_blocks", "block_id") == ids(d17a, "content_blocks", "block_id"), [b001(a17a), message(r17a)])
+check("S17a-c: the AUTHORING_SAVE row survives and, the id being reused, now names the re-created block (re-bound by id, "
+      "not dangling)", actions(a17a) == actions(b17a) and dangling(a17a) == NO_DANGLING, dangling(a17a))
+
+p17a2, d17a2 = draft_project("S17a2 block edit DOCX", DOCX_A)
+_para17a2 = [r["block_id"] for r in d17a2["db"]["content_blocks"] if r["block_type"] == "paragraph"][0]
+with repository(p17a2) as repo:
+    act17a2 = outcome(AuthoringService(repo).save_block, _para17a2, text=EDITED, expected_version=1, actor=ACTOR)
+r17a2, b17a2, a17a2, _ = rerun("S17a2_block_edit_then_docx_reimport", p17a2, d17a2, act17a2,
+                               DOCX_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17a2: DOCX behaves like PDF -- retired before a deterministic parse, the edited paragraph comes back under the "
+      "same id at v1 with the source text; every id is reused",
+      act17a2[0] == "ok" and r17a2[0] == "ok" and versions(b17a2, "block_versions", "block_id", _para17a2) == [1, 2]
+      and [(r["version"], r["text_content"]) for r in rows(a17a2, "content_blocks", block_id=_para17a2)]
+      == [(1, rows(d17a2, "content_blocks", block_id=_para17a2)[0]["text_content"])]
+      and ids(a17a2, "content_blocks", "block_id") == ids(d17a2, "content_blocks", "block_id")
+      and ids(a17a2, "structured_tables", "table_id") == ids(d17a2, "structured_tables", "table_id"),
+      [_para17a2, rows(a17a2, "content_blocks", block_id=_para17a2)])
+
+# ------------------------------------------------------------ S17b: a Studio title edit
+p17b, d17b = draft_project("S17b title edit", PDF_A)
+with repository(p17b) as repo:
+    act17b = outcome(AuthoringService(repo).save_topic, "DOC-0001", title="Introduzione e avvertenze",
+                     expected_version=1, actor=ACTOR)
+r17b, b17b, a17b, _ = rerun("S17b_title_edit_then_pdf_reimport", p17b, d17b, act17b, PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17b: a title edit takes topic DOC-0001 to v2 (topic_versions [1, 2]) and leaves it 'Migrated' -- the very "
+      "status the guard reads",
+      act17b[0] == "ok" and [(r["version"], r["title"], r["status"]) for r in rows(b17b, "topics", topic_id="DOC-0001")]
+      == [(2, "Introduzione e avvertenze", "Migrated")]
+      and versions(b17b, "topic_versions", "topic_id", "DOC-0001") == [1, 2], act17b)
+check("S17b-b: the re-import is ACCEPTED and restores the source title at v1; the AUTHORING_SAVE row survives",
+      r17b[0] == "ok" and [(r["version"], r["title"]) for r in rows(a17b, "topics", topic_id="DOC-0001")]
+      == [(1, rows(d17b, "topics", topic_id="DOC-0001")[0]["title"])]
+      and versions(a17b, "topic_versions", "topic_id", "DOC-0001") == [1]
+      and actions(a17b) == [("topic", "DOC-0001", "AUTHORING_SAVE")], rows(a17b, "topics", topic_id="DOC-0001"))
+
+# ------------------------------------------------------------ S17c: a block created in Studio
+p17c, d17c = draft_project("S17c Studio block", PDF_A)
+with repository(p17c) as repo:
+    act17c = outcome(AuthoringService(repo).create_block_in_topic, "DOC-0001", "paragraph", actor=ACTOR,
+                     text="Avvertenza aggiunta dal redattore.")
+r17c, b17c, a17c, _ = rerun("S17c_studio_block_then_pdf_reimport", p17c, d17c, act17c, PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+_new17c = act17c[1]["block_id"] if act17c[0] == "ok" else ""
+check("S17c: a block created in Studio gets a random id (BLK-<10 hex>) and status 'Draft' in a topic still 'Migrated'",
+      bool(re.fullmatch(r"BLK-[0-9A-F]{10}", _new17c))
+      and [(r["topic_id"], r["status"]) for r in rows(b17c, "content_blocks", block_id=_new17c)] == [("DOC-0001", "Draft")]
+      and [r["status"] for r in rows(b17c, "topics", topic_id="DOC-0001")] == ["Migrated"]
+      and [a[2] for a in actions(b17c)] == ["AUTHORING_CREATE", "ADD_BLOCK"], [act17c, actions(b17c)])
+check("S17c-b: the re-import is ACCEPTED (block statuses are not read) and the new block is gone for good: the "
+      "re-created topic holds only the source blocks",
+      r17c[0] == "ok" and not rows(a17c, "content_blocks", block_id=_new17c)
+      and ids(a17c, "content_blocks", "block_id") == ids(d17c, "content_blocks", "block_id"), message(r17c))
+check("S17c-c: its AUTHORING_CREATE row is left DANGLING (a random id is never re-created); the topic's ADD_BLOCK row "
+      "survives as well", actions(a17c) == actions(b17c)
+      and dangling(a17c) == {**NO_DANGLING, "audit_events": [("block", _new17c)]}, dangling(a17c))
+
+# ------------------------------------------------------------ S17d: an open review on a block -- PDF vs IDML
+p17d, d17d = draft_project("S17d review PDF", PDF_A)
+with repository(p17d) as repo:
+    act17d = outcome(repo.request_review, "block", "DOC-0001-B001", requested_by=ACTOR, assigned_to="Revisore")
+r17d, b17d, a17d, _ = rerun("S17d_review_block_then_pdf_reimport", p17d, d17d, act17d, PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17d: a review request puts the BLOCK 'In Review' with an OPEN task, its topic stays 'Migrated' -- so the PDF "
+      "re-import is ACCEPTED",
+      act17d == ("ok", 1) and [r["status"] for r in b001(b17d)] == ["In Review"]
+      and [(r["object_id"], r["status"]) for r in b17d["db"]["review_tasks"]] == [("DOC-0001-B001", "OPEN")]
+      and [r["status"] for r in b17d["db"]["topics"]] == ["Migrated", "Migrated"] and r17d[0] == "ok",
+      [act17d, message(r17d)])
+check("S17d-b: PDF: the block is re-created under the same id as 'Migrated'; the OPEN task survives and is re-bound by "
+      "id to the re-created block",
+      [r["status"] for r in b001(a17d)] == ["Migrated"] and a17d["db"]["review_tasks"] == b17d["db"]["review_tasks"]
+      and dangling(a17d) == NO_DANGLING, [b001(a17d), dangling(a17d)])
+
+p17d2, d17d2 = draft_project("S17d2 review IDML", IDML_A)
+with repository(p17d2) as repo:
+    act17d2 = outcome(repo.request_review, "block", "IDML-0001-B001", requested_by=ACTOR, assigned_to="Revisore")
+r17d2, b17d2, a17d2, _ = rerun("S17d2_review_block_then_idml_reimport", p17d2, d17d2, act17d2,
+                               IDML_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17d2: IDML: the re-import is ACCEPTED too, but the new draft is imported BEFORE the old one is retired, so it "
+      "gets NEW ids (IDML-0001-2...): the OPEN task and its REQUEST_REVIEW row are left DANGLING",
+      act17d2 == ("ok", 1) and r17d2[0] == "ok" and ids(a17d2, "topics", "topic_id") == ["IDML-0001-2"]
+      and ids(a17d2, "content_blocks", "block_id")[0] == "IDML-0001-2-B001"
+      and dangling(a17d2) == {**NO_DANGLING, "audit_events": [("block", "IDML-0001-B001")],
+                              "review_tasks": [("block", "IDML-0001-B001")]}, dangling(a17d2))
+
+# ------------------------------------------------------------ S17e: an archived topic
+p17e, d17e = draft_project("S17e archived topic", PDF_A)
+with repository(p17e) as repo:
+    act17e = outcome(AuthoringService(repo).archive_topic, "DOC-0002", actor=ACTOR)
+r17e, b17e, a17e, _ = rerun("S17e_archived_topic_then_pdf_reimport", p17e, d17e, act17e, PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17e: archiving sets archived_at; the topic stays 'Migrated' and linked to the publication; the re-import is "
+      "ACCEPTED",
+      act17e == ("ok", None) and [(bool(r["archived_at"]), r["status"]) for r in rows(b17e, "topics", topic_id="DOC-0002")]
+      == [(True, "Migrated")] and "DOC-0002" in [r["topic_id"] for r in b17e["db"]["publication_topics"]]
+      and r17e[0] == "ok", [act17e, message(r17e)])
+check("S17e-b: the archive is undone -- DOC-0002 is re-created ACTIVE (archived_at NULL) in the publication; the "
+      "ARCHIVE audit row survives",
+      [r["archived_at"] for r in rows(a17e, "topics", topic_id="DOC-0002")] == [None]
+      and [r["topic_id"] for r in a17e["db"]["publication_topics"]] == ["DOC-0001", "DOC-0002"]
+      and actions(a17e) == [("topic", "DOC-0002", "ARCHIVE")], rows(a17e, "topics", topic_id="DOC-0002"))
+
+# ------------------------------------------------------------ S17f: an autosave with no human change
+p17f, d17f = draft_project("S17f autosave", PDF_A)
+act17f = outcome(app.studio_save_draft_ui, str(p17f), "block", "DOC-0001-B001", "paragraph", "", 1,
+                 "", SRC_B001, "", "", None, "", "", ACTOR)                       # a blur with nothing changed
+r17f, b17f, a17f, _ = rerun("S17f_autosave_no_change_then_pdf_reimport", p17f, d17f, act17f,
+                            PDF_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17f: a Studio blur with nothing changed still writes an autosave row (dirty=1, the unchanged text); no version, "
+      "no audit row, no status change",
+      act17f == ("ok", SAVED)
+      and [(r["kind"], r["object_id"], r["base_version"], json.loads(r["payload_json"]), r["dirty"])
+           for r in b17f["db"]["authoring_drafts"]] == [("block", "DOC-0001-B001", 1, {"text": SRC_B001}, 1)]
+      and b17f["db"]["content_blocks"] == d17f["db"]["content_blocks"] and not b17f["db"]["audit_events"], act17f)
+check("S17f-b: the re-import is ACCEPTED; the autosave row survives untouched, keyed on the re-created block",
+      r17f[0] == "ok" and a17f["db"]["authoring_drafts"] == b17f["db"]["authoring_drafts"]
+      and dangling(a17f) == NO_DANGLING, message(r17f))
+
+# ------------------------------------------------------------ S17g: IDML review decisions (database + JSON, JSON only)
+p17g, d17g = draft_project("S17g caption confirmed", IDML_A)
+act17g = outcome(app.idml_review_confirm_ui, str(p17g), "QA",
+                 *[app._IDML_CONFIRM_CAPTION if it["reason"] == "caption_candidate" else app._IDML_ACCEPT_EXCLUSION
+                   for it in review_items(d17g)])
+r17g, b17g, a17g, _ = rerun("S17g_idml_caption_confirmed_then_idml_reimport", p17g, d17g, act17g,
+                            IDML_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17g: confirming the caption is human work on BOTH sides: figure v2 with the caption (figure_versions [1, 2]) "
+      "and explicit decisions in the review JSON (decided_by 'QA')",
+      act17g[0] == "ok" and [(r["version"], r["caption"]) for r in b17g["db"]["figures"]] == [(2, "Didascalia pompa idraulica")]
+      and [r["version"] for r in b17g["db"]["figure_versions"]] == [1, 2]
+      and decisions(b17g) == [("orphan_story", "accepted_exclusion", "QA"), ("caption_candidate", "confirm_association", "QA")],
+      [b17g["db"]["figures"], decisions(b17g)])
+check("S17g-b: the IDML re-import is ACCEPTED (figure statuses are not read): the confirmed figure is deleted, the new "
+      "one (new id) is v1 with no caption, and the JSON is REPLACED by undecided items under a new key",
+      r17g[0] == "ok" and [(r["figure_id"], r["version"], r["caption"]) for r in a17g["db"]["figures"]]
+      == [("IDML-0001-2-F002", 1, "")] and decisions(a17g) == [("orphan_story", None, ""), ("caption_candidate", None, "")]
+      and review_items(a17g)[1]["item_key"] != review_items(b17g)[1]["item_key"], [a17g["db"]["figures"], decisions(a17g)])
+
+p17g2, d17g2 = draft_project("S17g2 JSON-only decisions", IDML_A)
+act17g2 = outcome(app.idml_review_confirm_ui, str(p17g2), "QA",
+                  *[app._IDML_KEEP_SEPARATE if it["reason"] == "caption_candidate" else app._IDML_ACCEPT_EXCLUSION
+                    for it in review_items(d17g2)])
+r17g2, b17g2, a17g2, _ = rerun("S17g2_idml_json_only_decisions_then_idml_reimport", p17g2, d17g2, act17g2,
+                               IDML_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17g2: 'keep separate' and 'accept exclusion' are explicit decisions that live ONLY in the review JSON -- the "
+      "database is untouched (figure still v1, no audit row)",
+      act17g2[0] == "ok" and b17g2["db"] == d17g2["db"]
+      and decisions(b17g2) == [("orphan_story", "accepted_exclusion", "QA"), ("caption_candidate", "keep_separate", "QA")],
+      decisions(b17g2))
+check("S17g2-b: what tells an explicit decision from the file the import writes: decision set, decided_by and "
+      "decided_at filled -- in the generated file every item is None / '' / ''",
+      all(it["decision"] is None and it["decided_by"] == "" and it["decided_at"] == "" for it in review_items(d17g2))
+      and all(it["decision"] and it["decided_by"] and it["decided_at"] for it in review_items(b17g2)), review_items(d17g2))
+check("S17g2-c: the IDML re-import is ACCEPTED and the decisions are lost: the JSON is replaced by undecided items",
+      r17g2[0] == "ok" and decisions(a17g2) == [("orphan_story", None, ""), ("caption_candidate", None, "")], decisions(a17g2))
+
+# ------------------------------------------------------------ S17h: the guided onboarding (DLS-02), same / empty name
+_orig_root17 = app.DATA_ROOT
+try:
+    app.DATA_ROOT = TMP / "onboarding_root_17h"
+    app.DATA_ROOT.mkdir()
+    g17h1 = outcome(app._guided_create_and_import, "Manuale Pompa", str(PDF_A), "it-IT")
+    p17h = Path(g17h1[1][0])
+    d17h = state(p17h)
+    with repository(p17h) as repo:
+        act17h = outcome(AuthoringService(repo).save_block, "DOC-0001-B001", text=EDITED, expected_version=1, actor=ACTOR)
+    b17h = state(p17h)
+    g17h2 = outcome(app._guided_create_and_import, "Manuale Pompa", str(PDF_B), "it-IT")
+    a17h = state(p17h)
+    dirs17h = sorted(p.name for p in app.DATA_ROOT.iterdir() if p.is_dir())
+    snap("S17h_guided_same_name_reimport",
+         {"first": [g17h1[0], g17h1[1][0], g17h1[1][3]], "draft": d17h, "action": act17h, "before": b17h,
+          "second": [g17h2[0], g17h2[1][0], g17h2[1][3]] if g17h2[0] == "ok" else g17h2, "after": a17h, "projects": dirs17h})
+
+    app.DATA_ROOT = TMP / "onboarding_root_17h2"
+    app.DATA_ROOT.mkdir()
+    g17h3 = outcome(app.guided_confirm_language_ui, "", str(PDF_A), "Italiano (it-IT)")
+    p17h2 = Path(g17h3[1][0])
+    d17h2 = state(p17h2)
+    with repository(p17h2) as repo:
+        act17h2 = outcome(AuthoringService(repo).save_block, "DOC-0001-B001", text=EDITED, expected_version=1, actor=ACTOR)
+    b17h2 = state(p17h2)
+    g17h4 = outcome(app.guided_confirm_language_ui, "   ", str(PDF_A), "Italiano (it-IT)")
+    a17h2 = state(p17h2)
+    dirs17h2 = sorted(p.name for p in app.DATA_ROOT.iterdir() if p.is_dir())
+    snap("S17h2_guided_blank_name_reimport",
+         {"first": [g17h3[0], g17h3[1][0], g17h3[1][3], g17h3[1][-1]], "draft": d17h2, "action": act17h2, "before": b17h2,
+          "second": [g17h4[0], g17h4[1][0], g17h4[1][3], g17h4[1][-1]] if g17h4[0] == "ok" else g17h4,
+          "after": a17h2, "projects": dirs17h2})
+finally:
+    app.DATA_ROOT = _orig_root17
+check("S17h: the guided onboarding run twice with the SAME name reopens the existing project (no second folder) and "
+      "re-imports into its PUB-MAIN: the Studio edit made in between is lost, the new file replaces the draft",
+      g17h1[0] == "ok" and act17h[0] == "ok" and g17h2[0] == "ok" and g17h2[1][0] == g17h1[1][0] and dirs17h == [p17h.name]
+      and versions(b17h, "block_versions", "block_id", "DOC-0001-B001") == [1, 2]
+      and [(r["version"], r["text_content"]) for r in b001(a17h)] == [(1, "Revisione B del manuale.")]
+      and ids(a17h, "topics", "topic_id") == ["DOC-0001", "DOC-0002", "DOC-0003"], [g17h2[:1], dirs17h, b001(a17h)])
+check("S17h-b: nothing tells the user an existing project was reused: the second result is the plain import message "
+      "(create_project_ui's 'esiste già' message is discarded)",
+      g17h2[0] == "ok" and g17h2[1][3].startswith("✅ Manuale importato come draft") and "esiste già" not in g17h2[1][3],
+      g17h2[1][3] if g17h2[0] == "ok" else g17h2)
+check("S17h2: an EMPTY name (blank, then spaces) falls back to the file stem, so the same file lands in the same "
+      "project again and is re-imported over the edit",
+      g17h3[0] == "ok" and g17h4[0] == "ok" and g17h3[1][-1] == g17h4[1][-1] == "Manuale_A"
+      and g17h4[1][0] == g17h3[1][0] and dirs17h2 == [p17h2.name] and act17h2[0] == "ok"
+      and versions(b17h2, "block_versions", "block_id", "DOC-0001-B001") == [1, 2]
+      and [(r["version"], r["text_content"]) for r in b001(a17h2)] == [(1, SRC_B001)], [dirs17h2, b001(a17h2)])
+check("S17h-c: app.DATA_ROOT is restored", app.DATA_ROOT == _orig_root17, "")
+
+# ------------------------------------------------------------ S17i: a second revision with the SAME file name (DLS-03)
+(INPUTS / "rev1").mkdir()
+(INPUTS / "rev2").mkdir()
+PDF_C1 = make_pdf("rev1/Manuale_C.pdf", [("1 Sicurezza", ["Revisione 1: indossare i guanti."])])
+PDF_C2 = make_pdf("rev2/Manuale_C.pdf", [("1 Sicurezza", ["Revisione 2: indossare guanti e occhiali."])])
+for _pdf in (PDF_C1, PDF_C2):                    # files() names an uploaded copy by WHICH input it is
+    INPUT_SHA[hashlib.sha256(_pdf.read_bytes()).hexdigest()] = _pdf.relative_to(INPUTS).as_posix()
+p17i, d17i = draft_project("S17i same-name file", PDF_C1)
+with repository(p17i) as repo:
+    act17i = outcome(AuthoringService(repo).bulk_approve_publication, "PUB-MAIN", actor="Revisore")
+r17i, b17i, a17i, _ = rerun("S17i_same_name_file_refused_overwrites_source", p17i, d17i, act17i,
+                            PDF_C2, "it-IT", "PUB-MAIN", "Revisione 2")
+
+
+def source_copy(st: dict, rel: str) -> list:
+    return [f[1] for f in st["files"] if f[0] == rel]
+
+
+check("S17i: after a human approval the next revision under the SAME file name is refused (ValueError) and the "
+      "database is untouched",
+      act17i == ("ok", {"topics_approved": 1, "review_tasks_closed": 0}) and r17i[:2] == ("raise", "ValueError")
+      and a17i["db"] == b17i["db"], [act17i, r17i])
+check("S17i-b (DLS-03): ... but the refused file has already OVERWRITTEN Sources/Manuale_C.pdf: the approved content now "
+      "sits next to a copy of the revision that was refused",
+      source_copy(b17i, "Sources/Manuale_C.pdf") == ["copy of rev1/Manuale_C.pdf"]
+      and source_copy(a17i, "Sources/Manuale_C.pdf") == ["copy of rev2/Manuale_C.pdf"], source_copy(a17i, "Sources/Manuale_C.pdf"))
+
+# ------------------------------------------------------------ S17j: an audit row older than the draft it now names
+p17j, d17j = draft_project("S17j audit before draft", PDF_A)
+with repository(p17j) as repo:
+    act17j = outcome(AuthoringService(repo).save_block, "DOC-0001-B001", text=EDITED, expected_version=1, actor=ACTOR)
+outcome(app.import_manual_ui, str(p17j), str(PDF_A), "it-IT", "PUB-MAIN", "Bozza")       # destructive, as in S17a
+r17j, b17j, a17j, _ = rerun("S17j_audit_before_draft_then_pdf_reimport", p17j, d17j, act17j,
+                            PDF_B, "it-IT", "PUB-MAIN", "Revisione B")
+_save_at17j = [r["created_at"] for r in b17j["db"]["audit_events"] if r["action"] == "AUTHORING_SAVE"]
+check("S17j: after one destructive re-import the AUTHORING_SAVE row is OLDER than the block it names (audit created_at "
+      "< block created_at, block back at v1): read by id alone it looks like work on the CURRENT draft",
+      act17j[0] == "ok" and len(_save_at17j) == 1 and _save_at17j[0] < b001(b17j)[0]["created_at"]
+      and versions(b17j, "block_versions", "block_id", "DOC-0001-B001") == [1] and dangling(b17j) == NO_DANGLING,
+      [_save_at17j, b001(b17j)])
+check("S17j-b: today it changes nothing -- the next re-import (another revision) is ACCEPTED and the row survives again",
+      r17j[0] == "ok" and actions(a17j) == actions(b17j) == [("block", "DOC-0001-B001", "AUTHORING_SAVE")]
+      and [r["text_content"] for r in b001(a17j)] == ["Revisione B del manuale."], [message(r17j), actions(a17j)])
+
+# The same stale row, written directly (the shape S17j leaves behind, as in a project re-imported before B5): it does not
+# depend on the destructive re-import S17j needs to produce it, so it still describes that state once that changes.
+p17j2, d17j2 = draft_project("S17j2 seeded audit before draft", PDF_A)
+con = sqlite3.connect(p17j2 / "ManualSync_CCMS.sqlite")
+con.execute("INSERT INTO audit_events(object_type,object_id,action,actor,detail_json,created_at) VALUES(?,?,?,?,?,?)",
+            ("block", "DOC-0001-B001", "AUTHORING_SAVE", ACTOR,
+             json.dumps({"from_version": 1, "to_version": 2}, sort_keys=True), "2000-01-01T00:00:00+00:00"))
+con.commit()
+con.close()
+r17j2, b17j2, a17j2, _ = rerun("S17j2_seeded_audit_before_draft_then_pdf_reimport", p17j2, d17j2,
+                               "seeded: AUTHORING_SAVE on DOC-0001-B001 dated 2000-01-01", PDF_B, "it-IT", "PUB-MAIN",
+                               "Revisione B")
+check("S17j2: a seeded AUTHORING_SAVE row dated before the draft (block still v1, never edited in this draft) does "
+      "not stop the re-import: ACCEPTED, the row survives",
+      r17j2[0] == "ok" and actions(a17j2) == actions(b17j2) == [("block", "DOC-0001-B001", "AUTHORING_SAVE")]
+      and b17j2["db"]["audit_events"][0]["created_at"] < b001(b17j2)[0]["created_at"]
+      and versions(b17j2, "block_versions", "block_id", "DOC-0001-B001") == [1]
+      and [r["text_content"] for r in b001(a17j2)] == ["Revisione B del manuale."], [message(r17j2), actions(a17j2)])
+
+# ------------------------------------------------------------ S17j-bis: an orphan autosave (IDML ids alternate)
+p17jb, d17jb = draft_project("S17j-bis orphan autosave", IDML_A)
+act17jb = outcome(app.studio_save_draft_ui, str(p17jb), "block", "IDML-0001-B001", "paragraph", "", 1,
+                  "", "Bozza mai salvata dal redattore.", "", "", None, "", "", ACTOR)
+r17jb, b17jb, a17jb, _ = rerun("S17jbis_orphan_autosave_after_idml_reimport", p17jb, d17jb, act17jb,
+                               IDML_A, "it-IT", "PUB-MAIN", "Bozza")
+r17jb2, _b17jb2, a17jb2, _ = rerun("S17jbis2_orphan_autosave_rebound_by_next_idml_reimport", p17jb, a17jb, None,
+                                   IDML_A, "it-IT", "PUB-MAIN", "Bozza")
+check("S17j-bis: an unsaved autosave does not stop an IDML re-import; the new draft gets new ids, so the autosave row "
+      "is left DANGLING on IDML-0001-B001",
+      act17jb == ("ok", SAVED) and r17jb[0] == "ok" and ids(a17jb, "topics", "topic_id") == ["IDML-0001-2"]
+      and dangling(a17jb) == {**NO_DANGLING, "authoring_drafts": [("block", "IDML-0001-B001")]}, dangling(a17jb))
+check("S17j-bis-b: the next IDML re-import alternates back to IDML-0001 (IDML-0001-2 is taken), so the same stale "
+      "autosave is silently RE-BOUND to a new block whose version matches its base_version",
+      r17jb2[0] == "ok" and ids(a17jb2, "topics", "topic_id") == ["IDML-0001"] and dangling(a17jb2) == NO_DANGLING
+      and [(r["object_id"], r["base_version"], json.loads(r["payload_json"])) for r in a17jb2["db"]["authoring_drafts"]]
+      == [("IDML-0001-B001", 1, {"text": "Bozza mai salvata dal redattore."})]
+      and versions(a17jb2, "block_versions", "block_id", "IDML-0001-B001") == [1], [ids(a17jb2, "topics", "topic_id"),
+                                                                                     dangling(a17jb2)])
+
+# ------------------------------------------------------------ S17k: compliance evidence on a draft block
+def _evidence_on_b001(project: Path):
+    with repository(project) as repo:
+        cs = ComplianceService(repo)
+        cs.create_instrument("INS-1", "2006/42/CE", actor="Compliance", title="Direttiva macchine")
+        cs.create_requirement("REQ-1", "Istruzioni per l'uso", actor="Compliance", instrument_id="INS-1")
+        cs.create_scope("SC-1", "PUB-MAIN", actor="Compliance")
+        cs.add_scope_reference("SC-1", "instrument", "INS-1", actor="Compliance")
+        cs.set_applicability("SC-1", "REQ-1", "APPLIES", actor="Compliance")
+        cs.add_evidence("EV-1", "block", actor="Compliance", object_id="DOC-0001-B001", object_version=1)
+        cs.link_evidence_requirement("EV-1", "REQ-1", actor="Compliance")
+        cs.set_assessment("SC-1", "REQ-1", "COVERED", actor="Compliance")
+        return cs.evidence_for_requirement("REQ-1")
+
+
+def _evidence_judgment(project: Path):
+    with repository(project) as repo:
+        return ComplianceService(repo).evidence_for_requirement("REQ-1")
+
+
+p17k, d17k = draft_project("S17k compliance evidence", PDF_A)
+act17k = outcome(_evidence_on_b001, p17k)
+r17k, b17k, a17k, j17k = rerun("S17k_compliance_evidence_then_pdf_reimport", p17k, d17k, act17k,
+                               PDF_B, "it-IT", "PUB-MAIN", "Revisione B", then=lambda: _evidence_judgment(p17k))
+check("S17k: block evidence (DOC-0001-B001 v1, the imported text) backs a COVERED assessment",
+      act17k[0] == "ok" and [(e["object_id"], e["object_version"], e["is_current"]) for e in act17k[1]]
+      == [("DOC-0001-B001", 1, True)] and [r["status"] for r in b17k["db"]["compliance_assessment"]] == ["COVERED"], act17k)
+check("S17k-b: a PDF re-import of ANOTHER revision is ACCEPTED (evidence is not read by the guard) and replaces the "
+      "block's text", r17k[0] == "ok" and [(r["version"], r["text_content"]) for r in b001(a17k)]
+      == [(1, "Revisione B del manuale.")], [message(r17k), b001(a17k)])
+check("S17k-c: ... and the evidence still judges itself CURRENT (same id, same version 1): the assessment stays COVERED "
+      "on a text nobody assessed",
+      [(e["object_id"], e["object_version"], e["is_current"]) for e in j17k] == [("DOC-0001-B001", 1, True)]
+      and [r["status"] for r in a17k["db"]["compliance_assessment"]] == ["COVERED"]
+      and a17k["db"]["compliance_evidence"] == b17k["db"]["compliance_evidence"] and dangling(a17k) == NO_DANGLING, j17k)
+
 # ============================================================ M: the digests see what matters, and only that
 base04 = {"before": b04, "outcome": r04, "after": a04}
 ref = digest(base04)
@@ -634,6 +1097,27 @@ m8 = copy.deepcopy(base16)
 m8["reimport"]["after"]["db"]["publications"][0].update(title="Titolo", source_lang="it-IT")
 check("M8: a re-import that stripped the title and canonicalized the language like the first import "
       "(the two paths 'unified') changes the S16 digest", digest(m8) != digest(base16), "")
+
+base17c = {"draft": d17c, "action": act17c, "before": b17c, "outcome": r17c, "after": a17c, "then": None}
+ref17c = digest(base17c)
+m9a = _replace_everywhere(base17c, _new17c, "BLK-0123456789")
+m9b = copy.deepcopy(base17c)
+[r for r in m9b["after"]["db"]["audit_events"] if r["object_type"] == "block"][0]["object_id"] = "BLK-0123456789"
+check("M9: another random Studio id (BLK-<10 hex>), used consistently, leaves the S17c digest unchanged "
+      "(it is run-dependent)", ref17c == _observed.get("S17c_studio_block_then_pdf_reimport") and _new17c != "BLK-0123456789"
+      and digest(m9a) == ref17c, "")
+check("M9b: ... but an audit row that no longer names the block it was written for changes the digest",
+      digest(m9b) != ref17c, "")
+base17a = {"draft": d17a, "action": act17a, "before": b17a, "outcome": r17a, "after": a17a, "then": None}
+m10 = copy.deepcopy(base17a)
+b001(m10["after"])[0].update(version=2, text_content=EDITED)
+check("M10: a re-import that KEPT the Studio edit (v2, edited text) changes the S17a digest",
+      digest(base17a) == _observed.get("S17a_block_edit_then_pdf_reimport") and digest(m10) != digest(base17a), "")
+base17k = {"draft": d17k, "action": act17k, "before": b17k, "outcome": r17k, "after": a17k, "then": j17k}
+m11 = copy.deepcopy(base17k)
+m11["then"][0]["is_current"] = False
+check("M11: evidence judged NOT current after the re-import changes the S17k digest",
+      digest(base17k) == _observed.get("S17k_compliance_evidence_then_pdf_reimport") and digest(m11) != digest(base17k), "")
 
 # ============================================================ R (CP5.2b-1): the SQL lives in IndustrialRepository
 import ast  # noqa: E402
@@ -709,7 +1193,8 @@ check("R4: a SQL call put back into import_manual_ui is caught by R1",
 
 check("N1: no network access attempted", not GUARD.snapshot(), GUARD.snapshot())
 
-# Pinned at HEAD d4f7c45 (CP5.2a) after three identical runs; S16 added at 02652e5 (CP5.2b-0), same procedure.
+# Pinned at HEAD d4f7c45 (CP5.2a) after three identical runs; S16 added at 02652e5 (CP5.2b-0), same procedure;
+# S04x/S17 added on f9eb474 (HARDENING-02A, B5 characterization), same procedure, the 21 digests above unchanged.
 GOLDEN = {
     'S01_pdf_new': '0a6cefe0be16b1b58a52e36d528b3ccb3969a562eff9cec2284a289de98a972b',
     'S02_docx_new': '1d19b535de0b302151cf915b985875d1f6768e2937bc0b83a4f68bc876d9b54a',
@@ -732,6 +1217,25 @@ GOLDEN = {
     'S14b_padded_publication_id': '54a14ba292b3ce8fe48f3193adf14e5e5c6ad7f8ca23440bb33168c8d46dc1b4',
     'S15_guided_onboarding': 'e0a6f69c73a601c59dc42ff64f72abe91e44fb33db329877b3cb50aafb114f0c',
     'S16_publication_title_language_asymmetry': '0d33da9ba132522f1aaf3ce96af62967b8c4a237e78899fd605b1689166c04ba',
+    'S04x_pdf_reimport_over_idml_draft_no_translations': '4490ce2535a1753d184526e5c6aaa031e5fff6be81263fa3063127510ff86d28',
+    'S17a2_block_edit_then_docx_reimport': 'a9e929ec9e058eec70e072a400e7f95cf2a908d55ac943dbde32e08637921f53',
+    'S17a_block_edit_then_pdf_reimport': 'b734a2474215dffa82470c71ccb67f490a2e95c4629cad48ed1e09085c22397b',
+    'S17b_title_edit_then_pdf_reimport': 'fed9f52cc3f42c0e3f42f8c5b8b41720b33f2c9def72cd104ec6092841a8a27e',
+    'S17c_studio_block_then_pdf_reimport': '045769fa6be583864ddbd47f5d5f2306aa3305fceffe26937ce5c882586c6218',
+    'S17d2_review_block_then_idml_reimport': '8c772d5b2ea618cc671ef02e9640779247302513fdee42f0c2adb2178de06047',
+    'S17d_review_block_then_pdf_reimport': '6d0ffe7327eced42a88883fc020070718759b4c77bd7a5de20a5d834b26443d2',
+    'S17e_archived_topic_then_pdf_reimport': '70399622e7e3a7d80a6c266e07adfb400ff40237713904dbcb35c9e7965acd75',
+    'S17f_autosave_no_change_then_pdf_reimport': 'b6cdaaf160ef3fb3268d37c3dd503f9f8fee08ec8caa8878db474e56c32a7b5b',
+    'S17g2_idml_json_only_decisions_then_idml_reimport': 'a36ed868d417b52ac0da66a89084f8872d12353ac35b7515b0438f75bce0894a',
+    'S17g_idml_caption_confirmed_then_idml_reimport': '72555adce739bd7a6106168a9f8c5f5868edd29fab4d022cb135ffa395caa776',
+    'S17h2_guided_blank_name_reimport': '19a6c7b8220206bf203bbf361d92f07c92f37740916bff3d9bf8afd8cd73c6ff',
+    'S17h_guided_same_name_reimport': 'bc22f6d5b5922145e3244fab54325868080a50f23de68797f471ba73eddd76f6',
+    'S17i_same_name_file_refused_overwrites_source': 'ceef59e5030d79007fe0ce519c50eebbf78154f898d7c3867cb0d2edcadfcee2',
+    'S17j_audit_before_draft_then_pdf_reimport': '08a5f161bfa5e1a037c924cf8b08a5e4f074224e314d41e82b11fda70feda766',
+    'S17j2_seeded_audit_before_draft_then_pdf_reimport': '4870e41777e5cde5f8a2f89c3834ceb68f2e747d5c9fc33f971f21afb9c4be6c',
+    'S17jbis2_orphan_autosave_rebound_by_next_idml_reimport': '7acf8e1dd31eb69152f108804e9a8d48ec0193b0828e4b6ecf74a5246ec3ee8e',
+    'S17jbis_orphan_autosave_after_idml_reimport': 'cb7e0ed8708f9c4e606dab64b2d9ac1dc0b945ad480552ab0355967cdd5105c1',
+    'S17k_compliance_evidence_then_pdf_reimport': '0c9b69d4d8a1c184d69bf6e6b3555b052efa7f8e9d070c2057a535a9403ad078',
 }
 
 if PRINT_GOLDEN:
