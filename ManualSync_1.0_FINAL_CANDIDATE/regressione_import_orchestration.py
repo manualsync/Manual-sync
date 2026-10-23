@@ -21,7 +21,11 @@ leave every one of these observations identical:
             corrupt IDML leaves the old draft byte-for-byte untouched;
 * S12       .doc through the converter seam (success and failure);
 * S13/S14   the gr.Error guard and the argument defaults (id, language, title);
-* S15       the guided onboarding (_guided_create_and_import) that reuses the same path.
+* S15       the guided onboarding (_guided_create_and_import) that reuses the same path;
+* S16       (CP5.2b-0) the publication title/language asymmetry: the FIRST import goes through
+            create_publication (title stripped, language canonicalized: "it-it" -> "it-IT"),
+            a RE-import through the inline UPDATE (both stored as received) -- pinned so that
+            moving that UPDATE cannot "unify" the two paths silently.
 
 For each scenario the WHOLE content database (every table, every row, in rowid
 order), the project files (Sources/, review JSON, manifest) and the returned
@@ -546,6 +550,29 @@ finally:
     app.DATA_ROOT = _orig_root
 check("S15c: app.DATA_ROOT is restored", app.DATA_ROOT == _orig_root, "")
 
+# ============================================================ S16 (CP5.2b-0): title / language, first import vs re-import
+p16 = new_project("S16 asymmetry")
+b16a = state(p16)
+r16a = outcome(app.import_manual_ui, str(p16), str(PDF_A), "it-it", "PUB-MAIN", "  Titolo  ")
+a16a = state(p16)
+r16b = outcome(app.import_manual_ui, str(p16), str(PDF_B), "it-it", "PUB-MAIN", "  Titolo  ")
+a16b = state(p16)
+
+
+def _pub(st):
+    return [(r["publication_id"], r["title"], r["source_lang"]) for r in st["db"].get("publications", [])]
+
+
+check("S16: first import (create_publication): the title is stripped and 'it-it' is canonicalized to 'it-IT'",
+      r16a[0] == "ok" and _pub(a16a) == [("PUB-MAIN", "Titolo", "it-IT")], _pub(a16a))
+check("S16b (pinned asymmetry): re-import (inline UPDATE): title and language are stored as received",
+      r16b[0] == "ok" and _pub(a16b) == [("PUB-MAIN", "  Titolo  ", "it-it")], _pub(a16b))
+check("S16c: the topics are canonicalized on both paths (only the publication row differs)",
+      {r["source_lang"] for r in a16a["db"]["topics"]} == {"it-IT"} == {r["source_lang"] for r in a16b["db"]["topics"]},
+      [{r["source_lang"] for r in a16a["db"]["topics"]}, {r["source_lang"] for r in a16b["db"]["topics"]}])
+snap("S16_publication_title_language_asymmetry",
+     {"before": b16a, "first": {"outcome": r16a, "after": a16a}, "reimport": {"outcome": r16b, "after": a16b}})
+
 # ============================================================ M: the digests see what matters, and only that
 base04 = {"before": b04, "outcome": r04, "after": a04}
 ref = digest(base04)
@@ -595,9 +622,15 @@ check("M7: another random caption key, used consistently, leaves the digest unch
 check("M7b: ... but a review item that no longer points at its figure changes the digest (the link is pinned)",
       digest(m7b) != ref03, "")
 
+base16 = {"before": b16a, "first": {"outcome": r16a, "after": a16a}, "reimport": {"outcome": r16b, "after": a16b}}
+m8 = copy.deepcopy(base16)
+m8["reimport"]["after"]["db"]["publications"][0].update(title="Titolo", source_lang="it-IT")
+check("M8: a re-import that stripped the title and canonicalized the language like the first import "
+      "(the two paths 'unified') changes the S16 digest", digest(m8) != digest(base16), "")
+
 check("N1: no network access attempted", not GUARD.snapshot(), GUARD.snapshot())
 
-# Pinned at HEAD d4f7c45 (CP5.2a) after three identical runs.
+# Pinned at HEAD d4f7c45 (CP5.2a) after three identical runs; S16 added at 02652e5 (CP5.2b-0), same procedure.
 GOLDEN = {
     'S01_pdf_new': '0a6cefe0be16b1b58a52e36d528b3ccb3969a562eff9cec2284a289de98a972b',
     'S02_docx_new': '1d19b535de0b302151cf915b985875d1f6768e2937bc0b83a4f68bc876d9b54a',
@@ -619,6 +652,7 @@ GOLDEN = {
     'S14_defaults': '841893688e8f78f75cad7a9c67e8d8974d769e2809c0b18e6ba100ef3954aea6',
     'S14b_padded_publication_id': '54a14ba292b3ce8fe48f3193adf14e5e5c6ad7f8ca23440bb33168c8d46dc1b4',
     'S15_guided_onboarding': 'e0a6f69c73a601c59dc42ff64f72abe91e44fb33db329877b3cb50aafb114f0c',
+    'S16_publication_title_language_asymmetry': '0d33da9ba132522f1aaf3ce96af62967b8c4a237e78899fd605b1689166c04ba',
 }
 
 if PRINT_GOLDEN:
