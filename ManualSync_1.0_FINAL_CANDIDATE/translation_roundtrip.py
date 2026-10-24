@@ -23,6 +23,24 @@ from linguistic_safety import cross_language_issue
 
 ROUNDTRIP_BUILD = "0.24.1-linguistic-safety-qa-20260820"
 XLIFF_NS = "urn:oasis:names:tc:xliff:document:2.0"
+# The confirmed Translation Memory, in the project folder. Persisted (audit row,
+# ROUNDTRIP_COMMIT.json) as this name -- relative to the project -- never as an absolute path.
+CONFIRMED_TM_NAME = "ManualSync_CONFIRMED_TM.sqlite"
+
+
+class RoundtripCommitInterrupted(RuntimeError):
+    """commit_translation_roundtrip stopped AFTER it had started writing.
+
+    ``phase`` is "tm", "ccms" or "artifacts". ``translation_committed`` says whether the CCMS
+    translations and the audit row -- committed together, in one transaction -- went in. The
+    original error is the ``__cause__``.
+    """
+
+    def __init__(self, phase: str, *, translation_committed: bool, cause: BaseException):
+        state = "traduzione CCMS registrata" if translation_committed else "traduzione CCMS non registrata"
+        super().__init__(f"Commit round-trip interrotto (fase {phase}, {state}): {type(cause).__name__}: {cause}")
+        self.phase = phase
+        self.translation_committed = translation_committed
 
 
 def _now() -> str:
@@ -424,7 +442,26 @@ def commit_translation_roundtrip(
     strict_terminology: bool = False,
     reviewer: str = "Human reviewer",
     out_dir: str | Path | None = None,
+    job_id: str = "",
 ) -> dict[str, Any]:
+    """Commit a QA-passed, human-approved round trip: TM, CCMS translations, audit row, artifacts.
+
+    The writes span two databases and the file system, so they cannot share one transaction
+    (CP5.4a). What CP5.4c guarantees instead:
+
+    * the TM goes first, one entry at a time -- INSERT OR IGNORE, so repeating it is harmless;
+    * the CCMS translations and the audit row are ONE transaction: either all of them are in,
+      or none (the TM is then complete -- it went first);
+    * with a ``job_id``, a job whose audit row already exists for this package and this returned
+      XLIFF is not committed a second time: the TM and the CCMS are left untouched -- also any
+      translation edited since -- and the artifacts are rebuilt from that row ("resumed"). The QA
+      gate still applies: on a source changed since, completing is refused, and the message says
+      that the translation is already in the CCMS;
+    * a failure after the first write raises RoundtripCommitInterrupted (phase, whether the
+      translation is committed), the original error as its cause. Refusals before any write --
+      the human confirmation, the QA gate, an unreadable package, a missing or unsafe target --
+      are raised unchanged.
+    """
     if not human_approved:
         raise ValueError("Conferma umana obbligatoria: ManualSync non approva automaticamente le traduzioni.")
     result = inspect_translation_roundtrip(
@@ -432,18 +469,26 @@ def commit_translation_roundtrip(
         terminology_path=terminology_path, strict_terminology=strict_terminology, out_dir=out_dir,
     )
     summary = result["summary"]
+    done = repo.translation_roundtrip_audit_for_job(job_id, summary["package_sha256"], summary["returned_xliff_sha256"]) if job_id else None
     if not summary["commit_allowed_after_human_approval"]:
-        raise ValueError("Commit bloccato dal Round-Trip QA: " + " | ".join(summary["global_blockers"]))
+        blocked = "Commit bloccato dal Round-Trip QA: " + " | ".join(summary["global_blockers"])
+        if done is not None:
+            # Fail-closed also when completing: the job is not closed on a source that changed.
+            blocked += (". La traduzione di questo job era già stata registrata nel manuale prima che l'approvazione "
+                        "si interrompesse, e vi resta: l'approvazione non può essere completata. Annulla il job "
+                        "(confermando) e genera un nuovo pacchetto.")
+        raise ValueError(blocked)
 
     target_map = _segment_targets(result)
     current_meta = result["current_meta"]
     source_lang = summary["source"]["source_lang"]
     target_lang = summary["target_lang"]
+    reviewer = str(reviewer or "Human reviewer")
 
-    tm_path = Path(project_dir) / "ManualSync_CONFIRMED_TM.sqlite"
-    tm = TranslationMemory(tm_path)
-    added = 0
-    try:
+    tm_path = Path(project_dir) / CONFIRMED_TM_NAME
+    if done is None:
+        # Fail-closed before the first write: a refusal here is not an interruption.
+        entries = []
         for _, r in current_meta.iterrows():
             sid = str(r["segment_id"])
             source = str(r["source"])
@@ -451,61 +496,63 @@ def commit_translation_roundtrip(
             safe, reason = source_target_safe(source, target)
             if not target or not safe:
                 raise RuntimeError(f"Fail-closed TM commit {sid}: {reason or 'target vuoto'}")
-            before = tm.count()
-            tm.add(source_lang, target_lang, source, target, origin=f"ManualSync v0.24 RoundTrip {summary['source']['kind']}:{summary['source']['id']}", approved=True, tm_name="Project Confirmed", priority=200, penalty=0)
-            added += tm.count() - before
-    finally:
-        tm.close()
+            entries.append((source, target))
+        tm = TranslationMemory(tm_path)
+        added = 0
+        try:
+            for source, target in entries:
+                before = tm.count()
+                tm.add(source_lang, target_lang, source, target, origin=f"ManualSync v0.24 RoundTrip {summary['source']['kind']}:{summary['source']['id']}", approved=True, tm_name="Project Confirmed", priority=200, penalty=0)
+                added += tm.count() - before
+        except Exception as exc:
+            raise RoundtripCommitInterrupted("tm", translation_committed=False, cause=exc) from exc
+        finally:
+            tm.close()
 
-    ccms_commits = _apply_ccms_translations(repo, current_meta, target_map, target_lang)
+        committed_at = _now()
+        try:
+            with repo.single_transaction():
+                ccms_commits = _apply_ccms_translations(repo, current_meta, target_map, target_lang)
+                repo.record_translation_roundtrip_audit(
+                    build=ROUNDTRIP_BUILD, source_kind=summary["source"]["kind"], source_id=summary["source"]["id"],
+                    source_version=int(summary["source"]["version_current"]), source_lang=source_lang, target_lang=target_lang,
+                    package_sha256=summary["package_sha256"], returned_xliff_sha256=summary["returned_xliff_sha256"],
+                    reviewer=reviewer, tm_path=CONFIRMED_TM_NAME, tm_entries_added=int(added),
+                    ccms_commits_json=json.dumps(ccms_commits, ensure_ascii=False), committed_at=committed_at, job_id=job_id,
+                )
+        except Exception as exc:
+            raise RoundtripCommitInterrupted("ccms", translation_committed=False, cause=exc) from exc
+    else:
+        added = int(done["tm_entries_added"])
+        ccms_commits = json.loads(done["ccms_commits_json"] or "[]")
+        committed_at = str(done["committed_at"])
+        reviewer = str(done["reviewer"])
 
-    repo.conn.execute("""
-        CREATE TABLE IF NOT EXISTS translation_roundtrip_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            build TEXT NOT NULL,
-            source_kind TEXT NOT NULL,
-            source_id TEXT NOT NULL,
-            source_version INTEGER NOT NULL,
-            source_lang TEXT NOT NULL,
-            target_lang TEXT NOT NULL,
-            package_sha256 TEXT NOT NULL,
-            returned_xliff_sha256 TEXT NOT NULL,
-            reviewer TEXT NOT NULL,
-            human_approved INTEGER NOT NULL,
-            tm_path TEXT NOT NULL,
-            tm_entries_added INTEGER NOT NULL,
-            ccms_commits_json TEXT NOT NULL,
-            committed_at TEXT NOT NULL
-        )
-    """)
-    repo.conn.execute(
-        """INSERT INTO translation_roundtrip_audit(build,source_kind,source_id,source_version,source_lang,target_lang,package_sha256,returned_xliff_sha256,reviewer,human_approved,tm_path,tm_entries_added,ccms_commits_json,committed_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (ROUNDTRIP_BUILD, summary["source"]["kind"], summary["source"]["id"], int(summary["source"]["version_current"]), source_lang, target_lang,
-         summary["package_sha256"], summary["returned_xliff_sha256"], str(reviewer or "Human reviewer"), 1, str(tm_path), int(added), json.dumps(ccms_commits, ensure_ascii=False), _now()),
-    )
-    repo.conn.commit()
-
-    out = Path(result["out_dir"])
-    approved_xlf = out / f"ManualSync_{_safe_name(target_lang)}_APPROVED_RETURN.xlf"
-    shutil.copy2(returned_xliff, approved_xlf)
-    commit_payload = {
-        **summary,
-        "approved_by_human": True,
-        "reviewer": str(reviewer or "Human reviewer"),
-        "tm_path": str(tm_path),
-        "tm_entries_added": int(added),
-        "ccms_commits": ccms_commits,
-        "committed_at": _now(),
-    }
-    commit_json = out / "ROUNDTRIP_COMMIT.json"
-    commit_json.write_text(json.dumps(commit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    approval_zip = out / f"ManualSync_{_safe_name(target_lang)}_ROUNDTRIP_APPROVAL.zip"
-    with zipfile.ZipFile(approval_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.write(approved_xlf, arcname=approved_xlf.name)
-        zf.write(result["audit_csv"], arcname="ROUNDTRIP_QA_SEGMENTS.csv")
-        zf.write(result["summary_json"], arcname="ROUNDTRIP_QA_SUMMARY.json")
-        zf.write(commit_json, arcname=commit_json.name)
+    try:
+        out = Path(result["out_dir"])
+        approved_xlf = out / f"ManualSync_{_safe_name(target_lang)}_APPROVED_RETURN.xlf"
+        shutil.copy2(returned_xliff, approved_xlf)
+        commit_payload = {
+            **summary,
+            "approved_by_human": True,
+            "reviewer": reviewer,
+            "tm_path": CONFIRMED_TM_NAME,
+            "tm_entries_added": int(added),
+            "ccms_commits": ccms_commits,
+            "committed_at": committed_at,
+        }
+        if done is not None:
+            commit_payload["completed_after_interruption"] = True
+        commit_json = out / "ROUNDTRIP_COMMIT.json"
+        commit_json.write_text(json.dumps(commit_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        approval_zip = out / f"ManualSync_{_safe_name(target_lang)}_ROUNDTRIP_APPROVAL.zip"
+        with zipfile.ZipFile(approval_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(approved_xlf, arcname=approved_xlf.name)
+            zf.write(result["audit_csv"], arcname="ROUNDTRIP_QA_SEGMENTS.csv")
+            zf.write(result["summary_json"], arcname="ROUNDTRIP_QA_SUMMARY.json")
+            zf.write(commit_json, arcname=commit_json.name)
+    except Exception as exc:
+        raise RoundtripCommitInterrupted("artifacts", translation_committed=True, cause=exc) from exc
 
     return {
         "summary": commit_payload,
@@ -514,4 +561,5 @@ def commit_translation_roundtrip(
         "commit_json": commit_json,
         "approval_zip": approval_zip,
         "ccms_commits": pd.DataFrame(ccms_commits),
+        "resumed": done is not None,
     }

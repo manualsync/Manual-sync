@@ -399,7 +399,13 @@ def package_error_notice(message: str) -> str:
     return ux.notice(ux.ERROR, _t("ux.pkg.error.title"), _t("ux.pkg.error.body"), details=message)
 
 
-def job_cancel_confirm_notice(job: dict) -> str:
+def job_cancel_confirm_notice(job: dict, interrupted: dict | None = None) -> str:
+    """The question before "Annulla". For a job whose approval was interrupted after it began
+    writing (WorkflowManager.interrupted_approval) it says what cancelling leaves behind."""
+    body = _t("ux.job.cancel.confirm.body")
+    if interrupted:
+        body = _t("ux.job.cancel.interrupted.committed" if interrupted.get("translation_committed")
+                  else "ux.job.cancel.interrupted.body")
     return ux.notice(ux.WARNING, _t("ux.job.cancel.confirm.title",
                                     language=job_language(job.get("target_lang", ""))),
-                     _t("ux.job.cancel.confirm.body"), action=_t("ux.job.cancel.confirm.todo"))
+                     body, action=_t("ux.job.cancel.confirm.todo"))

@@ -5,6 +5,7 @@ import json
 import re
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Any
@@ -53,6 +54,7 @@ class ContentRepository:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
+        self._hold_commit = False
         self._schema()
 
     def _schema(self) -> None:
@@ -172,6 +174,40 @@ class ContentRepository:
     def close(self) -> None:
         self.conn.close()
 
+    @contextmanager
+    def single_transaction(self):
+        """Several writes as ONE transaction: committed together at the end, or rolled back
+        together on any error -- a failing commit included.
+
+        Only the translation setters (set_translation and the set_*_translation methods of
+        IndustrialRepository) hold back their own commit inside; every other write method still
+        commits on its own and must not be called here. CP5.4c: the round-trip commit writes its
+        CCMS translations and its audit row this way, so a failure can no longer leave some
+        objects translated and others not (see translation_roundtrip.commit_translation_roundtrip).
+
+        BEGIN IMMEDIATE takes the write lock at once, so no other writer can interleave; a
+        transaction the caller left open is refused rather than silently committed or rolled
+        back with these writes.
+        """
+        if self._hold_commit:
+            raise RuntimeError("single_transaction cannot be nested")
+        if self.conn.in_transaction:
+            raise RuntimeError("single_transaction: the connection already has a transaction open")
+        self.conn.execute("BEGIN IMMEDIATE")
+        self._hold_commit = True
+        try:
+            yield
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
+        finally:
+            self._hold_commit = False
+
+    def _commit(self) -> None:
+        if not self._hold_commit:
+            self.conn.commit()
+
     def create_topic(self, topic_id: str, title: str, body: str, *, source_lang: str = "en-US",
                      status: str = "Draft", include_variants: Iterable[str] | None = None,
                      exclude_variants: Iterable[str] | None = None, source_refs: Iterable[str] | None = None,
@@ -274,7 +310,7 @@ class ContentRepository:
                ON CONFLICT(topic_id,target_lang) DO UPDATE SET source_version=excluded.source_version,target_title=excluded.target_title,target_body=excluded.target_body,status=excluded.status,updated_at=excluded.updated_at""",
             (topic_id, target_lang, int(topic["version"]), title_value, target_body.strip(), status, now),
         )
-        self.conn.commit()
+        self._commit()
 
     def set_topic_title_translation(self, topic_id: str, target_lang: str, target_title: str, *, status: str = "Draft") -> None:
         target_lang = canonical_lang(target_lang)

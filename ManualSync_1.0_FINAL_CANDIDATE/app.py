@@ -4810,7 +4810,8 @@ def _job_state_hint(status):
         'CANCELLED':'job annullato',
     }.get(str(status or ''), 'verifica lo stato del job')
 
-def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, strict, reviewer, human_approved):
+def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, strict, reviewer, human_approved,
+                  cancel_acknowledged=False):
     if not project_dir or not job_id: raise gr.Error("Project e Job ID sono obbligatori.")
     wf=WorkflowManager(project_dir)
     qa_table=pd.DataFrame(); approval=None; tm=None
@@ -4842,7 +4843,8 @@ def job_action_ui(project_dir, job_id, action, returned_xliff, terminology, stri
             r=wf.approve_job(job_id,_ccms_db(project_dir),reviewer=reviewer or 'Human reviewer',human_approved=bool(human_approved))
             approval=str(r['commit']['approval_zip']); tm=str(r['commit']['tm_path']); msg='✅ Traduzione approvata: TM/CCMS aggiornati.'
         elif action=='Annulla':
-            wf.transition(job_id,'CANCELLED',actor='ManualSync user'); msg='Job annullato.'
+            wf.transition(job_id,'CANCELLED',actor='ManualSync user',
+                          acknowledge_interrupted_approval=bool(cancel_acknowledged)); msg='Job annullato.'
         else: raise ValueError('Seleziona un’azione.')
         qa_update = gr.update(value=qa_table, visible=not qa_table.empty)
         jobs, events = _friendly_jobs(wf.jobs_table()), _friendly_events(wf.events_table(job_id))
@@ -4854,6 +4856,20 @@ def _job_row(project_dir, job_id) -> dict:
     wf=WorkflowManager(project_dir)
     try: return wf.get_job(job_id)
     finally: wf.close()
+
+
+def _job_interrupted_approval(project_dir, job_id):
+    wf=WorkflowManager(project_dir)
+    try: return wf.interrupted_approval(job_id)
+    finally: wf.close()
+
+
+def _interruption_mark(interrupted) -> str:
+    """What a cancel question said about an interrupted approval -- carried with the pending
+    cancellation, so that "Sì" acknowledges only the state the user was actually shown."""
+    if not interrupted:
+        return ""
+    return f"{int(bool(interrupted.get('translation_committed')))}:{interrupted.get('at', '')}"
 
 
 def job_action_view_ui(project_dir, job_id, action, returned_xliff, terminology, strict, reviewer, human_approved,
@@ -4880,6 +4896,10 @@ def job_action_view_ui(project_dir, job_id, action, returned_xliff, terminology,
     if not project_dir:
         return out(ux.notice(ux.WARNING, t("ux.no_project.title"), t("ux.no_project.body")))
     jid=str(job_id or "").strip()
+    shown=""
+    if confirmed:
+        # The pending cancellation: "<job>" or "<job>|<what its question said>" (_interruption_mark).
+        jid, _, shown = jid.partition("|")
     if not jid:
         return out(ux.notice(ux.WARNING, t("ux.job.no_job.title"), t("ux.job.no_job.body")))
     try:
@@ -4888,11 +4908,19 @@ def job_action_view_ui(project_dir, job_id, action, returned_xliff, terminology,
         return out(ux.notice(ux.WARNING, t("ux.job.not_found.title"), t("ux.job.not_found.body", job=jid)))
     if action not in _JOB_ACTIONS_BY_STATE.get(str(job.get("status") or ""), set()):
         return out(tv.job_not_available_notice(action, job))
-    if action == "Annulla" and not confirmed:
-        return out(tv.job_cancel_confirm_notice(job), confirm=True, pending=jid)
+    if action == "Annulla":
+        # An approval interrupted after it began writing: the question says what cancelling
+        # leaves in the TM / CCMS, and the answer "Sì" is the acknowledgment the engine requires
+        # -- so it is asked again if the job changed since the question was shown.
+        interrupted=_job_interrupted_approval(project_dir, jid)
+        if not confirmed or _interruption_mark(interrupted) != shown:
+            mark=_interruption_mark(interrupted)
+            return out(tv.job_cancel_confirm_notice(job, interrupted), confirm=True,
+                       pending=f"{jid}|{mark}" if mark else jid)
     try:
         _msg, jobs, events, qa, approval, tm = job_action_ui(project_dir, jid, action, returned_xliff, terminology,
-                                                            strict, reviewer, human_approved)
+                                                            strict, reviewer, human_approved,
+                                                            cancel_acknowledged=bool(confirmed))
     except gr.Error as exc:
         return out(ux.notice(ux.WARNING, t("ux.job.error.title"), str(getattr(exc, "message", exc))))
     after=_job_row(project_dir, jid)

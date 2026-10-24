@@ -465,7 +465,7 @@ class IndustrialRepository(ContentRepository):
             (table_id, target_lang, int(r["version"]), caption.strip(), _json(columns if columns is not None else _load_json(r["columns_json"], [])),
              _json(rows if rows is not None else _load_json(r["rows_json"], [])), status, _now()),
         )
-        self.conn.commit()
+        self._commit()
 
     def create_figure(self, figure_id: str, *, title: str = "", caption: str = "", file_path: str = "",
                       alt_text: str = "", status: str = "Draft", condition: dict[str, Any] | None = None,
@@ -527,7 +527,7 @@ class IndustrialRepository(ContentRepository):
                alt_text=excluded.alt_text,status=excluded.status,updated_at=excluded.updated_at""",
             (figure_id, target_lang, int(r["version"]), caption.strip(), alt_text.strip(), status, _now()),
         )
-        self.conn.commit()
+        self._commit()
 
     # ---------- Blocks ----------
     def add_block(self, block_id: str, topic_id: str, block_type: str, *, position: int,
@@ -611,7 +611,7 @@ class IndustrialRepository(ContentRepository):
                ON CONFLICT(component_id,target_lang) DO UPDATE SET source_version=excluded.source_version,target_title=excluded.target_title,target_body=excluded.target_body,status=excluded.status,updated_at=excluded.updated_at""",
             (component_id, target_lang, int(comp["version"]), target_title or comp["title"], target_body.strip(), status, _now()),
         )
-        self.conn.commit()
+        self._commit()
 
     def set_block_translation(self, block_id: str, target_lang: str, target_text: str, *, status: str = "Draft") -> None:
         target_lang = canonical_lang(target_lang)
@@ -626,7 +626,61 @@ class IndustrialRepository(ContentRepository):
                status=excluded.status,updated_at=excluded.updated_at""",
             (block_id, target_lang, int(r["version"]), target_text.strip(), status, _now()),
         )
-        self.conn.commit()
+        self._commit()
+
+    # ---------- Translation round-trip audit ----------
+    # The table is created on first use, as it always was, not by _industrial_schema: a
+    # database that never committed a round trip has none.
+    def record_translation_roundtrip_audit(self, *, build: str, source_kind: str, source_id: str, source_version: int,
+                                           source_lang: str, target_lang: str, package_sha256: str,
+                                           returned_xliff_sha256: str, reviewer: str, tm_path: str,
+                                           tm_entries_added: int, ccms_commits_json: str, committed_at: str,
+                                           job_id: str = "") -> None:
+        """One row of translation_roundtrip_audit, NOT committed: it belongs to the caller's
+        transaction (the round-trip commit writes it together with its CCMS translations)."""
+        self.conn.execute("""
+        CREATE TABLE IF NOT EXISTS translation_roundtrip_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            build TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_version INTEGER NOT NULL,
+            source_lang TEXT NOT NULL,
+            target_lang TEXT NOT NULL,
+            package_sha256 TEXT NOT NULL,
+            returned_xliff_sha256 TEXT NOT NULL,
+            reviewer TEXT NOT NULL,
+            human_approved INTEGER NOT NULL,
+            tm_path TEXT NOT NULL,
+            tm_entries_added INTEGER NOT NULL,
+            ccms_commits_json TEXT NOT NULL,
+            committed_at TEXT NOT NULL
+        )
+    """)
+        if "job_id" not in self._roundtrip_audit_columns():
+            # CP5.4c: the translation job a row belongs to, so that an approval interrupted after
+            # its commit is completed instead of committed a second time. Older rows carry ''.
+            self.conn.execute("ALTER TABLE translation_roundtrip_audit ADD COLUMN job_id TEXT NOT NULL DEFAULT ''")
+        self.conn.execute(
+            """INSERT INTO translation_roundtrip_audit(build,source_kind,source_id,source_version,source_lang,target_lang,package_sha256,returned_xliff_sha256,reviewer,human_approved,tm_path,tm_entries_added,ccms_commits_json,committed_at,job_id)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (build, source_kind, source_id, int(source_version), source_lang, target_lang, package_sha256,
+             returned_xliff_sha256, reviewer, 1, tm_path, int(tm_entries_added), ccms_commits_json, committed_at, str(job_id or "")),
+        )
+
+    def translation_roundtrip_audit_for_job(self, job_id: str, package_sha256: str, returned_xliff_sha256: str) -> dict[str, Any] | None:
+        """The audit row of the round trip this job already committed -- same package, same
+        returned XLIFF -- or None."""
+        if not job_id or "job_id" not in self._roundtrip_audit_columns():
+            return None
+        row = self.conn.execute(
+            "SELECT * FROM translation_roundtrip_audit WHERE job_id=? AND package_sha256=? AND returned_xliff_sha256=? ORDER BY id LIMIT 1",
+            (str(job_id), package_sha256, returned_xliff_sha256),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _roundtrip_audit_columns(self) -> set[str]:
+        return {str(r[1]) for r in self.conn.execute("PRAGMA table_info(translation_roundtrip_audit)")}
 
     def blocks_table(self, topic_id: str | None = None, *, include_archived: bool = False) -> pd.DataFrame:
         sql = "SELECT * FROM content_blocks"

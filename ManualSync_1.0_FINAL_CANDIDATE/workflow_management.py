@@ -16,9 +16,21 @@ import pandas as pd
 
 from ccms_industrial import IndustrialRepository
 from project_layout import ProjectLayout
-from translation_roundtrip import inspect_translation_roundtrip, commit_translation_roundtrip
+from translation_roundtrip import (
+    CONFIRMED_TM_NAME, RoundtripCommitInterrupted, inspect_translation_roundtrip, commit_translation_roundtrip,
+)
 
 WORKFLOW_BUILD = "0.25.0-workflow-job-management-20260811"
+
+# translation_jobs columns that hold a file of the project, with the column that holds the
+# file's SHA-256 when the job recorded one.
+JOB_PATH_COLUMNS = {
+    "package_path": "package_sha256",
+    "returned_xliff_path": "returned_xliff_sha256",
+    "qa_terminology_path": "qa_terminology_sha256",
+    "approval_zip": "",
+    "confirmed_tm_path": "",
+}
 
 STATUS_LABELS = {
     "READY_TO_SEND": "Da inviare",
@@ -43,6 +55,25 @@ ALLOWED_TRANSITIONS = {
 }
 
 
+class JobFileMissingError(FileNotFoundError):
+    """A file the job needs is not in THIS project folder (CP5.4c): restored elsewhere without it,
+    removed, or replaced by a file with another content."""
+
+
+class ApprovalInterruptedError(RuntimeError):
+    """approve_job stopped after the round-trip commit had begun writing (CP5.4c).
+
+    ``translation_committed``: the CCMS translations and the audit row are in, only the approval
+    is not closed. Either way the job is still QA_READY and repeating the approval completes it.
+    """
+
+    def __init__(self, message: str, *, job_id: str, phase: str, translation_committed: bool):
+        super().__init__(message)
+        self.job_id = job_id
+        self.phase = phase
+        self.translation_committed = translation_committed
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -59,6 +90,12 @@ def _sha256(path: str | Path) -> str:
 def _safe(value: str) -> str:
     out = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip()).strip("._")
     return out or "unknown"
+
+
+def _lexical(path: str | Path) -> Path:
+    """Absolute and normalized ('..' collapsed) WITHOUT following links: a project folder or an
+    assets folder that is a junction stays inside the project."""
+    return Path(os.path.abspath(path))
 
 
 def _validate_due_date(value: str | None) -> str:
@@ -109,6 +146,65 @@ class WorkflowManager:
 
     def close(self) -> None:
         self.conn.close()
+
+    # ---------- Paths of the job files ----------
+    # CP5.4c. Up to CP5.4b every path was stored absolute: it tied the project to the folder --
+    # and the machine -- that created it. After a restore elsewhere a job still in progress could
+    # no longer be approved, and every archive carried C:\Users\<name>. Paths are now stored
+    # relative to the project folder; the absolute ones already stored are read, never rewritten.
+    def _stored(self, path: str | Path) -> str:
+        """How a file of this project is persisted: relative to the project folder, '/'-separated."""
+        return _lexical(path).relative_to(_lexical(self.project_dir)).as_posix()
+
+    def _resolve(self, stored: str, sha256: str = "") -> Path | None:
+        """Where a persisted path is in THIS project folder, or None.
+
+        A relative value is resolved against the project folder (and refused if it leads out of
+        it). An absolute value was stored before CP5.4c: used as is while it points into this
+        project; otherwise -- the project was restored or moved -- re-anchored here on the layout
+        (the ManualSync_Workflow_Assets/... part, or the confirmed TM), and accepted only if that
+        file exists and, when the job recorded its hash, has that same content.
+        """
+        if not stored:
+            return None
+        root = _lexical(self.project_dir)
+        p = Path(stored)
+        if not p.is_absolute():
+            candidate = _lexical(root / p)
+            if not candidate.is_relative_to(root):
+                return None
+            # Before CP5.4c a project opened through a relative folder stored paths relative to
+            # the working directory: still accepted while they point into this project.
+            cwd_relative = _lexical(p)
+            if not candidate.is_file() and cwd_relative.is_relative_to(root) and cwd_relative.is_file():
+                return cwd_relative
+            return candidate
+        if _lexical(p).is_relative_to(root):
+            return p
+        if self.assets_dir.name in p.parts:
+            i = len(p.parts) - 1 - p.parts[::-1].index(self.assets_dir.name)
+            candidate = root.joinpath(*p.parts[i:])
+        elif p.name == CONFIRMED_TM_NAME:
+            candidate = root / p.name
+        else:
+            return None
+        try:
+            if not candidate.is_file() or (sha256 and _sha256(candidate) != sha256):
+                return None
+        except OSError:
+            return None
+        return candidate
+
+    def _job_file(self, job: dict[str, Any], column: str) -> Path:
+        """A file the next step of the job reads: it must be in THIS project -- never another
+        project's copy, even one still on disk. Fail-closed, with a sentence the user can act on."""
+        p = Path(str(job[column] or ""))
+        if p.is_absolute() and p.is_file() and _lexical(p).is_relative_to(_lexical(self.project_dir)):
+            return p
+        raise JobFileMissingError(
+            f"Il file «{p.name}» del job {job['job_id']} non si trova in questo progetto: era registrato in un'altra "
+            "cartella oppure è stato rimosso o sostituito. Nulla è stato modificato. Ripristina il progetto completo, "
+            "oppure genera un nuovo pacchetto e crea un nuovo job.")
 
     def _schema(self) -> None:
         self.conn.executescript(
@@ -258,19 +354,45 @@ class WorkflowManager:
             (job_id, "MAIN", str(source["kind"]), str(source["id"]), int(source["version"]), str(source["source_lang"]), target_lang,
              vendor_id, due, "READY_TO_SEND", int(counts.get("work_segments", 0)), int(counts.get("work_words", 0)),
              int(counts.get("linguistic_review_segments", 0)), int(counts.get("technical_review_segments", 0)), int(counts.get("new_translation_segments", 0)),
-             str(package_copy), _sha256(package_copy), str(notes or "").strip(), now, now),
+             self._stored(package_copy), _sha256(package_copy), str(notes or "").strip(), now, now),
         )
         self._event(job_id, "JOB_CREATED", "", "READY_TO_SEND", actor, {"package_sha256": _sha256(package_copy)})
         self.conn.commit()
         return job_id
 
     def get_job(self, job_id: str) -> dict[str, Any]:
+        """The job row; its file paths resolved in this project folder (see _resolve). A path that
+        cannot be resolved is returned as stored."""
         row = self.conn.execute("SELECT * FROM translation_jobs WHERE job_id=?", (str(job_id).strip(),)).fetchone()
         if not row:
             raise KeyError(job_id)
-        return dict(row)
+        job = dict(row)
+        for column, sha_column in JOB_PATH_COLUMNS.items():
+            found = self._resolve(job[column], job[sha_column] if sha_column else "")
+            if found is not None:
+                job[column] = str(found)
+        return job
 
-    def transition(self, job_id: str, to_status: str, *, actor: str = "", detail: Any = None) -> dict[str, Any]:
+    def transition(self, job_id: str, to_status: str, *, actor: str = "", detail: Any = None,
+                   acknowledge_interrupted_approval: bool = False) -> dict[str, Any]:
+        """Change the job status. Cancelling a job whose approval was interrupted after it began
+        writing (interrupted_approval) leaves that work in the TM / CCMS: it needs
+        ``acknowledge_interrupted_approval``, and the event records it."""
+        if str(to_status or "").strip().upper() == "CANCELLED":
+            interrupted = self.interrupted_approval(job_id)
+            if interrupted and not acknowledge_interrupted_approval:
+                raise ValueError(
+                    f"L'approvazione del job {job_id} si è interrotta dopo aver già registrato parte del lavoro: "
+                    "annullarlo non lo rimuove dalla memoria di traduzione né dal manuale. Completa l'approvazione "
+                    "con «Approva traduzione», oppure conferma esplicitamente l'annullamento.")
+            if interrupted:
+                detail = {**(detail or {}), "interrupted_approval": interrupted}
+        self._change_status(job_id, to_status, actor=actor, detail=detail)
+        self.conn.commit()
+        return self.get_job(job_id)
+
+    def _change_status(self, job_id: str, to_status: str, *, actor: str = "", detail: Any = None) -> None:
+        """transition() without the commit: for a change that must land with other writes."""
         job = self.get_job(job_id)
         current = job["status"]
         target = str(to_status or "").strip().upper()
@@ -281,11 +403,81 @@ class WorkflowManager:
         if target == "RECEIVED": stamps["received_at"] = _now()
         if target == "APPROVED": stamps["approved_at"] = _now()
         set_sql = ["status=?"] + [f"{k}=?" for k in stamps]
-        vals = [target] + list(stamps.values()) + [job_id]
-        self.conn.execute(f"UPDATE translation_jobs SET {','.join(set_sql)} WHERE job_id=?", vals)
+        vals = [target] + list(stamps.values()) + [job_id, current]
+        # Only from the status just read: a change made meanwhile by another session is not overwritten.
+        if self.conn.execute(f"UPDATE translation_jobs SET {','.join(set_sql)} WHERE job_id=? AND status=?", vals).rowcount != 1:
+            raise ValueError(f"Transizione non consentita: lo stato del job {job_id} è cambiato nel frattempo.")
         self._event(job_id, "STATUS_CHANGED", current, target, actor, detail)
-        self.conn.commit()
-        return self.get_job(job_id)
+
+    def interrupted_approval(self, job_id: str) -> dict[str, Any] | None:
+        """How this job's approval was interrupted after it began writing -- while the job is
+        neither APPROVED nor CANCELLED -- or None. "Approva traduzione" completes such a job.
+
+        From the job's last APPROVAL_INTERRUPTED event and, authoritatively, from the CCMS: an audit
+        row of this job means its translation is committed, also when the event could not be
+        written (the Workflow database was the failing one)."""
+        job = self.get_job(job_id)
+        if job["status"] in ("APPROVED", "CANCELLED"):
+            return None
+        row = self.conn.execute(
+            "SELECT detail_json,created_at FROM workflow_events WHERE job_id=? AND event_type='APPROVAL_INTERRUPTED' ORDER BY id DESC LIMIT 1",
+            (str(job_id).strip(),),
+        ).fetchone()
+        info = None
+        if row:
+            detail = json.loads(row["detail_json"] or "{}")
+            info = {"phase": str(detail.get("phase", "")), "translation_committed": bool(detail.get("translation_committed")),
+                    "at": row["created_at"]}
+        # Only a QA_READY job can hold a committed but unclosed approval; only it opens the CCMS.
+        ccms_db = ProjectLayout(self.project_dir).find_ccms_db()
+        if job["status"] == "QA_READY" and not (info and info["translation_committed"]) and ccms_db is not None:
+            try:
+                repo = IndustrialRepository(ccms_db)
+                try:
+                    committed = repo.translation_roundtrip_audit_for_job(job["job_id"], job["package_sha256"], job["returned_xliff_sha256"])
+                finally:
+                    repo.close()
+            except sqlite3.Error:
+                committed = None  # an unreadable CCMS: what the events say is all there is to go on
+            if committed is not None:
+                info = {**(info or {"phase": "", "at": committed["committed_at"]}), "translation_committed": True}
+        return info
+
+    def _approval_interrupted(self, job_id: str, phase: str, translation_committed: bool, cause: BaseException | None,
+                              actor: str) -> ApprovalInterruptedError:
+        """Record that an approval stopped after it began writing; return the error to raise.
+
+        The job stays QA_READY. The event carries the error TYPE only: its text may hold a path."""
+        try:
+            self.conn.rollback()
+            self._event(job_id, "APPROVAL_INTERRUPTED", "", "", actor,
+                        {"phase": phase, "translation_committed": bool(translation_committed),
+                         "error": type(cause).__name__ if cause is not None else ""})
+            self.conn.commit()
+        except sqlite3.Error:
+            # Best effort: the failure itself is what the caller must see. A committed translation
+            # is still known from its audit row (interrupted_approval).
+            try:
+                self.conn.rollback()
+            except sqlite3.Error:
+                pass
+        reason = (str(cause) or type(cause).__name__) if cause is not None else "errore sconosciuto"
+        try:
+            cancelled = self.get_job(job_id)["status"] == "CANCELLED"
+        except (sqlite3.Error, KeyError):
+            cancelled = False
+        if translation_committed and cancelled:
+            message = (f"La traduzione del job {job_id} è registrata nel manuale e nella memoria di traduzione, ma nel "
+                       "frattempo il job è stato annullato: l'approvazione non è stata chiusa.")
+        elif translation_committed:
+            message = (f"La traduzione del job {job_id} è registrata nel manuale e nella memoria di traduzione, ma "
+                       f"l'approvazione non è stata completata per un errore tecnico ({reason}). Ripeti «Approva "
+                       "traduzione» per completarla: la traduzione non verrà scritta una seconda volta.")
+        else:
+            message = (f"L'approvazione del job {job_id} si è interrotta per un errore tecnico ({reason}). Il manuale "
+                       "non è stato modificato; la memoria di traduzione confermata può contenere già alcune voci. "
+                       "Nulla è andato perso: ripeti «Approva traduzione», l'operazione si può ripetere senza rischi.")
+        return ApprovalInterruptedError(message, job_id=str(job_id), phase=phase, translation_committed=translation_committed)
 
     def mark_sent(self, job_id: str, actor: str = "") -> dict[str, Any]:
         return self.transition(job_id, "SENT", actor=actor)
@@ -299,12 +491,13 @@ class WorkflowManager:
             raise ValueError(f"Non puoi registrare un ritorno XLIFF dallo stato {job['status']}.")
         src = Path(returned_xliff)
         if not src.exists(): raise FileNotFoundError(src)
+        self._job_file(job, "package_path")  # the QA that follows needs it: refuse before changing anything
         inbound = self.assets_dir / job_id / "inbound"; inbound.mkdir(parents=True, exist_ok=True)
         dst = inbound / src.name
         shutil.copy2(src, dst)
         self.conn.execute(
             "UPDATE translation_jobs SET returned_xliff_path=?,returned_xliff_sha256=?,qa_status='',qa_summary_json='',updated_at=? WHERE job_id=?",
-            (str(dst), _sha256(dst), _now(), job_id),
+            (self._stored(dst), _sha256(dst), _now(), job_id),
         )
         self.conn.commit()
         current = self.get_job(job_id)["status"]
@@ -318,6 +511,8 @@ class WorkflowManager:
             raise ValueError("Il QA può essere eseguito solo su un job nello stato RECEIVED.")
         if not job["returned_xliff_path"]:
             raise ValueError("XLIFF restituito non registrato.")
+        package = self._job_file(job, "package_path")
+        returned = self._job_file(job, "returned_xliff_path")
         repo = IndustrialRepository(ccms_db)
         out = self.assets_dir / job_id / "qa" / datetime.now().strftime("%Y%m%d_%H%M%S")
         out.mkdir(parents=True, exist_ok=True)
@@ -331,7 +526,7 @@ class WorkflowManager:
             term_copy = str(dst_term); term_hash = _sha256(dst_term)
         try:
             result = inspect_translation_roundtrip(
-                repo, job["package_path"], job["returned_xliff_path"], terminology_path=term_copy or None,
+                repo, package, returned, terminology_path=term_copy or None,
                 strict_terminology=bool(strict_terminology), out_dir=out,
             )
         finally:
@@ -341,7 +536,8 @@ class WorkflowManager:
         next_status = "QA_READY" if qa_status == "PASS" else "QA_BLOCKED"
         self.conn.execute(
             "UPDATE translation_jobs SET qa_status=?,qa_summary_json=?,qa_terminology_path=?,qa_terminology_sha256=?,qa_strict=?,updated_at=? WHERE job_id=?",
-            (qa_status, json.dumps(summary, ensure_ascii=False, sort_keys=True), term_copy, term_hash, 1 if strict_terminology else 0, _now(), job_id),
+            (qa_status, json.dumps(summary, ensure_ascii=False, sort_keys=True), self._stored(term_copy) if term_copy else '', term_hash,
+             1 if strict_terminology else 0, _now(), job_id),
         )
         self.conn.commit()
         self.transition(job_id, next_status, actor=actor, detail={"qa_status": qa_status, "hard_fail_count": summary.get("hard_fail_count", 0)})
@@ -361,6 +557,9 @@ class WorkflowManager:
         if returned_xliff:
             self.register_returned_xliff(job_id, returned_xliff, actor=actor)
         else:
+            self._job_file(job, "package_path")          # refuse before reopening the job
+            if job["returned_xliff_path"]:
+                self._job_file(job, "returned_xliff_path")
             status = job["status"]
             if status == "QA_BLOCKED":
                 self.transition(job_id, "RECEIVED", actor=actor, detail={"reason": "QA rerun without new XLIFF"})
@@ -372,28 +571,49 @@ class WorkflowManager:
         )
 
     def approve_job(self, job_id: str, ccms_db: str | Path, *, reviewer: str, human_approved: bool) -> dict[str, Any]:
+        """Commit the job's round trip and close the job APPROVED.
+
+        A failure after the commit began writing leaves the job QA_READY with an
+        APPROVAL_INTERRUPTED event, and raises ApprovalInterruptedError -- saying whether the CCMS
+        translation is in or not. Repeating the approval completes the job either way, without
+        committing the translation twice."""
         if not human_approved:
             raise ValueError("Approvazione umana esplicita obbligatoria.")
         job = self.get_job(job_id)
         if job["status"] != "QA_READY" or job["qa_status"] != "PASS":
             raise ValueError("Il job non è in QA_READY con QA PASS.")
+        package = self._job_file(job, "package_path")
+        returned = self._job_file(job, "returned_xliff_path")
+        terminology = self._job_file(job, "qa_terminology_path") if job.get("qa_terminology_path") else None
+        actor = reviewer or "Human reviewer"
         # Re-run v0.24 fail-closed during commit.
         repo = IndustrialRepository(ccms_db)
         out = self.assets_dir / job_id / "approval" / datetime.now().strftime("%Y%m%d_%H%M%S")
         out.mkdir(parents=True, exist_ok=True)
         try:
             committed = commit_translation_roundtrip(
-                repo, self.project_dir, job["package_path"], job["returned_xliff_path"], human_approved=True,
-                terminology_path=job.get('qa_terminology_path') or None, strict_terminology=bool(job.get('qa_strict')), reviewer=reviewer or "Human reviewer", out_dir=out,
+                repo, self.project_dir, package, returned, human_approved=True,
+                terminology_path=terminology, strict_terminology=bool(job.get('qa_strict')), reviewer=actor, out_dir=out,
+                job_id=job_id,
             )
+        except RoundtripCommitInterrupted as exc:
+            raise self._approval_interrupted(job_id, exc.phase, exc.translation_committed, exc.__cause__, actor) from exc
         finally:
             repo.close()
-        self.conn.execute(
-            "UPDATE translation_jobs SET reviewer=?,approval_zip=?,confirmed_tm_path=?,updated_at=? WHERE job_id=?",
-            (str(reviewer or "Human reviewer"), str(committed["approval_zip"]), str(committed["tm_path"]), _now(), job_id),
-        )
-        self.conn.commit()
-        self.transition(job_id, "APPROVED", actor=reviewer or "Human reviewer", detail={"approval_zip": str(committed["approval_zip"])})
+        # The job row and its APPROVED status land together, or neither does.
+        try:
+            approval_zip = self._stored(committed["approval_zip"])
+            detail = {"approval_zip": approval_zip}
+            if committed["resumed"]:
+                detail["completed_after_interruption"] = True
+            self.conn.execute(
+                "UPDATE translation_jobs SET reviewer=?,approval_zip=?,confirmed_tm_path=?,updated_at=? WHERE job_id=?",
+                (str(committed["summary"]["reviewer"]), approval_zip, self._stored(committed["tm_path"]), _now(), job_id),
+            )
+            self._change_status(job_id, "APPROVED", actor=actor, detail=detail)
+            self.conn.commit()
+        except Exception as exc:
+            raise self._approval_interrupted(job_id, "workflow", True, exc, actor) from exc
         return {"job": self.get_job(job_id), "commit": committed}
 
     def jobs_table(self) -> pd.DataFrame:
