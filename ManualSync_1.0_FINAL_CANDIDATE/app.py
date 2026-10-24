@@ -33,7 +33,7 @@ from authoring_ccms import import_idml_as_topics
 from legacy_doc_conversion import convert_legacy_doc_to_docx, LegacyDocConversionError
 from idml_import import IdmlImportError
 import legacy_family_inference as legacy_family
-from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks
+from ccms_industrial import IndustrialRepository, upgrade_legacy_topics_to_blocks, utc_instant
 from authoring_service import AuthoringService, VersionConflictError, ArchivedObjectError, SharedObjectError, MissingAssetError
 import authoring_view as av
 import publishing_preview as pp
@@ -1392,6 +1392,28 @@ def _idml_pending_review_items(project_dir, publication_id) -> list[dict]:
     items = _idml_review_state(project_dir, publication_id)
     return [it for it in items if it.get("decision") is None]
 
+def _idml_explicit_decisions_since(project_dir, publication_id, since) -> int:
+    # HARDENING-02B (B5, K8): review decisions a user made on the current draft -- decision
+    # set, decided_by filled, decided_at not before the draft was created (`since`). They live
+    # only in this file, which an IDML re-import rewrites and any re-import detaches from the
+    # draft it described. A date that cannot be read counts (fail-closed). A corrupt file
+    # counts 0 on purpose: re-running the import is the documented way to repair it
+    # (idml_review_confirm_ui, approve_source_ui); work saved in the database is still caught
+    # by IndustrialRepository.migration_draft_human_work.
+    try:
+        items = _idml_review_state(project_dir, publication_id)
+    except IdmlReviewCorruptError:
+        return 0
+    start = utc_instant(since)
+    count = 0
+    for it in items:
+        if it.get("decision") is None or not str(it.get("decided_by") or "").strip():
+            continue
+        decided = utc_instant(it.get("decided_at"))
+        if start is None or decided is None or decided >= start:
+            count += 1
+    return count
+
 def _idml_review_choices_for(reason: str) -> list[str]:
     # No default/pre-selected choice is returned on purpose: a review decision
     # must always come from an explicit user click, even when only one choice
@@ -1517,26 +1539,61 @@ def idml_review_confirm_ui(project_dir, reviewer, *radio_values):
             json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     return _idml_review_panel_ui(project_dir, publication_id)
 
+# HARDENING-02B (B5): what migration_draft_human_work / _idml_explicit_decisions_since found,
+# in the order the refusal lists it.
+_REIMPORT_WORK_LABELS = (
+    ("versions", "contenuti modificati e salvati"),
+    ("status", "contenuti in revisione o creati a mano"),
+    ("archived", "contenuti archiviati"),
+    ("translations", "traduzioni"),
+    ("audit", "operazioni registrate nello storico"),
+    ("review", "richieste di revisione"),
+    ("evidence", "evidenze di conformità"),
+    ("idml_decisions", "decisioni di revisione InDesign"),
+)
+
+def _reimport_refused_message(work: dict[str, int]) -> str:
+    found = "; ".join(f"{label} ({work[kind]})" for kind, label in _REIMPORT_WORK_LABELS if work.get(kind))
+    return ("Reimportazione bloccata: la bozza di questa pubblicazione contiene lavoro fatto dopo "
+            f"l'importazione, che andrebbe perso — {found}. Non è stato copiato alcun file e la bozza "
+            "non è stata modificata. Per importare questo file usa un nuovo Publication ID, oppure "
+            "ripristina il file originale e continua a lavorare sulla bozza esistente.")
+
 def import_manual_ui(project_dir, pdf, source_lang, publication_id, title):
     if not project_dir or not pdf:
         raise gr.Error("Apri un progetto e carica il manuale corrente.")
     pub=(publication_id or 'PUB-MAIN').strip()
     source=(source_lang or read_project(project_dir).get('source_lang','en-US')).strip()
-    srcdir=Path(project_dir)/'Sources'; srcdir.mkdir(exist_ok=True)
+    srcdir=Path(project_dir)/'Sources'
     suffix=Path(pdf).suffix.lower()
     copied=srcdir/Path(pdf).name
-    if suffix!='.idml':
-        # Milestone 3D fail-closed hardening left this copy-then-process order
-        # unchanged for PDF/DOCX/DOC (out of scope for this fix). The .idml
-        # branch below defers this copy until after a full, successful parse
-        # + CCMS write -- see there for why.
-        shutil.copy2(pdf,copied)
     repo=IndustrialRepository(_ccms_db(project_dir))
     try:
         # Re-import is allowed only while the publication is still a migration draft.
         # This prevents duplicate/orphaned topic trees during iterative migration tests.
         # CP5.2b: the rule and its SQL live in IndustrialRepository (same statements, same ValueError).
-        tids_old, table_ids_old, figure_ids_old = repo.migration_draft_objects(pub)
+        # HARDENING-02B (D3): re-raised as gr.Error with the same text (ui_error_text passes a
+        # non-domain error through verbatim) -- the app runs with show_error=False, which keeps
+        # a plain ValueError out of the browser.
+        try:
+            tids_old, table_ids_old, figure_ids_old = repo.migration_draft_objects(pub)
+        except ValueError as exc:
+            raise gr.Error(ui_error_text(exc)) from exc
+        # HARDENING-02B (B5): a draft that still carries human work is never retired. Refused
+        # here, before Sources/ is touched, anything is copied or the new file is read.
+        if tids_old:
+            work=repo.migration_draft_human_work(pub)
+            decisions=_idml_explicit_decisions_since(project_dir,pub,repo.migration_draft_created_at(pub))
+            if decisions:
+                work['idml_decisions']=decisions
+            if work:
+                raise gr.Error(_reimport_refused_message(work))
+        # DLS-03: Sources/ and the copy of the upload only once every guard has passed. PDF/DOCX/DOC
+        # are copied before the parse, which reads `copied`; the .idml branch defers its copy until
+        # after a full, successful parse + CCMS write -- see there for why.
+        srcdir.mkdir(exist_ok=True)
+        if suffix!='.idml':
+            shutil.copy2(pdf,copied)
 
         def _retire_old_draft():
             repo.retire_migration_draft(pub, tids_old, table_ids_old, figure_ids_old)

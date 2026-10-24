@@ -36,6 +36,23 @@ def _norm_set(values: Iterable[str] | None) -> list[str]:
     return sorted({str(v).strip() for v in (values or []) if str(v).strip()})
 
 
+def utc_instant(value: Any) -> datetime | None:
+    """An aware datetime for an ISO-8601 timestamp that carries its offset (every writer uses
+    _now()); None for anything else -- empty, naive, malformed. HARDENING-02B counts such a
+    date as human work (fail-closed), see IndustrialRepository.migration_draft_human_work."""
+    try:
+        moment = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return moment if moment.tzinfo is not None else None
+
+
+def _not_before(value: Any, start: Any) -> bool:
+    """`value` is at or after `start` -- or one of them cannot be read (fail-closed)."""
+    a, s = utc_instant(value), utc_instant(start)
+    return a is None or s is None or a >= s
+
+
 class IndustrialRepository(ContentRepository):
     """Industrial CCMS layer on top of the v0.17 repository.
 
@@ -1152,6 +1169,105 @@ class IndustrialRepository(ContentRepository):
 
     def structured_table_count(self) -> int:
         return int(self.conn.execute("SELECT COUNT(*) FROM structured_tables").fetchone()[0])
+
+    # HARDENING-02B (B5): the human work a re-import would destroy. The draft is exactly what
+    # migration_draft_objects() returns -- the linked topics, their blocks, the tables and
+    # figures those blocks point at -- found here by subquery (no parameter list). Audit rows,
+    # review tasks and compliance evidence have no foreign key to the content, and a PDF/DOCX
+    # re-import re-creates the same ids: they count only from the creation of the object they
+    # name, older rows belong to a previous draft (regressione_import_orchestration S17j2).
+    _MIGRATION_DRAFT = (
+        "WITH t AS (SELECT tp.topic_id AS id, tp.created_at AS born FROM topics tp "
+        "JOIN publication_topics pt ON pt.topic_id=tp.topic_id WHERE pt.publication_id=:pub), "
+        "b AS (SELECT block_id AS id, created_at AS born FROM content_blocks WHERE topic_id IN (SELECT id FROM t)), "
+        "tb AS (SELECT table_id AS id, created_at AS born FROM structured_tables WHERE table_id IN "
+        "(SELECT object_ref_id FROM content_blocks WHERE topic_id IN (SELECT id FROM t) "
+        "AND block_type='table' AND object_ref_id<>'')), "
+        "fg AS (SELECT figure_id AS id, created_at AS born FROM figures WHERE figure_id IN "
+        "(SELECT object_ref_id FROM content_blocks WHERE topic_id IN (SELECT id FROM t) "
+        "AND block_type='figure' AND object_ref_id<>'')), "
+        "o AS (SELECT 'topic' AS kind, id, born FROM t UNION ALL SELECT 'block', id, born FROM b "
+        "UNION ALL SELECT 'table', id, born FROM tb UNION ALL SELECT 'figure', id, born FROM fg) "
+    )
+
+    def migration_draft_human_work(self, publication_id: str) -> dict[str, int]:
+        """What would be lost if the publication's migration draft were retired, as
+        {kind: count} with only the kinds found (empty = an untouched draft). SELECT only,
+        no commit -- the caller refuses the re-import. Kinds:
+          versions      topic/block/table/figure saved past version 1
+          status        block/table/figure no longer 'Migrated' (topics: migration_draft_objects)
+          archived      topic/block archived
+          translations  any translation row (they cascade with their object, never stale)
+          audit         audit row on a draft object, or on the publication, since that
+                        object (the draft) was created
+          review        review task on a draft object since it was created
+          evidence      compliance evidence on a draft object added -- or linked -- since then
+        A date that cannot be read counts. Autosaves (authoring_drafts) never count."""
+        p = {"pub": publication_id}
+
+        def rows(sql: str) -> list[sqlite3.Row]:
+            return list(self.conn.execute(self._MIGRATION_DRAFT + sql, p))
+
+        def total(sql: str) -> int:
+            return int(rows(sql)[0][0] or 0)
+
+        if not rows("SELECT 1 FROM t LIMIT 1"):
+            return {}
+        work = {
+            "versions": total(
+                "SELECT (SELECT COUNT(*) FROM topics WHERE topic_id IN (SELECT id FROM t) AND version>1)"
+                " + (SELECT COUNT(*) FROM content_blocks WHERE block_id IN (SELECT id FROM b) AND version>1)"
+                " + (SELECT COUNT(*) FROM structured_tables WHERE table_id IN (SELECT id FROM tb) AND version>1)"
+                " + (SELECT COUNT(*) FROM figures WHERE figure_id IN (SELECT id FROM fg) AND version>1)"),
+            "status": total(
+                "SELECT (SELECT COUNT(*) FROM content_blocks WHERE block_id IN (SELECT id FROM b)"
+                " AND COALESCE(LOWER(status),'')<>'migrated')"
+                " + (SELECT COUNT(*) FROM structured_tables WHERE table_id IN (SELECT id FROM tb)"
+                " AND COALESCE(LOWER(status),'')<>'migrated')"
+                " + (SELECT COUNT(*) FROM figures WHERE figure_id IN (SELECT id FROM fg)"
+                " AND COALESCE(LOWER(status),'')<>'migrated')"),
+            "archived": total(
+                "SELECT (SELECT COUNT(*) FROM topics WHERE topic_id IN (SELECT id FROM t) AND COALESCE(archived_at,'')<>'')"
+                " + (SELECT COUNT(*) FROM content_blocks WHERE block_id IN (SELECT id FROM b)"
+                " AND COALESCE(archived_at,'')<>'')"),
+            "translations": total(
+                "SELECT (SELECT COUNT(*) FROM topic_translations WHERE topic_id IN (SELECT id FROM t))"
+                " + (SELECT COUNT(*) FROM block_translations WHERE block_id IN (SELECT id FROM b))"
+                " + (SELECT COUNT(*) FROM structured_table_translations WHERE table_id IN (SELECT id FROM tb))"
+                " + (SELECT COUNT(*) FROM figure_translations WHERE figure_id IN (SELECT id FROM fg))"),
+        }
+        since = self.migration_draft_created_at(publication_id)
+        work["audit"] = sum(_not_before(r[0], r[1]) for r in rows(
+            "SELECT e.created_at, o.born FROM audit_events e JOIN o ON o.kind=e.object_type AND o.id=e.object_id"))
+        work["audit"] += sum(_not_before(r[0], since) for r in rows(
+            "SELECT created_at FROM audit_events WHERE object_type='publication' AND object_id=:pub"))
+        work["review"] = sum(_not_before(r[0], r[1]) for r in rows(
+            "SELECT r.created_at, o.born FROM review_tasks r JOIN o ON o.kind=r.object_type AND o.id=r.object_id"))
+        # compliance_evidence belongs to ComplianceService and exists only once it was opened:
+        # looked up, never created (its constructor runs DDL and commits).
+        present = {r[0] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('compliance_evidence','compliance_evidence_link')")}
+        work["evidence"] = 0
+        if "compliance_evidence" in present:
+            links: dict[str, list[str]] = {}
+            if "compliance_evidence_link" in present:
+                for r in rows("SELECT l.evidence_id, l.linked_at FROM compliance_evidence_link l WHERE l.evidence_id IN "
+                              "(SELECT e.evidence_id FROM compliance_evidence e "
+                              "JOIN o ON o.kind=e.evidence_kind AND o.id=e.object_id)"):
+                    links.setdefault(r[0], []).append(r[1])
+            work["evidence"] = sum(
+                _not_before(r[1], r[2]) or any(_not_before(at, r[2]) for at in links.get(r[0], []))
+                for r in rows("SELECT e.evidence_id, e.added_at, o.born FROM compliance_evidence e "
+                              "JOIN o ON o.kind=e.evidence_kind AND o.id=e.object_id"))
+        return {kind: n for kind, n in work.items() if n}
+
+    def migration_draft_created_at(self, publication_id: str) -> str | None:
+        """When the publication's migration draft was created: the earliest created_at of its
+        linked topics (None when it links none) -- the start of HARDENING-02B's time filter."""
+        row = self.conn.execute(
+            "SELECT MIN(t.created_at) FROM topics t JOIN publication_topics pt ON pt.topic_id=t.topic_id "
+            "WHERE pt.publication_id=?", (publication_id,)).fetchone()
+        return None if row is None or row[0] is None else str(row[0])
 
 
 def create_industrial_demo(out_dir: str | Path, *, figure_path: str | Path | None = None) -> dict[str, Any]:
